@@ -6,7 +6,7 @@ use gpui::{
 use gpui_component::input::{Input, InputState};
 use gpui_component::table::{Column, ColumnSort, TableDelegate, TableState};
 use gpui_component::{ActiveTheme, Sizable};
-use soquel_core::connectors::{ColumnFilter, QueryColumn, SortDirection, SortSpec};
+use soquel_core::connectors::{ColumnFilter, ForeignKeyInfo, QueryColumn, SortDirection, SortSpec};
 
 use crate::cell_editing::{
   CellPosition, editor_mode, editor_value_valid, initial_editor_value, next_editable_position,
@@ -31,6 +31,7 @@ pub struct RowsDelegate {
   pub filters: Vec<ColumnFilter>,
   /// Row identity for editing: primary key, or ctid once the rescue is enabled.
   pub key_columns: Vec<String>,
+  pub foreign_keys: Vec<ForeignKeyInfo>,
   /// Tables only: views and matviews are read-only whatever their keys.
   pub can_ever_edit: bool,
   pub ctid_mode: bool,
@@ -54,6 +55,7 @@ impl RowsDelegate {
       sort: None,
       filters: Vec::new(),
       key_columns: Vec::new(),
+      foreign_keys: Vec::new(),
       can_ever_edit: false,
       ctid_mode: false,
       include_xmin: false,
@@ -78,6 +80,22 @@ impl RowsDelegate {
 
   pub fn display_columns(&self) -> &[QueryColumn] {
     &self.columns[self.hidden_lead()..]
+  }
+
+  pub fn fk_for(&self, column: &str) -> Option<&ForeignKeyInfo> {
+    self
+      .foreign_keys
+      .iter()
+      .find(|fk| fk.columns.iter().any(|c| c == column))
+  }
+
+  /// The displayed value at a display-column position, staged edits included.
+  pub fn display_value(&self, row_ix: usize, display_col: usize) -> Option<String> {
+    if display_col >= self.display_columns().len() {
+      return None;
+    }
+    let real_col = display_col + self.hidden_lead();
+    self.cell_value(row_ix, real_col)
   }
 
   pub fn editable(&self) -> bool {

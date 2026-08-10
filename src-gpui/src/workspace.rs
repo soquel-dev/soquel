@@ -47,6 +47,7 @@ enum TabContent {
     table: Entity<TableState<RowsDelegate>>,
     show_ddl: bool,
     ddl: Option<String>,
+    inspector_split: Entity<ResizableState>,
   },
   Sql {
     editor: Entity<InputState>,
@@ -332,6 +333,9 @@ impl Workspace {
       let primary_key = info
         .map(|info| info.primary_key.clone())
         .unwrap_or_default();
+      let foreign_keys = info
+        .map(|info| info.foreign_keys.clone())
+        .unwrap_or_default();
 
       table.update(cx, |table, cx| {
         let delegate = table.delegate_mut();
@@ -339,6 +343,7 @@ impl Workspace {
         delegate.filters = filters;
         delegate.can_ever_edit = can_ever_edit;
         delegate.key_columns = primary_key;
+        delegate.foreign_keys = foreign_keys;
         delegate.include_xmin = can_ever_edit;
         delegate.reload(cx);
       });
@@ -348,6 +353,7 @@ impl Workspace {
           table,
           show_ddl: false,
           ddl: None,
+          inspector_split: cx.new(|_| ResizableState::default()),
         },
       );
     } else if let Some(table) = self.active_table() {
@@ -905,6 +911,7 @@ impl Workspace {
       show_ddl,
       ddl,
       table,
+      ..
     }) = self.contents.get_mut(&id)
     else {
       return;
@@ -1395,6 +1402,186 @@ impl Workspace {
       })
   }
 
+  /// FK hop: open the referenced table filtered to this row's key values.
+  fn hop(&mut self, row_ix: usize, column: String, window: &mut Window, cx: &mut Context<Self>) {
+    let Some(table) = self.active_table() else {
+      return;
+    };
+    let Some((fk, filters)) = ({
+      let state = table.read(cx);
+      let delegate = state.delegate();
+      delegate.fk_for(&column).map(|fk| {
+        let filters: Vec<ColumnFilter> = fk
+          .columns
+          .iter()
+          .zip(&fk.referenced_columns)
+          .map(|(local, referenced)| {
+            let display_ix = delegate
+              .display_columns()
+              .iter()
+              .position(|c| &c.name == local);
+            let value = display_ix.and_then(|ix| delegate.display_value(row_ix, ix));
+            match value {
+              None => ColumnFilter {
+                column: referenced.clone(),
+                op: FilterOp::IsNull,
+                value: None,
+              },
+              Some(value) => ColumnFilter {
+                column: referenced.clone(),
+                op: FilterOp::Eq,
+                value: Some(value),
+              },
+            }
+          })
+          .collect();
+        (fk.clone(), filters)
+      })
+    }) else {
+      return;
+    };
+    self.open_table(
+      fk.referenced_schema.clone(),
+      fk.referenced_table.clone(),
+      filters,
+      window,
+      cx,
+    );
+  }
+
+  fn render_inspector(
+    &self,
+    table: &Entity<TableState<RowsDelegate>>,
+    row_ix: usize,
+    col_ix: usize,
+    cx: &mut Context<Self>,
+  ) -> impl IntoElement {
+    let state = table.read(cx);
+    let delegate = state.delegate();
+    let column = delegate.display_columns().get(col_ix).cloned();
+    let value = delegate.display_value(row_ix, col_ix);
+    let can_hop = column
+      .as_ref()
+      .is_some_and(|column| delegate.fk_for(&column.name).is_some())
+      && value.is_some();
+    let grid = table.clone();
+    let column_name = column.as_ref().map(|c| c.name.clone()).unwrap_or_default();
+    let data_type = column
+      .as_ref()
+      .and_then(|c| c.data_type.clone())
+      .unwrap_or_default();
+    let is_json = column.is_some_and(|c| c.kind == soquel_core::connectors::ColumnKind::Json);
+
+    let pretty = value.as_ref().map(|value| {
+      if is_json {
+        serde_json::from_str::<serde_json::Value>(value)
+          .and_then(|parsed| serde_json::to_string_pretty(&parsed))
+          .unwrap_or_else(|_| value.clone())
+      } else {
+        value.clone()
+      }
+    });
+    let copy_value = value.clone();
+    let hop_column = column_name.clone();
+
+    v_flex()
+      .size_full()
+      .border_l_1()
+      .border_color(cx.theme().border)
+      .child(
+        h_flex()
+          .px_3()
+          .py_1()
+          .gap_2()
+          .items_center()
+          .border_b_1()
+          .border_color(cx.theme().border)
+          .child(
+            div()
+              .min_w_0()
+              .truncate()
+              .text_sm()
+              .font_semibold()
+              .font_family("IBM Plex Mono")
+              .child(column_name),
+          )
+          .child(
+            div()
+              .text_xs()
+              .text_color(cx.theme().muted_foreground)
+              .child(data_type),
+          )
+          .child(div().flex_1())
+          .when(value.is_some(), |this| {
+            this.child(
+              Button::new("inspector-copy")
+                .ghost()
+                .xsmall()
+                .label("Copy")
+                .on_click(cx.listener(move |this, _, _, cx| {
+                  if let Some(value) = &copy_value {
+                    cx.write_to_clipboard(ClipboardItem::new_string(value.clone()));
+                    this.status = "copied".into();
+                    cx.notify();
+                  }
+                })),
+            )
+          })
+          .when(can_hop, |this| {
+            this.child(
+              Button::new("inspector-hop")
+                .ghost()
+                .xsmall()
+                .label("Open ref")
+                .on_click(cx.listener(move |this, _, window, cx| {
+                  this.hop(row_ix, hop_column.clone(), window, cx);
+                })),
+            )
+          })
+          .child(
+            Button::new("inspector-close")
+              .ghost()
+              .xsmall()
+              .icon(Icon::new(IconName::Close))
+              .on_click(cx.listener(move |_, _, _, cx| {
+                grid.update(cx, |table, cx| table.clear_selection(cx));
+              })),
+          ),
+      )
+      .child(match pretty {
+        None => v_flex()
+          .flex_1()
+          .p_3()
+          .text_sm()
+          .italic()
+          .text_color(cx.theme().muted_foreground)
+          .child("NULL")
+          .into_any_element(),
+        Some(text) if is_json => v_flex()
+          .id("inspector-value")
+          .flex_1()
+          .min_h_0()
+          .overflow_y_scroll()
+          .p_2()
+          .text_sm()
+          .child(TextView::markdown(
+            "inspector-json",
+            format!("```json\n{text}\n```"),
+          ))
+          .into_any_element(),
+        Some(text) => v_flex()
+          .id("inspector-value")
+          .flex_1()
+          .min_h_0()
+          .overflow_y_scroll()
+          .p_3()
+          .text_sm()
+          .font_family("IBM Plex Mono")
+          .child(text)
+          .into_any_element(),
+      })
+  }
+
   fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
     let workspace = cx.entity();
     v_flex()
@@ -1770,10 +1957,13 @@ impl Workspace {
         table,
         show_ddl,
         ddl,
+        inspector_split,
       }) => {
         let table = table.clone();
         let show_ddl = *show_ddl;
         let ddl = ddl.clone();
+        let inspector_split = inspector_split.clone();
+        let selected_cell = table.read(cx).selected_cell();
         v_flex()
           .flex_1()
           .min_h_0()
@@ -1786,13 +1976,35 @@ impl Workspace {
               .when(!table.read(cx).delegate().filters.is_empty(), |this| {
                 this.child(self.render_filter_chips(&table, cx))
               })
-              .child(
-                v_flex()
+              .child(match selected_cell {
+                Some((row_ix, col_ix)) => v_flex().flex_1().min_h_0().child(
+                  h_resizable("grid-inspector")
+                    .with_state(&inspector_split)
+                    .child(
+                      resizable_panel().child(
+                        v_flex()
+                          .size_full()
+                          .p_1()
+                          .child(DataTable::new(&table).stripe(true)),
+                      ),
+                    )
+                    .child(
+                      resizable_panel()
+                        .size(px(320.))
+                        .size_range(px(200.)..px(640.))
+                        .child(
+                          self
+                            .render_inspector(&table, row_ix, col_ix, cx)
+                            .into_any_element(),
+                        ),
+                    ),
+                ),
+                None => v_flex()
                   .flex_1()
                   .min_h_0()
                   .p_1()
                   .child(DataTable::new(&table).stripe(true)),
-              )
+              })
           })
           .when(show_ddl, |this| {
             this.child(
