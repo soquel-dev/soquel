@@ -352,6 +352,41 @@ fn is_json_number(value: &str) -> bool {
   i == bytes.len()
 }
 
+/// One statement's rows to a file; the caller owns the path choice.
+pub fn export_statement(
+  columns: Vec<QueryColumn>,
+  rows: &[Vec<Option<String>>],
+  format: ExportFormat,
+  kind: ConnectorKind,
+  table: &str,
+  path: &str,
+) -> Result<(), Error> {
+  let file = std::io::BufWriter::new(std::fs::File::create(path)?);
+  let mut writer = ExportWriter::new(file, format, kind, columns, quote_ident(kind, table))?;
+  for row in rows {
+    writer.row(row)?;
+  }
+  writer.finish()?;
+  Ok(())
+}
+
+/// Clipboard copy: same formats, returned as a string.
+pub fn format_statement(
+  columns: Vec<QueryColumn>,
+  rows: &[Vec<Option<String>>],
+  format: ExportFormat,
+  kind: ConnectorKind,
+  table: &str,
+) -> Result<String, Error> {
+  let mut out = Vec::new();
+  let mut writer = ExportWriter::new(&mut out, format, kind, columns, quote_ident(kind, table))?;
+  for row in rows {
+    writer.row(row)?;
+  }
+  writer.finish()?;
+  Ok(String::from_utf8(out).expect("formats emit utf-8"))
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -556,39 +591,4 @@ mod tests {
     }));
     assert!(sink.error.is_some());
   }
-}
-
-/// One statement's rows to a file; the caller owns the path choice.
-pub fn export_statement(
-  columns: Vec<QueryColumn>,
-  rows: &[Vec<Option<String>>],
-  format: ExportFormat,
-  kind: ConnectorKind,
-  table: &str,
-  path: &str,
-) -> Result<(), Error> {
-  let file = std::io::BufWriter::new(std::fs::File::create(path)?);
-  let mut writer = ExportWriter::new(file, format, kind, columns, quote_ident(kind, table))?;
-  for row in rows {
-    writer.row(row)?;
-  }
-  writer.finish()?;
-  Ok(())
-}
-
-/// Clipboard copy: same formats, returned as a string.
-pub fn format_statement(
-  columns: Vec<QueryColumn>,
-  rows: &[Vec<Option<String>>],
-  format: ExportFormat,
-  kind: ConnectorKind,
-  table: &str,
-) -> Result<String, Error> {
-  let mut out = Vec::new();
-  let mut writer = ExportWriter::new(&mut out, format, kind, columns, quote_ident(kind, table))?;
-  for row in rows {
-    writer.row(row)?;
-  }
-  writer.finish()?;
-  Ok(String::from_utf8(out).expect("formats emit utf-8"))
 }
