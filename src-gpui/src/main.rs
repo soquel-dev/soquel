@@ -3,6 +3,7 @@ mod cell_editing;
 mod completion;
 mod core;
 mod explain;
+mod export;
 mod filters;
 mod format;
 mod grid;

@@ -111,7 +111,10 @@ deleted. Each panel lands with its layer-3 tests; each flow with layer 4.
       `cell_editing.rs` port `staged.ts` / `cell-editing.ts` with their tests;
       bool/date cells edit as text for now, preview dialog wrapping to polish)
 - [ ] Grid inspector (cell detail)
-- [ ] Export menu (rows/statement to file)
+- [x] Export menu (copy-as to clipboard, save-as via the native dialog; table
+      tabs stream the full filtered/sorted table with live progress, sql tabs
+      write the held result; format/export helpers moved into core, shared
+      with the webview)
 - [x] SQL editor: highlighting, completion, run (spike)
 - [x] SQL editor: sessions, cancel, history (`history.rs` ports
       `query-history.ts` with its tests; one pinned session per sql tab,

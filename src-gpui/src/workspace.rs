@@ -6,6 +6,7 @@ use gpui::*;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::list::ListItem;
+use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_component::notification::Notification;
 use gpui_component::resizable::{ResizableState, h_resizable, resizable_panel, v_resizable};
 use gpui_component::select::{Select, SelectEvent, SelectState};
@@ -17,6 +18,7 @@ use gpui_component::{
   TitleBar, WindowExt, h_flex, v_flex,
 };
 use soquel_core::connectors::{ColumnFilter, FilterOp, SchemaSnapshot, TableChanges, TableKind};
+use soquel_core::export::ExportFormat;
 use soquel_core::licence::tab_limit_override;
 
 use crate::actions::{
@@ -28,6 +30,7 @@ use crate::core::{self, Db};
 use crate::explain::{
   ExplainPlan, explain_sql, flatten_plan, format_ms, format_rows, hidden_by_collapse, parse_explain,
 };
+use crate::export::{EXPORT_FORMATS, format_extension, format_label};
 use crate::filters::{filter_label, op_label, op_needs_value, ops_for_kind};
 use crate::format::format_estimated_rows;
 use crate::grid::RowsDelegate;
@@ -1207,6 +1210,191 @@ impl Workspace {
       )
   }
 
+  /// The grid whose rows exports read: the table tab's, or the sql results.
+  fn export_source(&self) -> Option<(Entity<TableState<RowsDelegate>>, String, String)> {
+    let grid = self.active_grid()?;
+    let (schema, name) = match self.active_tab()? {
+      WorkspaceTab::Table { schema, table, .. } => (schema.clone(), table.clone()),
+      WorkspaceTab::Sql { .. } => (String::new(), "results".to_string()),
+    };
+    Some((grid, schema, name))
+  }
+
+  fn export_copy(&mut self, format: ExportFormat, cx: &mut Context<Self>) {
+    let Some((grid, _, name)) = self.export_source() else {
+      return;
+    };
+    let kind = self
+      .db
+      .as_ref()
+      .map(|db| db.kind())
+      .unwrap_or(soquel_core::profiles::ConnectorKind::Postgres);
+    let (columns, rows) = {
+      let table = grid.read(cx);
+      let delegate = table.delegate();
+      let hidden = delegate.hidden_lead();
+      let columns = delegate.display_columns().to_vec();
+      let rows: Vec<Vec<Option<String>>> = delegate
+        .rows
+        .iter()
+        .map(|row| row[hidden..].to_vec())
+        .collect();
+      (columns, rows)
+    };
+    if columns.is_empty() {
+      return;
+    }
+    let count = rows.len();
+    match soquel_core::export::format_statement(columns, &rows, format, kind, &name) {
+      Ok(text) => {
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        self.status = format!("copied {count} rows as {}", format_label(format)).into();
+      }
+      Err(error) => {
+        self.status = format!("error: {error}").into();
+      }
+    }
+    cx.notify();
+  }
+
+  fn export_save(&mut self, format: ExportFormat, cx: &mut Context<Self>) {
+    let Some((grid, schema, name)) = self.export_source() else {
+      return;
+    };
+    let Some(db) = self.db.clone() else {
+      return;
+    };
+    let base = if schema.is_empty() {
+      name.clone()
+    } else {
+      format!("{schema}.{name}")
+    };
+    let suggested = format!("{base}.{}", format_extension(format));
+    let home = std::env::var_os("HOME")
+      .or_else(|| std::env::var_os("USERPROFILE"))
+      .map(std::path::PathBuf::from)
+      .unwrap_or_default();
+    let picked = cx.prompt_for_new_path(&home, Some(&suggested));
+
+    self._work_task = cx.spawn(async move |this, cx| {
+      let Ok(Ok(Some(path))) = picked.await else {
+        return;
+      };
+      let path = path.to_string_lossy().to_string();
+
+      // A browsed table streams in full (current sort and filters); a result
+      // set writes what the grid holds.
+      let (browse, sort, filters, columns, rows, kind) = {
+        grid.read_with(cx, |table, _| {
+          let delegate = table.delegate();
+          let hidden = delegate.hidden_lead();
+          (
+            delegate.browse.clone(),
+            delegate.sort.clone(),
+            delegate.filters.clone(),
+            delegate.display_columns().to_vec(),
+            delegate
+              .rows
+              .iter()
+              .map(|row| row[hidden..].to_vec())
+              .collect::<Vec<_>>(),
+            db.kind(),
+          )
+        })
+      };
+
+      match browse {
+        Some((db, schema, table_name)) => {
+          let mut request = core::page_request(&schema, &table_name, 0, 0);
+          request.limit = None;
+          request.sort = sort;
+          request.filters = filters;
+          let (mut progress, done) = core::export_rows(&db, request, format, path);
+          let _ = this.update(cx, |this, cx| {
+            this.status = "exporting...".into();
+            cx.notify();
+          });
+          use futures::{FutureExt, StreamExt};
+          let mut done = done.fuse();
+          loop {
+            futures::select! {
+              rows = progress.next() => {
+                if let Some(rows) = rows {
+                  let _ = this.update(cx, |this, cx| {
+                    this.status = format!("exporting... {rows} rows").into();
+                    cx.notify();
+                  });
+                }
+              }
+              result = done => {
+                let _ = this.update(cx, |this, cx| {
+                  this.status = match result {
+                    Ok(Ok(summary)) => format!(
+                      "exported {:.0} rows - {:.0} ms",
+                      summary.rows, summary.duration_ms
+                    )
+                    .into(),
+                    Ok(Err(error)) => format!("error: {error}").into(),
+                    Err(_) => "error: export canceled".into(),
+                  };
+                  cx.notify();
+                });
+                return;
+              }
+            }
+          }
+        }
+        None => {
+          let count = rows.len();
+          let result = cx
+            .background_spawn(async move {
+              soquel_core::export::export_statement(columns, &rows, format, kind, &name, &path)
+            })
+            .await;
+          let _ = this.update(cx, |this, cx| {
+            this.status = match result {
+              Ok(()) => format!("exported {count} rows").into(),
+              Err(error) => format!("error: {error}").into(),
+            };
+            cx.notify();
+          });
+        }
+      }
+    });
+  }
+
+  fn render_export_menu(&self, id: &str, cx: &mut Context<Self>) -> impl IntoElement {
+    let workspace = cx.entity();
+    Button::new(SharedString::from(format!("export-{id}")))
+      .ghost()
+      .xsmall()
+      .label("Export")
+      .dropdown_menu(move |mut menu, window, _| {
+        menu = menu.label("Copy as");
+        for format in EXPORT_FORMATS {
+          menu = menu.item(
+            PopupMenuItem::new(format_label(format)).on_click(window.listener_for(
+              &workspace,
+              move |this, _: &ClickEvent, _, cx| {
+                this.export_copy(format, cx);
+              },
+            )),
+          );
+        }
+        menu = menu.separator().label("Save as");
+        for format in EXPORT_FORMATS {
+          menu = menu.item(
+            PopupMenuItem::new(format!("{}...", format_label(format))).on_click(
+              window.listener_for(&workspace, move |this, _: &ClickEvent, _, cx| {
+                this.export_save(format, cx);
+              }),
+            ),
+          );
+        }
+        menu
+      })
+  }
+
   fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
     let workspace = cx.entity();
     v_flex()
@@ -1404,6 +1592,9 @@ impl Workspace {
           .selected(show_ddl)
           .on_click(cx.listener(|this, _, _, cx| this.toggle_ddl(true, cx))),
       )
+      .when(!show_ddl, |this| {
+        this.child(self.render_export_menu("table", cx))
+      })
       .when(show_ddl, |this| {
         this.child(
           Button::new("copy-ddl")
@@ -1678,7 +1869,8 @@ impl Workspace {
                 .label("History")
                 .disabled(self.history.is_empty())
                 .on_click(cx.listener(|this, _, window, cx| this.open_history(window, cx))),
-            ),
+            )
+            .child(self.render_export_menu("sql", cx)),
         )
         .child(
           v_flex().flex_1().min_h_0().child(
