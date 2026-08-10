@@ -4,17 +4,22 @@ use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::resizable::{ResizableState, h_resizable, resizable_panel, v_resizable};
 use gpui_component::select::{Select, SelectEvent, SelectState};
-use gpui_component::table::{DataTable, TableState};
+use gpui_component::table::{DataTable, TableEvent, TableState};
+use gpui_component::text::TextView;
 use gpui_component::{
-  ActiveTheme, Disableable, Icon, IconName, IndexPath, Sizable, StyledExt, TitleBar, h_flex, v_flex,
+  ActiveTheme, Disableable, Icon, IconName, IndexPath, Root, Sizable, StyledExt, TitleBar,
+  WindowExt, h_flex, v_flex,
 };
-use soquel_core::connectors::{ColumnFilter, FilterOp, SchemaSnapshot};
+use soquel_core::connectors::{ColumnFilter, FilterOp, SchemaSnapshot, TableChanges, TableKind};
 
-use crate::actions::{FocusEditor, RefreshSchema, RunQuery, ToggleThemeMode};
+use crate::actions::{
+  CancelCellEdit, FocusEditor, NextCell, PrevCell, RefreshSchema, RunQuery, ToggleThemeMode,
+};
 use crate::completion::{SchemaEntries, SqlCompletionProvider};
 use crate::core::{self, Db};
 use crate::filters::{filter_label, op_label, op_needs_value, ops_for_kind};
 use crate::grid::RowsDelegate;
+use crate::staged::{build_table_changes, preview_sql};
 use crate::theme;
 
 pub struct Workspace {
@@ -49,12 +54,36 @@ impl Workspace {
       state
     });
 
+    let cell_editor = cx.new(|cx| InputState::new(window, cx));
     let table = cx.new(|cx| {
-      TableState::new(RowsDelegate::new(), window, cx)
+      TableState::new(RowsDelegate::new(cell_editor.clone()), window, cx)
         .cell_selectable(true)
         .col_resizable(true)
     });
     cx.observe(&table, |_, _, cx| cx.notify()).detach();
+
+    cx.subscribe_in(&table, window, |this, _, event: &TableEvent, window, cx| {
+      if let TableEvent::DoubleClickedCell(row_ix, col_ix) = event {
+        let (row_ix, col_ix) = (*row_ix, *col_ix);
+        this.table.update(cx, |table, cx| {
+          table.delegate_mut().start_edit(row_ix, col_ix, window, cx);
+        });
+      }
+    })
+    .detach();
+
+    cx.subscribe_in(
+      &cell_editor,
+      window,
+      |this, _, event: &InputEvent, _, cx| {
+        if let InputEvent::PressEnter { .. } = event {
+          this.table.update(cx, |table, cx| {
+            table.delegate_mut().commit_edit(cx);
+          });
+        }
+      },
+    )
+    .detach();
 
     let splits = (
       cx.new(|_| ResizableState::default()),
@@ -245,6 +274,19 @@ impl Workspace {
     let Some(db) = self.db.clone() else {
       return;
     };
+    // Row identity comes from the snapshot: kind gates editing, the pk keys it.
+    let info = self.snapshot.as_ref().and_then(|snapshot| {
+      snapshot
+        .schemas
+        .iter()
+        .find(|s| s.name == schema)
+        .and_then(|s| s.tables.iter().find(|t| t.name == name))
+    });
+    let can_ever_edit = info.is_some_and(|info| info.kind == TableKind::Table);
+    let primary_key = info
+      .map(|info| info.primary_key.clone())
+      .unwrap_or_default();
+
     self.browsing = Some((schema.clone(), name.clone()));
     self.table.update(cx, |table, cx| {
       let delegate = table.delegate_mut();
@@ -252,8 +294,126 @@ impl Workspace {
       // A new table means new columns: sort and filters do not carry over.
       delegate.sort = None;
       delegate.filters.clear();
+      delegate.can_ever_edit = can_ever_edit;
+      delegate.key_columns = primary_key;
+      delegate.ctid_mode = false;
+      delegate.include_xmin = can_ever_edit;
       delegate.reload(cx);
     });
+  }
+
+  /// PK-less table rescue: ctid becomes the row identity, opt-in per table.
+  fn enable_ctid(&mut self, cx: &mut Context<Self>) {
+    self.table.update(cx, |table, cx| {
+      let delegate = table.delegate_mut();
+      delegate.ctid_mode = true;
+      delegate.key_columns = vec!["ctid".to_string()];
+      delegate.reload(cx);
+    });
+  }
+
+  fn apply_staged(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    let (changes, db) = {
+      let table = self.table.read(cx);
+      let delegate = table.delegate();
+      let Some((db, schema, name)) = delegate.browse.clone() else {
+        return;
+      };
+      if delegate.staged.is_empty() {
+        return;
+      }
+      (
+        build_table_changes(
+          &delegate.staged,
+          &delegate.rows,
+          &delegate.columns,
+          &delegate.change_keys(),
+          &schema,
+          &name,
+        ),
+        db,
+      )
+    };
+
+    let statements = preview_sql(&changes);
+    let this = cx.entity();
+    window.open_dialog(cx, move |dialog, _, cx| {
+      let changes = changes.clone();
+      let db = db.clone();
+      let this = this.clone();
+      dialog
+        .title(format!("Apply {} change(s)", statements.len()))
+        .child(
+          div()
+            .max_h(px(360.))
+            .p_2()
+            .rounded(cx.theme().radius)
+            .bg(cx.theme().muted)
+            .text_sm()
+            .child(TextView::markdown(
+              "apply-preview",
+              format!("```sql\n{}\n```", statements.join("\n")),
+            )),
+        )
+        .footer(
+          h_flex()
+            .gap_2()
+            .justify_end()
+            .child(
+              Button::new("cancel-apply")
+                .label("Cancel")
+                .on_click(|_, window, cx| window.close_dialog(cx)),
+            )
+            .child(
+              Button::new("confirm-apply")
+                .primary()
+                .label("Apply")
+                .on_click(move |_, window, cx| {
+                  window.close_dialog(cx);
+                  let changes = changes.clone();
+                  let db = db.clone();
+                  this.update(cx, |this, cx| this.run_apply(db, changes, cx));
+                }),
+            ),
+        )
+    });
+  }
+
+  fn run_apply(&mut self, db: Db, changes: TableChanges, cx: &mut Context<Self>) {
+    self.set_status("applying...", cx);
+    let rx = core::apply_changes(&db, changes);
+    let table = self.table.clone();
+    self._work_task = cx.spawn(async move |this, cx| {
+      let result = rx.await;
+      match result {
+        Ok(Ok(applied)) => {
+          let _ = this.update(cx, |this, cx| {
+            this.notify(
+              format!(
+                "applied: {} updated, {} inserted, {} deleted",
+                applied.updated, applied.inserted, applied.deleted
+              ),
+              cx,
+            );
+          });
+          table.update(cx, |table, cx| {
+            table.delegate_mut().reload(cx);
+          });
+        }
+        Ok(Err(error)) => {
+          // Staging is kept: the transaction rolled back server-side.
+          table.update(cx, |table, cx| {
+            table.delegate_mut().status = format!("error: {error}").into();
+            cx.notify();
+          });
+        }
+        Err(_) => {}
+      }
+    });
+  }
+
+  fn notify(&mut self, message: String, cx: &mut Context<Self>) {
+    self.set_status(message, cx);
   }
 
   fn refresh_schema(&mut self, cx: &mut Context<Self>) {
@@ -461,6 +621,78 @@ impl Workspace {
           .disabled(self.browsing.is_none())
           .on_click(cx.listener(|this, _, window, cx| this.toggle_filter_row(window, cx))),
       )
+      .when(self.table.read(cx).delegate().editable(), |this| {
+        let selected_row = self.table.read(cx).selected_cell().map(|(row, _)| row);
+        let pending = self.table.read(cx).delegate().staged.count();
+        this
+          .child(
+            Button::new("add-row")
+              .ghost()
+              .xsmall()
+              .label("+ Row")
+              .on_click(cx.listener(|this, _, _, cx| {
+                this.table.update(cx, |table, cx| {
+                  table.delegate_mut().add_insert(None, cx);
+                  // Inserts sit at the top: nothing shifts under them while paging.
+                  table.scroll_to_row(0, cx);
+                });
+              })),
+          )
+          .child(
+            Button::new("delete-row")
+              .ghost()
+              .xsmall()
+              .label("Delete")
+              .disabled(selected_row.is_none())
+              .on_click(cx.listener(move |this, _, _, cx| {
+                if let Some(row) = selected_row {
+                  this.table.update(cx, |table, cx| {
+                    table.delegate_mut().toggle_delete(row, cx);
+                  });
+                }
+              })),
+          )
+          .when(pending > 0, |this| {
+            this
+              .child(
+                Button::new("apply")
+                  .primary()
+                  .xsmall()
+                  .label(format!("Apply ({pending})"))
+                  .on_click(cx.listener(|this, _, window, cx| this.apply_staged(window, cx))),
+              )
+              .child(
+                Button::new("discard")
+                  .ghost()
+                  .xsmall()
+                  .label("Discard")
+                  .on_click(cx.listener(|this, _, _, cx| {
+                    this.table.update(cx, |table, cx| {
+                      table.delegate_mut().discard(cx);
+                    });
+                  })),
+              )
+          })
+      })
+      .when(
+        self.table.read(cx).delegate().can_ever_edit && !self.table.read(cx).delegate().editable(),
+        |this| {
+          this
+            .child(
+              div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child("no primary key - editing disabled"),
+            )
+            .child(
+              Button::new("enable-ctid")
+                .ghost()
+                .xsmall()
+                .label("edit via ctid")
+                .on_click(cx.listener(|this, _, _, cx| this.enable_ctid(cx))),
+            )
+        },
+      )
   }
 
   fn render_filter_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -524,7 +756,11 @@ impl Workspace {
 }
 
 impl Render for Workspace {
-  fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+  fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    // Root does not render these itself: without them dialogs and toasts are silent no-ops.
+    let dialog_layer = Root::render_dialog_layer(window, cx);
+    let notification_layer = Root::render_notification_layer(window, cx);
+
     v_flex()
       .size_full()
       .bg(cx.theme().background)
@@ -537,6 +773,21 @@ impl Render for Workspace {
         this
           .editor
           .update(cx, |editor, cx| editor.focus(window, cx));
+      }))
+      .on_action(cx.listener(|this, _: &CancelCellEdit, _, cx| {
+        this.table.update(cx, |table, cx| {
+          table.delegate_mut().cancel_edit(cx);
+        });
+      }))
+      .on_action(cx.listener(|this, _: &NextCell, window, cx| {
+        this.table.update(cx, |table, cx| {
+          table.delegate_mut().edit_neighbor(1, window, cx);
+        });
+      }))
+      .on_action(cx.listener(|this, _: &PrevCell, window, cx| {
+        this.table.update(cx, |table, cx| {
+          table.delegate_mut().edit_neighbor(-1, window, cx);
+        });
       }))
       .child(
         TitleBar::new().child(h_flex().child("soquel")).child(
@@ -604,5 +855,7 @@ impl Render for Workspace {
         ),
       )
       .child(self.render_status_bar(cx))
+      .children(dialog_layer)
+      .children(notification_layer)
   }
 }
