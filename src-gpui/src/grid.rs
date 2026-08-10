@@ -7,9 +7,8 @@ use crate::core::{self, Db};
 pub const PAGE_SIZE: u32 = 500;
 
 pub struct RowsDelegate {
-  pub schema: String,
-  pub table: String,
-  pub db: Option<Db>,
+  /// Set while browsing a table: load_more pages it. Query results leave it None.
+  pub browse: Option<(Db, String, String)>,
   pub columns: Vec<QueryColumn>,
   pub rows: Vec<Vec<Option<String>>>,
   pub loading: bool,
@@ -19,11 +18,9 @@ pub struct RowsDelegate {
 }
 
 impl RowsDelegate {
-  pub fn new(schema: String, table: String) -> Self {
+  pub fn new() -> Self {
     Self {
-      schema,
-      table,
-      db: None,
+      browse: None,
       columns: Vec::new(),
       rows: Vec::new(),
       loading: true,
@@ -72,7 +69,7 @@ impl TableDelegate for RowsDelegate {
   }
 
   fn has_more(&self, _: &App) -> bool {
-    !self.eof && !self.loading && self.db.is_some()
+    !self.eof && !self.loading && self.browse.is_some()
   }
 
   fn load_more_threshold(&self) -> usize {
@@ -80,11 +77,11 @@ impl TableDelegate for RowsDelegate {
   }
 
   fn load_more(&mut self, _: &mut Window, cx: &mut Context<TableState<Self>>) {
-    let Some(db) = self.db.clone() else {
+    let Some((db, schema, name)) = self.browse.clone() else {
       return;
     };
     self.loading = true;
-    let request = core::page_request(&self.schema, &self.table, self.rows.len() as u32, PAGE_SIZE);
+    let request = core::page_request(&schema, &name, self.rows.len() as u32, PAGE_SIZE);
     let rx = core::fetch_rows(&db, request);
 
     self._load_task = cx.spawn(async move |view, cx| {
@@ -101,13 +98,8 @@ impl TableDelegate for RowsDelegate {
               } else {
                 delegate.eof = true;
               }
-              delegate.status = format!(
-                "{}.{} - {} rows loaded",
-                delegate.schema,
-                delegate.table,
-                delegate.rows.len()
-              )
-              .into();
+              delegate.status =
+                format!("{schema}.{name} - {} rows loaded", delegate.rows.len()).into();
             }
             Ok(Err(error)) => {
               delegate.eof = true;

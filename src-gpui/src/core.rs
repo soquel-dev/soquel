@@ -24,6 +24,12 @@ fn runtime() -> &'static tokio::runtime::Runtime {
 #[derive(Clone)]
 pub struct Db(Arc<dyn Connection>);
 
+impl Db {
+  pub fn server_version(&self) -> Option<String> {
+    self.0.server_version()
+  }
+}
+
 fn env_or(key: &str, default: &str) -> String {
   std::env::var(key).unwrap_or_else(|_| default.to_string())
 }
