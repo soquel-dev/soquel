@@ -100,8 +100,9 @@ deleted. Each panel lands with its layer-3 tests; each flow with layer 4.
       startup screen; connects through core::ops against the same data dir as
       the tauri dev app)
 - [x] Connection form (postgres fields, test connection, keychain/prompt
-      credential modes; command mode, agent access, other kinds and
-      small-screen dialog height still to do)
+      credential modes; command mode, agent access, other kinds, paste-url
+      prefill (`parseConnectionUrl` port) and small-screen dialog height
+      still to do)
 - [ ] Tunnel form + tunnel list
 - [x] Secret prompt dialog (SecretRequired -> unlock -> retry, with the
       keep-for-session checkbox)

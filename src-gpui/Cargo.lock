@@ -8007,6 +8007,7 @@ dependencies = [
  "rust-embed",
  "serde_json",
  "soquel-core",
+ "tempfile",
  "tokio",
  "uuid",
 ]
