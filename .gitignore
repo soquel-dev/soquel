@@ -15,6 +15,7 @@ dist
 # Rust
 src-tauri/target/
 src-tauri/gen/schemas/
+src-gpui/target/
 
 # Editor directories and files
 .vscode/*
