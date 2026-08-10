@@ -22,11 +22,15 @@ fn runtime() -> &'static tokio::runtime::Runtime {
 }
 
 #[derive(Clone)]
-pub struct Db(Arc<dyn Connection>);
+pub struct Db(Arc<dyn Connection>, ConnectorKind);
 
 impl Db {
   pub fn server_version(&self) -> Option<String> {
     self.0.server_version()
+  }
+
+  pub fn kind(&self) -> ConnectorKind {
+    self.1
   }
 }
 
@@ -63,7 +67,7 @@ pub fn connect_dev() -> oneshot::Receiver<Result<Db, Error>> {
     let result = connector_for(ConnectorKind::Postgres)
       .connect(&profile, secret, None)
       .await
-      .map(|conn| Db(Arc::from(conn)));
+      .map(|conn| Db(Arc::from(conn), ConnectorKind::Postgres));
     let _ = tx.send(result);
   });
   rx
@@ -149,6 +153,36 @@ pub fn close_session(session: Session) {
   runtime().spawn(async move {
     let _ = session.0.close().await;
   });
+}
+
+pub fn export_rows(
+  db: &Db,
+  request: TableRowsRequest,
+  format: soquel_core::export::ExportFormat,
+  path: String,
+) -> (
+  futures::channel::mpsc::UnboundedReceiver<u64>,
+  oneshot::Receiver<Result<soquel_core::connectors::StreamSummary, Error>>,
+) {
+  let (progress_tx, progress_rx) = futures::channel::mpsc::unbounded();
+  let (tx, rx) = oneshot::channel();
+  let conn = db.0.clone();
+  let kind = db.1;
+  runtime().spawn(async move {
+    let result = match conn.sql() {
+      Some(surface) => {
+        soquel_core::export::run_export(surface, &request, format, kind, &path, move |rows| {
+          let _ = progress_tx.unbounded_send(rows);
+        })
+        .await
+      }
+      None => Err(Error::Unsupported {
+        message: "connection has no sql surface".to_string(),
+      }),
+    };
+    let _ = tx.send(result);
+  });
+  (progress_rx, rx)
 }
 
 pub fn table_ddl(

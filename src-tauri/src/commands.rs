@@ -10,7 +10,7 @@ use soquel_core::connectors::{
 };
 use soquel_core::credentials::{self, resolve_credentials, CredentialTarget};
 use soquel_core::error::{Error, SecretSubject};
-use soquel_core::export::{quote_ident, ExportFormat, ExportWriter};
+use soquel_core::export::ExportFormat;
 use soquel_core::profiles::{ConnectionInput, ConnectionProfile, ConnectorKind, CredentialSource};
 use soquel_core::secrets::SecretKey;
 use soquel_core::ssh::{self, SshTunnel, TunnelTarget};
@@ -441,13 +441,7 @@ pub fn export_statement(
   table: String,
   path: String,
 ) -> Result<(), Error> {
-  let file = std::io::BufWriter::new(std::fs::File::create(&path)?);
-  let mut writer = ExportWriter::new(file, format, kind, columns, quote_ident(kind, &table))?;
-  for row in &rows {
-    writer.row(row)?;
-  }
-  writer.finish()?;
-  Ok(())
+  soquel_core::export::export_statement(columns, &rows, format, kind, &table, &path)
 }
 
 /// Clipboard copy: same formats, returned as a string.
@@ -460,13 +454,7 @@ pub fn format_statement(
   kind: ConnectorKind,
   table: String,
 ) -> Result<String, Error> {
-  let mut out = Vec::new();
-  let mut writer = ExportWriter::new(&mut out, format, kind, columns, quote_ident(kind, &table))?;
-  for row in &rows {
-    writer.row(row)?;
-  }
-  writer.finish()?;
-  Ok(String::from_utf8(out).expect("formats emit utf-8"))
+  soquel_core::export::format_statement(columns, &rows, format, kind, &table)
 }
 
 #[tauri::command]
