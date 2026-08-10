@@ -1,18 +1,20 @@
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::button::{Button, ButtonVariants};
-use gpui_component::input::{Input, InputState};
+use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::resizable::{ResizableState, h_resizable, resizable_panel, v_resizable};
+use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::table::{DataTable, TableState};
 use gpui_component::{
-  ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, TitleBar, h_flex, v_flex,
+  ActiveTheme, Disableable, Icon, IconName, IndexPath, Sizable, StyledExt, TitleBar, h_flex, v_flex,
 };
-use soquel_core::connectors::SchemaSnapshot;
+use soquel_core::connectors::{ColumnFilter, FilterOp, SchemaSnapshot};
 
 use crate::actions::{FocusEditor, RefreshSchema, RunQuery, ToggleThemeMode};
 use crate::completion::{SchemaEntries, SqlCompletionProvider};
 use crate::core::{self, Db};
-use crate::grid::{PAGE_SIZE, RowsDelegate};
+use crate::filters::{filter_label, op_label, op_needs_value, ops_for_kind};
+use crate::grid::RowsDelegate;
 use crate::theme;
 
 pub struct Workspace {
@@ -24,6 +26,11 @@ pub struct Workspace {
   server_version: Option<String>,
   browsing: Option<(String, String)>,
   running: bool,
+  filter_open: bool,
+  filter_column: Entity<SelectState<Vec<String>>>,
+  filter_op: Entity<SelectState<Vec<String>>>,
+  filter_ops: Vec<FilterOp>,
+  filter_value: Entity<InputState>,
   schema_entries: SchemaEntries,
   _connect_task: Task<()>,
   _work_task: Task<()>,
@@ -53,6 +60,33 @@ impl Workspace {
       cx.new(|_| ResizableState::default()),
       cx.new(|_| ResizableState::default()),
     );
+
+    let filter_column = cx.new(|cx| SelectState::new(Vec::<String>::new(), None, window, cx));
+    let filter_op = cx.new(|cx| SelectState::new(Vec::<String>::new(), None, window, cx));
+    let filter_value = cx.new(|cx| InputState::new(window, cx).placeholder("value"));
+
+    cx.subscribe_in(
+      &filter_column,
+      window,
+      |this, _, event: &SelectEvent<Vec<String>>, window, cx| {
+        let SelectEvent::Confirm(Some(column)) = event else {
+          return;
+        };
+        this.sync_filter_ops(column.clone(), window, cx);
+      },
+    )
+    .detach();
+
+    cx.subscribe_in(
+      &filter_value,
+      window,
+      |this, _, event: &InputEvent, _, cx| {
+        if let InputEvent::PressEnter { .. } = event {
+          this.apply_filter(cx);
+        }
+      },
+    )
+    .detach();
 
     let connect_task = cx.spawn(async move |this, cx| {
       let db = match core::connect_dev().await {
@@ -97,10 +131,106 @@ impl Workspace {
       server_version: None,
       browsing: None,
       running: false,
+      filter_open: false,
+      filter_column,
+      filter_op,
+      filter_ops: Vec::new(),
+      filter_value,
       schema_entries,
       _connect_task: connect_task,
       _work_task: Task::ready(()),
     }
+  }
+
+  fn sync_filter_ops(&mut self, column: String, window: &mut Window, cx: &mut Context<Self>) {
+    let kind = self
+      .table
+      .read(cx)
+      .delegate()
+      .columns
+      .iter()
+      .find(|col| col.name == column)
+      .map(|col| col.kind)
+      .unwrap_or_default();
+    self.filter_ops = ops_for_kind(kind);
+    let labels: Vec<String> = self
+      .filter_ops
+      .iter()
+      .map(|op| op_label(*op).to_string())
+      .collect();
+    self.filter_op.update(cx, |state, cx| {
+      state.set_items(labels, window, cx);
+      state.set_selected_index(Some(IndexPath::default()), window, cx);
+    });
+  }
+
+  fn toggle_filter_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    self.filter_open = !self.filter_open;
+    if self.filter_open {
+      let names: Vec<String> = self
+        .table
+        .read(cx)
+        .delegate()
+        .columns
+        .iter()
+        .map(|col| col.name.clone())
+        .collect();
+      self.filter_column.update(cx, |state, cx| {
+        state.set_items(names, window, cx);
+      });
+    }
+    cx.notify();
+  }
+
+  fn apply_filter(&mut self, cx: &mut Context<Self>) {
+    let Some(column) = self.filter_column.read(cx).selected_value().cloned() else {
+      return;
+    };
+    let Some(op_text) = self.filter_op.read(cx).selected_value().cloned() else {
+      return;
+    };
+    let Some(op) = self
+      .filter_ops
+      .iter()
+      .copied()
+      .find(|op| op_label(*op) == op_text)
+    else {
+      return;
+    };
+    let value = self.filter_value.read(cx).value().to_string();
+    if op_needs_value(op) && value.trim().is_empty() {
+      return;
+    }
+    let filter = ColumnFilter {
+      column: column.clone(),
+      op,
+      value: op_needs_value(op).then_some(value),
+    };
+    self.table.update(cx, |table, cx| {
+      let delegate = table.delegate_mut();
+      delegate.filters.retain(|f| f.column != column);
+      delegate.filters.push(filter);
+      delegate.reload(cx);
+    });
+    cx.notify();
+  }
+
+  fn remove_filter(&mut self, column: &str, cx: &mut Context<Self>) {
+    self.table.update(cx, |table, cx| {
+      let delegate = table.delegate_mut();
+      delegate.filters.retain(|f| f.column != column);
+      delegate.reload(cx);
+    });
+    cx.notify();
+  }
+
+  fn clear_filters(&mut self, cx: &mut Context<Self>) {
+    self.table.update(cx, |table, cx| {
+      let delegate = table.delegate_mut();
+      delegate.filters.clear();
+      delegate.reload(cx);
+    });
+    cx.notify();
   }
 
   fn set_status(&mut self, status: impl Into<SharedString>, cx: &mut Context<Self>) {
@@ -110,50 +240,19 @@ impl Workspace {
     });
   }
 
-  /// Load the first page of a table into the grid; the delegate pages the rest.
+  /// Point the grid at a table and reload; the delegate pages, sorts and filters.
   fn browse(&mut self, schema: String, name: String, cx: &mut Context<Self>) {
     let Some(db) = self.db.clone() else {
       return;
     };
     self.browsing = Some((schema.clone(), name.clone()));
-    self.set_status(format!("loading {schema}.{name}..."), cx);
-
-    let request = core::page_request(&schema, &name, 0, PAGE_SIZE);
-    let rx = core::fetch_rows(&db, request);
-    let table = self.table.clone();
-    self._work_task = cx.spawn(async move |_, cx| {
-      let first_page = rx.await;
-      table.update(cx, |table, cx| {
-        {
-          let delegate = table.delegate_mut();
-          delegate.browse = Some((db, schema.clone(), name.clone()));
-          delegate.loading = false;
-          match first_page {
-            Ok(Ok(result)) => {
-              if let Some(statement) = result.statements.into_iter().next() {
-                delegate.columns = statement.columns;
-                delegate.eof = (statement.rows.len() as u32) < PAGE_SIZE;
-                delegate.rows = statement.rows;
-              }
-              delegate.status = format!(
-                "{schema}.{name} - {} rows - first page {:.0} ms",
-                delegate.rows.len(),
-                result.duration_ms
-              )
-              .into();
-            }
-            Ok(Err(error)) => {
-              delegate.status = format!("error: {error}").into();
-            }
-            Err(_) => {
-              delegate.status = "error: fetch canceled".into();
-            }
-          }
-        }
-        // Columns land after creation: the state only re-reads them on refresh.
-        table.refresh(cx);
-        cx.notify();
-      });
+    self.table.update(cx, |table, cx| {
+      let delegate = table.delegate_mut();
+      delegate.browse = Some((db, schema, name));
+      // A new table means new columns: sort and filters do not carry over.
+      delegate.sort = None;
+      delegate.filters.clear();
+      delegate.reload(cx);
     });
   }
 
@@ -335,6 +434,7 @@ impl Workspace {
   }
 
   fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    let filter_count = self.table.read(cx).delegate().filters.len();
     h_flex()
       .px_2()
       .py_1()
@@ -348,6 +448,77 @@ impl Workspace {
           .label(if self.running { "Running..." } else { "Run" })
           .disabled(self.running || self.db.is_none())
           .on_click(cx.listener(|this, _, _, cx| this.run(cx))),
+      )
+      .child(
+        Button::new("toggle-filter")
+          .ghost()
+          .xsmall()
+          .label(if filter_count > 0 {
+            format!("Filter ({filter_count})")
+          } else {
+            "Filter".to_string()
+          })
+          .disabled(self.browsing.is_none())
+          .on_click(cx.listener(|this, _, window, cx| this.toggle_filter_row(window, cx))),
+      )
+  }
+
+  fn render_filter_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    h_flex()
+      .px_2()
+      .py_1()
+      .gap_2()
+      .border_b_1()
+      .border_color(cx.theme().border)
+      .child(div().w(px(200.)).child(Select::new(&self.filter_column)))
+      .child(div().w(px(140.)).child(Select::new(&self.filter_op)))
+      .child(div().w(px(220.)).child(Input::new(&self.filter_value)))
+      .child(
+        Button::new("apply-filter")
+          .primary()
+          .xsmall()
+          .label("Add")
+          .on_click(cx.listener(|this, _, _, cx| this.apply_filter(cx))),
+      )
+  }
+
+  fn render_filter_chips(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    let filters = self.table.read(cx).delegate().filters.clone();
+    h_flex()
+      .px_2()
+      .py_1()
+      .gap_2()
+      .flex_wrap()
+      .border_b_1()
+      .border_color(cx.theme().border)
+      .children(filters.iter().map(|filter| {
+        let column = filter.column.clone();
+        h_flex()
+          .gap_1()
+          .px_2()
+          .py_0p5()
+          .rounded(cx.theme().radius)
+          .border_1()
+          .border_color(cx.theme().border)
+          .text_xs()
+          .font_family("IBM Plex Mono")
+          .child(filter_label(filter))
+          .child(
+            Button::new(SharedString::from(format!("rm-{column}")))
+              .ghost()
+              .xsmall()
+              .icon(Icon::new(IconName::Close))
+              .on_click(cx.listener(move |this, _, _, cx| {
+                this.remove_filter(&column, cx);
+              })),
+          )
+      }))
+      .child(
+        Button::new("clear-filters")
+          .ghost()
+          .xsmall()
+          .label("clear all")
+          .on_click(cx.listener(|this, _, _, cx| this.clear_filters(cx))),
       )
   }
 }
@@ -394,31 +565,40 @@ impl Render for Workspace {
             )
             .child(
               resizable_panel().child(
-                v_flex().size_full().child(self.render_toolbar(cx)).child(
-                  v_flex().flex_1().min_h_0().child(
-                    v_resizable("editor-results")
-                      .with_state(&self.splits.1)
-                      .child(
-                        resizable_panel()
-                          .size(px(180.))
-                          .size_range(px(60.)..px(600.))
-                          .child(
+                v_flex()
+                  .size_full()
+                  .child(self.render_toolbar(cx))
+                  .when(self.filter_open, |this| {
+                    this.child(self.render_filter_row(cx))
+                  })
+                  .when(!self.table.read(cx).delegate().filters.is_empty(), |this| {
+                    this.child(self.render_filter_chips(cx))
+                  })
+                  .child(
+                    v_flex().flex_1().min_h_0().child(
+                      v_resizable("editor-results")
+                        .with_state(&self.splits.1)
+                        .child(
+                          resizable_panel()
+                            .size(px(180.))
+                            .size_range(px(60.)..px(600.))
+                            .child(
+                              v_flex()
+                                .size_full()
+                                .p_1()
+                                .child(Input::new(&self.editor).h_full()),
+                            ),
+                        )
+                        .child(
+                          resizable_panel().child(
                             v_flex()
                               .size_full()
                               .p_1()
-                              .child(Input::new(&self.editor).h_full()),
+                              .child(DataTable::new(&self.table).stripe(true)),
                           ),
-                      )
-                      .child(
-                        resizable_panel().child(
-                          v_flex()
-                            .size_full()
-                            .p_1()
-                            .child(DataTable::new(&self.table).stripe(true)),
                         ),
-                      ),
+                    ),
                   ),
-                ),
               ),
             ),
         ),

@@ -104,7 +104,7 @@ deleted. Each panel lands with its layer-3 tests; each flow with layer 4.
 ### SQL workspace
 
 - [x] Table grid: virtual scroll, cell selection, column resize (spike)
-- [ ] Grid: server-side sort + filters
+- [x] Grid: server-side sort + filters (`filters.rs` ports `lib/filters.ts` with its tests)
 - [ ] Cell editing: staged changes, apply, ctid/xmin guards (`staged.ts` port)
 - [ ] Grid inspector (cell detail)
 - [ ] Export menu (rows/statement to file)

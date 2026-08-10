@@ -15,6 +15,7 @@ futures = "0.3"
 gpui = { git = "https://github.com/zed-industries/zed" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
 gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "55968d167bd6959551c3417c3622899c33ecda20", features = ["tree-sitter-sql"] }
+gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "55968d167bd6959551c3417c3622899c33ecda20" }
 lsp-types = { version = "0.97.0", features = ["proposed"] }
 soquel-core = { path = "../crates/core" }
 tokio = { version = "1", features = ["rt-multi-thread"] }
