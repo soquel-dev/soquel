@@ -1,5 +1,3 @@
-@~/.claude/stack/web-saas.md
-
 # soquel
 
 Guidance for agents in this repo. Shared stack conventions are imported above; everything below is soquel-specific and overrides the profile where they differ.
