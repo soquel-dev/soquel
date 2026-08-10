@@ -69,15 +69,6 @@ pub struct PreviewEntry {
   pub problem: Option<String>,
 }
 
-/// A file handed to the app from outside the webview: the OS opening a
-/// `.soquel`, or a path dropped on the window. The UI answers by opening the
-/// import dialog on it.
-#[derive(Debug, Clone, Serialize, Deserialize, Type, tauri_specta::Event)]
-#[serde(rename_all = "camelCase")]
-pub struct ImportFileRequested {
-  pub path: String,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportPreview {

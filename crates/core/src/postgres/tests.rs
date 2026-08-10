@@ -514,7 +514,7 @@ async fn integration_postgres_tls_verify_full_rejects_self_signed() {
 
 // Throwaway CA that signed the server cert (SAN localhost/127.0.0.1).
 pub(crate) const TEST_ROOT_CERT: &str =
-  concat!(env!("CARGO_MANIFEST_DIR"), "/../scripts/test-tls/ca.crt");
+  concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/test-tls/ca.crt");
 
 #[tokio::test]
 async fn integration_postgres_tls_verify_full_passes_with_root_cert() {

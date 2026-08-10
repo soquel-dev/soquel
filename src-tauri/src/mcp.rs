@@ -19,11 +19,12 @@ use tauri::{AppHandle, Manager, State};
 use tauri_specta::Event as _;
 use tokio_util::sync::CancellationToken;
 
-use crate::connectors::TableRowsRequest;
-use crate::error::Error;
-use crate::profiles::{AgentAccess, ConnectionProfile, ConnectorKind};
-use crate::secrets::SecretKey;
-use crate::{commands, AppState};
+use crate::commands;
+use soquel_core::connectors::TableRowsRequest;
+use soquel_core::error::Error;
+use soquel_core::profiles::{AgentAccess, ConnectionProfile, ConnectorKind};
+use soquel_core::secrets::SecretKey;
+use soquel_core::{AppState, ApprovalAnswer, McpRunning, TrustWindow};
 
 // Debug builds get their own port and agent-facing name, like the data dir
 // and keychain scope: dev and an installed release can run side by side.
@@ -42,11 +43,6 @@ const SERVER_NAME: &str = if cfg!(debug_assertions) {
 };
 /// Agents get capped result sets; the UI streams, agents paginate.
 const MAX_AGENT_ROWS: usize = 500;
-
-pub struct McpRunning {
-  pub port: u16,
-  pub cancel: CancellationToken,
-}
 
 /// The toggle survives restarts: an enabled server comes back on launch.
 #[derive(Debug, Clone, Copy, Serialize, serde::Deserialize)]
@@ -186,7 +182,7 @@ fn new_token() -> String {
   )
 }
 
-pub fn ensure_token(secrets: &dyn crate::secrets::SecretStore) -> Result<String, Error> {
+pub fn ensure_token(secrets: &dyn soquel_core::secrets::SecretStore) -> Result<String, Error> {
   if let Some(token) = secrets.get(&SecretKey::McpToken)? {
     return Ok(token);
   }
@@ -481,7 +477,7 @@ pub fn agent_visible(profiles: Vec<ConnectionProfile>) -> Vec<ConnectionProfile>
 }
 
 /// Flags `truncated` so an agent knows it is looking at a partial result.
-pub fn capped(mut result: crate::connectors::QueryResult) -> serde_json::Value {
+pub fn capped(mut result: soquel_core::connectors::QueryResult) -> serde_json::Value {
   let mut truncated = false;
   for statement in &mut result.statements {
     if statement.rows.len() > MAX_AGENT_ROWS {
@@ -607,16 +603,6 @@ pub async fn resolve_approval(
   }
 }
 
-/// What the user answered. `ForWindow` also opens a trust window on the
-/// connection; every other value, including silence, refuses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize, Type)]
-#[serde(rename_all = "kebab-case")]
-pub enum ApprovalAnswer {
-  Deny,
-  Once,
-  ForWindow,
-}
-
 /// How a write got its yes; recorded so the log cannot imply a dialog nobody saw.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize, Type)]
 #[serde(rename_all = "kebab-case")]
@@ -671,16 +657,6 @@ async fn await_approval(
     Ok(Ok(given)) => given,
     _ => ApprovalAnswer::Deny,
   }
-}
-
-/// A live "allow writes for a while" grant. Memory only: it dies with the
-/// server, and nothing persists it to disk.
-pub struct TrustWindow {
-  /// Authority for "still live": monotonic, so a clock change cannot extend it.
-  expires: Instant,
-  /// The same moment as epoch millis, for the panel countdown only.
-  expires_at_ms: f64,
-  connection_name: String,
 }
 
 /// One row of the panel's "currently covered" list.
@@ -774,7 +750,7 @@ async fn run_query_impl(
   })?;
   // Reads always take the engine-enforced read-only path: classification only
   // decides whether to ask, never what the engine allows.
-  if crate::connectors::is_read_statement(&args.sql) {
+  if soquel_core::connectors::is_read_statement(&args.sql) {
     return Ok(capped(sql.run_read_only_query(&args.sql).await?));
   }
   approve_write(state, call, &profile, args.sql.clone(), None).await?;
@@ -888,7 +864,7 @@ async fn sample_rows_impl(state: &AppState, args: &SampleArgs) -> Result<serde_j
 async fn agent_connection(
   state: &AppState,
   id: &str,
-) -> Result<Arc<dyn crate::connectors::Connection>, Error> {
+) -> Result<Arc<dyn soquel_core::connectors::Connection>, Error> {
   opted_in(state, id)?;
   ensure_connected(state, id).await?;
   commands::active(state, id).await
@@ -957,8 +933,8 @@ async fn set_ttl_impl(
 }
 
 fn kv_surface(
-  connection: &Arc<dyn crate::connectors::Connection>,
-) -> Result<&dyn crate::connectors::KvBrowse, Error> {
+  connection: &Arc<dyn soquel_core::connectors::Connection>,
+) -> Result<&dyn soquel_core::connectors::KvBrowse, Error> {
   connection.kv().ok_or_else(|| Error::Unsupported {
     message: "this connection is not a key-value store".to_string(),
   })
@@ -998,7 +974,7 @@ async fn find_documents_impl(
 ) -> Result<serde_json::Value, Error> {
   let connection = agent_connection(state, &args.connection_id).await?;
   let doc = doc_surface(&connection)?;
-  let request = crate::connectors::DocFindRequest {
+  let request = soquel_core::connectors::DocFindRequest {
     db: args.database.clone(),
     collection: args.collection.clone(),
     filter: args.filter.clone(),
@@ -1072,8 +1048,8 @@ async fn delete_document_impl(
 }
 
 fn doc_surface(
-  connection: &Arc<dyn crate::connectors::Connection>,
-) -> Result<&dyn crate::connectors::DocBrowse, Error> {
+  connection: &Arc<dyn soquel_core::connectors::Connection>,
+) -> Result<&dyn soquel_core::connectors::DocBrowse, Error> {
   connection.doc().ok_or_else(|| Error::Unsupported {
     message: "this connection is not a document store".to_string(),
   })
@@ -1499,9 +1475,9 @@ impl ServerHandler for SoquelMcp {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::connectors::{QueryResult, StatementResult};
-  use crate::profiles::{ConnectorParams, Env};
-  use crate::secrets::InMemoryStore;
+  use soquel_core::connectors::{QueryResult, StatementResult};
+  use soquel_core::profiles::{ConnectorParams, Env};
+  use soquel_core::secrets::InMemoryStore;
 
   #[test]
   fn ensure_token_is_stable() {
@@ -1590,10 +1566,10 @@ mod tests {
     assert_eq!(rows.len(), 500);
   }
 
-  use crate::known_hosts::KnownHostsStore;
-  use crate::profiles::{ConnectionInput, ProfileStore, SqlServerParams, SslMode};
-  use crate::secrets::SecretStore;
-  use crate::tunnels::TunnelStore;
+  use soquel_core::known_hosts::KnownHostsStore;
+  use soquel_core::profiles::{ConnectionInput, ProfileStore, SqlServerParams, SslMode};
+  use soquel_core::secrets::SecretStore;
+  use soquel_core::tunnels::TunnelStore;
 
   fn pg_params(url: &str) -> ConnectorParams {
     let config: tokio_postgres::Config = url.parse().unwrap();
@@ -1656,7 +1632,7 @@ mod tests {
         KnownHostsStore::load(dir.path().join("known_hosts.json")).unwrap(),
       ),
       command_approvals: std::sync::Mutex::new(
-        crate::command_approvals::CommandApprovalsStore::load(
+        soquel_core::command_approvals::CommandApprovalsStore::load(
           dir.path().join("command_approvals.json"),
         )
         .unwrap(),
@@ -2082,7 +2058,7 @@ mod tests {
         KnownHostsStore::load(dir.path().join("known_hosts.json")).unwrap(),
       ),
       command_approvals: std::sync::Mutex::new(
-        crate::command_approvals::CommandApprovalsStore::load(
+        soquel_core::command_approvals::CommandApprovalsStore::load(
           dir.path().join("command_approvals.json"),
         )
         .unwrap(),
@@ -2265,7 +2241,7 @@ mod tests {
       "EXPLAIN SELECT 1",
       "SHOW TABLES",
     ] {
-      assert!(crate::connectors::is_read_statement(sql), "{sql}");
+      assert!(soquel_core::connectors::is_read_statement(sql), "{sql}");
     }
     for sql in [
       "INSERT INTO t VALUES (1)",
@@ -2276,7 +2252,7 @@ mod tests {
       "TRUNCATE t",
       "",
     ] {
-      assert!(!crate::connectors::is_read_statement(sql), "{sql}");
+      assert!(!soquel_core::connectors::is_read_statement(sql), "{sql}");
     }
   }
 
@@ -2391,7 +2367,7 @@ mod tests {
     let dir = tempfile::tempdir().unwrap();
     let (state, id) = sqlite_state(&dir);
     let mut profile = state.profiles.lock().unwrap().get(&id).unwrap();
-    profile.credential = crate::profiles::CredentialSource::Prompt;
+    profile.credential = soquel_core::profiles::CredentialSource::Prompt;
     state
       .profiles
       .lock()
@@ -2411,7 +2387,7 @@ mod tests {
     let dir = tempfile::tempdir().unwrap();
     let (state, id) = sqlite_state(&dir);
     let mut profile = state.profiles.lock().unwrap().get(&id).unwrap();
-    profile.credential = crate::profiles::CredentialSource::Command {
+    profile.credential = soquel_core::profiles::CredentialSource::Command {
       command: "curl evil.example.com".to_string(),
       refresh_after_secs: None,
     };
@@ -2453,7 +2429,7 @@ mod tests {
         KnownHostsStore::load(dir.path().join("known_hosts.json")).unwrap(),
       ),
       command_approvals: std::sync::Mutex::new(
-        crate::command_approvals::CommandApprovalsStore::load(
+        soquel_core::command_approvals::CommandApprovalsStore::load(
           dir.path().join("command_approvals.json"),
         )
         .unwrap(),
@@ -2812,7 +2788,7 @@ mod tests {
         KnownHostsStore::load(dir.path().join("known_hosts.json")).unwrap(),
       ),
       command_approvals: std::sync::Mutex::new(
-        crate::command_approvals::CommandApprovalsStore::load(
+        soquel_core::command_approvals::CommandApprovalsStore::load(
           dir.path().join("command_approvals.json"),
         )
         .unwrap(),
@@ -2855,7 +2831,7 @@ mod tests {
     let dir = tempfile::tempdir().unwrap();
     let (state, id) = kind_state(
       &dir,
-      ConnectorParams::Redis(crate::profiles::RedisParams {
+      ConnectorParams::Redis(soquel_core::profiles::RedisParams {
         host: host.to_string(),
         port: port.parse().unwrap(),
         db: 0,
@@ -2946,7 +2922,7 @@ mod tests {
     let dir = tempfile::tempdir().unwrap();
     let (state, id) = kind_state(
       &dir,
-      ConnectorParams::Redis(crate::profiles::RedisParams {
+      ConnectorParams::Redis(soquel_core::profiles::RedisParams {
         host: host.to_string(),
         port: port.parse().unwrap(),
         db: 0,
@@ -3089,7 +3065,7 @@ mod tests {
     let dir = tempfile::tempdir().unwrap();
     let (state, id) = kind_state(
       &dir,
-      ConnectorParams::Mongo(crate::profiles::MongoParams {
+      ConnectorParams::Mongo(soquel_core::profiles::MongoParams {
         host: host.to_string(),
         port: port.parse().unwrap(),
         database: None,
@@ -3196,7 +3172,7 @@ mod tests {
     let dir = tempfile::tempdir().unwrap();
     let (state, id) = kind_state(
       &dir,
-      ConnectorParams::Mongo(crate::profiles::MongoParams {
+      ConnectorParams::Mongo(soquel_core::profiles::MongoParams {
         host: host.to_string(),
         port: port.parse().unwrap(),
         database: None,
@@ -3331,7 +3307,7 @@ mod tests {
     // Same profile, upgraded to write-with-approval.
     {
       let mut profiles = state.profiles.lock().unwrap();
-      let input = crate::profiles::ConnectionInput {
+      let input = soquel_core::profiles::ConnectionInput {
         name: "agent-visible".to_string(),
         env: Env::Dev,
         group: None,

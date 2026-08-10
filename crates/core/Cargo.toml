@@ -1,0 +1,83 @@
+[package]
+name = "soquel-core"
+version = "0.1.0"
+description = "Soquel core: connectors, tunnels, credentials, licence"
+license = "FSL-1.1-MIT"
+authors = ["Joris Gallot"]
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+name = "soquel_core"
+
+# Detached: dependents compile it inside their own target dirs.
+[workspace]
+
+[build-dependencies]
+time = { version = "0.3", features = ["formatting"] }
+
+[dependencies]
+serde_json = "1.0.151"
+serde = { version = "1.0.229", features = ["derive"] }
+log = "0.4.33"
+specta = { version = "=2.0.0-rc.25", features = ["derive"] }
+thiserror = "2.0.19"
+uuid = { version = "1", features = ["v4"] }
+keyring = "4.1.6"
+async-trait = "0.1.91"
+tokio-postgres = "0.7"
+mysql_async = { version = "0.37", default-features = false, features = ["default-rustls-ring"] }
+futures-util = { version = "0.3.33", default-features = false }
+tokio = { version = "1.53.1", features = [
+  "sync",
+  "net",
+  "io-util",
+  "process",
+  "rt",
+  "time"
+] }
+shell-words = "1.1.1"
+russh = { version = "0.61", default-features = false, features = ["ring"] }
+deadpool = "0.13"
+rustls = { version = "0.23.43", default-features = false, features = [
+  "ring",
+  "logging",
+  "std",
+  "tls12"
+] }
+tokio-postgres-rustls = "0.14"
+rustls-platform-verifier = "0.7"
+rustls-pemfile = "2.2.0"
+# no-provider keeps aws-lc-rs and its C build out of the graph: every client
+# is handed a ring config, the same provider the rest of the crate pins.
+reqwest = { version = "0.13", default-features = false, features = [
+  "json",
+  "rustls-no-provider"
+] }
+ed25519-dalek = "2"
+time = { version = "0.3.55", features = ["formatting"] }
+rusqlite = { version = "0.40.1", features = [
+  "bundled",
+  "column_decltype"
+] }
+redis = { version = "0.32.7", default-features = false, features = [
+  "tokio-comp",
+  "tokio-rustls-comp"
+] }
+mongodb = { version = "3.8", default-features = false, features = [
+  "rustls-tls",
+  "compat-3-0-0"
+] }
+tokio-util = "0.7.19"
+argon2 = "0.5.3"
+chacha20poly1305 = "0.10"
+base64 = "0.22"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tokio = { version = "1.53.1", features = [
+  "rt",
+  "rt-multi-thread",
+  "macros",
+  "time"
+] }

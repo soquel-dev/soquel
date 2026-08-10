@@ -162,14 +162,6 @@ impl From<serde_json::Error> for Error {
   }
 }
 
-impl From<tauri_plugin_updater::Error> for Error {
-  fn from(err: tauri_plugin_updater::Error) -> Self {
-    Error::Update {
-      message: err.to_string(),
-    }
-  }
-}
-
 impl From<keyring::Error> for Error {
   fn from(err: keyring::Error) -> Self {
     Error::Secret {

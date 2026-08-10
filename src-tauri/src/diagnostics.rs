@@ -7,9 +7,9 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_log::{Target, TargetKind};
 use tauri_plugin_opener::OpenerExt;
 
-use crate::error::Error;
-use crate::profiles::{ConnectionProfile, ConnectorKind};
-use crate::AppState;
+use soquel_core::error::Error;
+use soquel_core::profiles::{ConnectionProfile, ConnectorKind};
+use soquel_core::AppState;
 
 /// The log dir derives from the identifier, so debug and release share it: only
 /// the file name keeps `tauri dev` out of an installed release's log.
@@ -168,7 +168,7 @@ pub async fn block(app: &AppHandle, state: &AppState) -> String {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::profiles::{ConnectorParams, Env, SqlServerParams, SslMode};
+  use soquel_core::profiles::{ConnectorParams, Env, SqlServerParams, SslMode};
 
   #[test]
   fn an_isolated_run_keeps_its_logs_with_its_data() {

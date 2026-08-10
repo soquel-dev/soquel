@@ -1,6 +1,6 @@
 use gpui::{App, Context, IntoElement, SharedString, Task, Window, px};
 use gpui_component::table::{Column, TableDelegate, TableState};
-use soquel_lib::connectors::QueryColumn;
+use soquel_core::connectors::QueryColumn;
 
 use crate::core::{self, Db};
 

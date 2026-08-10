@@ -2,23 +2,21 @@ use std::sync::Arc;
 
 use tauri::State;
 
-use crate::connectors::{
+use soquel_core::connectors::{
   connector_for, ApplyResult, Capability, Connection, DocBrowse, DocCollection, DocCount,
   DocDatabase, DocDetail, DocFindRequest, DocPage, DocQueryResult, IndexInfo, KeyDetail,
   KeyScanPage, KvBrowse, KvDatabases, LocalForward, QueryColumn, QueryResult, RowsChunk,
   SchemaSnapshot, SqlQuery, SqlSession, StreamSummary, TableChanges, TableRowsRequest,
 };
-use crate::credentials::{self, resolve_credentials, CredentialTarget};
-use crate::error::{Error, SecretSubject};
-use crate::export::{quote_ident, ExportFormat, ExportWriter};
-use crate::profiles::{
-  ConnectionInput, ConnectionProfile, ConnectorKind, ConnectorParams, CredentialSource,
-};
-use crate::secrets::SecretKey;
-use crate::ssh::{self, SshTunnel, TunnelTarget};
-use crate::transfer::{self, DuplicateStrategy, ExportSummary, ImportOutcome, ImportPreview};
-use crate::tunnels::{TunnelInput, TunnelProfile};
-use crate::{ActiveConnection, AppState, SessionEntry};
+use soquel_core::credentials::{self, resolve_credentials, CredentialTarget};
+use soquel_core::error::{Error, SecretSubject};
+use soquel_core::export::{quote_ident, ExportFormat, ExportWriter};
+use soquel_core::profiles::{ConnectionInput, ConnectionProfile, ConnectorKind, CredentialSource};
+use soquel_core::secrets::SecretKey;
+use soquel_core::ssh::{self, SshTunnel, TunnelTarget};
+use soquel_core::transfer::{self, DuplicateStrategy, ExportSummary, ImportOutcome, ImportPreview};
+use soquel_core::tunnels::{TunnelInput, TunnelProfile};
+use soquel_core::{ActiveConnection, AppState, SessionEntry};
 
 /// Resolve a profile's tunnel (if any); the returned forward tells the
 /// connector where TCP actually goes while the profile keeps the logical host.
@@ -95,7 +93,7 @@ pub async fn test_connection(
 async fn test_run(
   state: &AppState,
   profile: &ConnectionProfile,
-  secret: Arc<crate::credentials::Credentials>,
+  secret: Arc<soquel_core::credentials::Credentials>,
 ) -> Result<(), Error> {
   let opened = open_tunnel(state, profile).await?;
   let connection = connector_for(profile.params.kind())
@@ -419,7 +417,7 @@ pub async fn export_table_rows(
 ) -> Result<StreamSummary, Error> {
   let kind = state.profiles.lock().unwrap().get(&id)?.params.kind();
   let connection = active(&state, &id).await?;
-  crate::export::run_export(
+  soquel_core::export::run_export(
     sql_surface(&connection)?,
     &request,
     format,
@@ -508,7 +506,7 @@ pub async fn table_ddl(
 
 fn introspect_surface(
   connection: &Arc<dyn Connection>,
-) -> Result<&dyn crate::connectors::Introspect, Error> {
+) -> Result<&dyn soquel_core::connectors::Introspect, Error> {
   connection.introspect().ok_or_else(|| Error::Unsupported {
     message: "this connection does not support schema introspection".to_string(),
   })
@@ -622,43 +620,6 @@ pub async fn kv_run_command(
 pub async fn kv_databases(state: State<'_, AppState>, id: String) -> Result<KvDatabases, Error> {
   let connection = active(&state, &id).await?;
   kv_surface(&connection)?.databases().await
-}
-
-impl AppState {
-  /// Reconnect on the target db and swap the active connection: a SELECT on the
-  /// multiplexed socket would silently revert on reconnect.
-  pub async fn select_kv_db(&self, id: &str, db: u32) -> Result<(), Error> {
-    let mut profile = self.profiles.lock().unwrap().get(id)?;
-    let ConnectorParams::Redis(params) = &mut profile.params else {
-      return Err(Error::Unsupported {
-        message: "database selection is a redis feature".to_string(),
-      });
-    };
-    params.db = db;
-    let secret = resolve_credentials(self, &CredentialTarget::connection(&profile, id), None)?;
-    let forward = {
-      let connections = self.connections.lock().await;
-      let entry = connections.get(id).ok_or_else(|| Error::NotFound {
-        message: format!("connection {id} is not active"),
-      })?;
-      entry._tunnel.as_ref().map(|tunnel| LocalForward {
-        port: tunnel.local_port,
-      })
-    };
-    let connection = connector_for(profile.params.kind())
-      .connect(&profile, secret, forward)
-      .await?;
-    let mut connections = self.connections.lock().await;
-    let Some(entry) = connections.get_mut(id) else {
-      let _ = connection.close().await;
-      return Err(Error::NotFound {
-        message: format!("connection {id} is not active"),
-      });
-    };
-    let old = std::mem::replace(&mut entry.connection, Arc::from(connection));
-    drop(connections);
-    old.close().await
-  }
 }
 
 #[tauri::command]
@@ -905,6 +866,15 @@ pub fn export_connections(
   )
 }
 
+/// A file handed to the app from outside the webview: the OS opening a
+/// `.soquel`, or a path dropped on the window. The UI answers by opening the
+/// import dialog on it.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type, tauri_specta::Event)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportFileRequested {
+  pub path: String,
+}
+
 /// Hands a connections file to the UI, which opens the import dialog on it.
 /// The entry point for a `.soquel` opened from the OS or dropped on the window.
 #[tauri::command]
@@ -916,7 +886,7 @@ pub fn open_connections_file(app: tauri::AppHandle, path: String) -> Result<(), 
     });
   }
   use tauri_specta::Event;
-  transfer::ImportFileRequested { path }
+  ImportFileRequested { path }
     .emit(&app)
     .map_err(|err| Error::Storage {
       message: format!("could not hand the file to the window: {err}"),
@@ -1150,7 +1120,7 @@ pub async fn mcp_audit_log(
 pub async fn mcp_resolve_approval(
   state: State<'_, AppState>,
   id: String,
-  answer: crate::mcp::ApprovalAnswer,
+  answer: soquel_core::ApprovalAnswer,
 ) -> Result<(), Error> {
   crate::mcp::resolve_approval(state.inner(), &id, answer).await
 }
@@ -1178,9 +1148,9 @@ pub async fn mcp_revoke_trust(
 #[specta::specta]
 pub async fn secrets_status(
   state: State<'_, AppState>,
-) -> Result<crate::secrets::SecretsStatus, Error> {
+) -> Result<soquel_core::secrets::SecretsStatus, Error> {
   let problem = state.secrets_problem.clone();
-  Ok(crate::secrets::SecretsStatus {
+  Ok(soquel_core::secrets::SecretsStatus {
     keychain: problem.is_none(),
     problem,
   })
@@ -1192,8 +1162,8 @@ pub async fn secrets_status(
 #[specta::specta]
 pub async fn licence_status(
   state: State<'_, AppState>,
-) -> Result<crate::licence::LicenceStatus, Error> {
-  Ok(crate::licence::read(&licence_path(state.inner())))
+) -> Result<soquel_core::licence::LicenceStatus, Error> {
+  Ok(soquel_core::licence::read(&licence_path(state.inner())))
 }
 
 #[tauri::command]
@@ -1201,15 +1171,15 @@ pub async fn licence_status(
 pub async fn install_licence(
   state: State<'_, AppState>,
   token: String,
-) -> Result<crate::licence::LicenceStatus, Error> {
-  crate::licence::install(&licence_path(state.inner()), &token)
+) -> Result<soquel_core::licence::LicenceStatus, Error> {
+  soquel_core::licence::install(&licence_path(state.inner()), &token)
 }
 
 /// None in a release build, whatever the environment says.
 #[tauri::command]
 #[specta::specta]
 pub async fn tab_limit_override() -> Result<Option<u32>, Error> {
-  Ok(crate::licence::tab_limit_override())
+  Ok(soquel_core::licence::tab_limit_override())
 }
 
 /// The normal path: a key goes out, a signed file comes back and is installed
@@ -1219,9 +1189,9 @@ pub async fn tab_limit_override() -> Result<Option<u32>, Error> {
 pub async fn activate_licence(
   state: State<'_, AppState>,
   key: String,
-) -> Result<crate::licence::LicenceStatus, Error> {
-  let token = crate::activation::activate(key.trim()).await?;
-  crate::licence::install(&licence_path(state.inner()), &token)
+) -> Result<soquel_core::licence::LicenceStatus, Error> {
+  let token = soquel_core::activation::activate(key.trim()).await?;
+  soquel_core::licence::install(&licence_path(state.inner()), &token)
 }
 
 fn licence_path(state: &AppState) -> std::path::PathBuf {
@@ -1270,8 +1240,8 @@ pub async fn install_update(app: tauri::AppHandle) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::profiles::{Env, SqlServerParams, SslMode};
-  use crate::secrets::InMemoryStore;
+  use soquel_core::profiles::{ConnectorParams, Env, SqlServerParams, SslMode};
+  use soquel_core::secrets::InMemoryStore;
 
   fn input(credential: CredentialSource, password: Option<&str>) -> ConnectionInput {
     ConnectionInput {
@@ -1318,7 +1288,11 @@ mod tests {
       },
     };
     let connection = connector_for(ConnectorKind::Sqlite)
-      .connect(&profile, crate::credentials::Credentials::fixed(None), None)
+      .connect(
+        &profile,
+        soquel_core::credentials::Credentials::fixed(None),
+        None,
+      )
       .await
       .unwrap();
     ActiveConnection {
@@ -1401,7 +1375,7 @@ mod tests {
       host: "bastion.internal".to_string(),
       port: 22,
       user: "deploy".to_string(),
-      auth: crate::tunnels::SshAuth::Password,
+      auth: soquel_core::tunnels::SshAuth::Password,
       credential: CredentialSource::Keychain,
       secret: Some("s3cret".to_string()),
     };
@@ -1515,7 +1489,7 @@ mod tests {
         host: "bastion.internal".to_string(),
         port: 22,
         user: "deploy".to_string(),
-        auth: crate::tunnels::SshAuth::Password,
+        auth: soquel_core::tunnels::SshAuth::Password,
         credential: command("vault-ssh {host}"),
         secret: None,
       })
@@ -1606,7 +1580,7 @@ mod tests {
         host: "bastion.internal".to_string(),
         port: 22,
         user: "deploy".to_string(),
-        auth: crate::tunnels::SshAuth::Password,
+        auth: soquel_core::tunnels::SshAuth::Password,
         credential: CredentialSource::Prompt,
         secret: None,
       })
@@ -1659,7 +1633,7 @@ mod tests {
         host: "127.0.0.1".to_string(),
         port: 1,
         user: "deploy".to_string(),
-        auth: crate::tunnels::SshAuth::Password,
+        auth: soquel_core::tunnels::SshAuth::Password,
         credential: CredentialSource::Prompt,
         secret: None,
       })

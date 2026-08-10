@@ -62,7 +62,7 @@ fn root_store(path: &str) -> Result<rustls::RootCertStore, Error> {
 mod tests {
   use super::*;
 
-  const TEST_CA: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../scripts/test-tls/ca.crt");
+  const TEST_CA: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/test-tls/ca.crt");
 
   #[test]
   fn root_store_loads_the_committed_test_ca() {
