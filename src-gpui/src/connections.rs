@@ -68,6 +68,23 @@ fn dsn(params: &ConnectorParams) -> String {
   }
 }
 
+/// Ungrouped first, then groups alphabetically; profiles keep their order.
+pub fn group_connections(
+  profiles: &[ConnectionProfile],
+) -> Vec<(Option<String>, Vec<ConnectionProfile>)> {
+  let mut sections: Vec<(Option<String>, Vec<ConnectionProfile>)> = Vec::new();
+  for profile in profiles {
+    let key = profile.group.clone();
+    match sections.iter_mut().find(|(group, _)| *group == key) {
+      Some((_, list)) => list.push(profile.clone()),
+      None => sections.push((key, vec![profile.clone()])),
+    }
+  }
+  // Option orders None before Some, which is exactly the webview's contract.
+  sections.sort_by(|a, b| a.0.cmp(&b.0));
+  sections
+}
+
 pub struct ConnectionsView {
   state: Arc<AppState>,
   profiles: Vec<ConnectionProfile>,
@@ -598,18 +615,9 @@ impl ConnectionsView {
 
 impl Render for ConnectionsView {
   fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-    // Grouped, ungrouped first, both sides alphabetical like the webview.
-    let mut groups: Vec<(Option<String>, Vec<ConnectionProfile>)> = Vec::new();
     let mut sorted = self.profiles.clone();
     sorted.sort_by(|a, b| a.name.cmp(&b.name));
-    for profile in sorted {
-      let key = profile.group.clone();
-      match groups.iter_mut().find(|(group, _)| *group == key) {
-        Some((_, list)) => list.push(profile),
-        None => groups.push((key, vec![profile])),
-      }
-    }
-    groups.sort_by(|a, b| a.0.cmp(&b.0));
+    let groups = group_connections(&sorted);
 
     let connecting = self.connecting.clone();
 
@@ -744,5 +752,119 @@ impl Render for ConnectionsView {
             rows
           })),
       )
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  // The parent globs gpui: shadow `test` back or #[gpui::test] recurses.
+  use ::core::prelude::v1::test;
+  use gpui::TestAppContext;
+  use soquel_core::profiles::ConnectorKind;
+
+  use super::*;
+
+  fn profile(name: &str, group: Option<&str>) -> ConnectionProfile {
+    ConnectionProfile {
+      id: name.to_string(),
+      name: name.to_string(),
+      env: Env::Dev,
+      group: group.map(Into::into),
+      agent_access: Default::default(),
+      credential: Default::default(),
+      params: ConnectorParams::Postgres(SqlServerParams {
+        host: "h".into(),
+        port: 5432,
+        database: "db".into(),
+        user: "u".into(),
+        ssl_mode: SslMode::Prefer,
+        ssl_root_cert: None,
+        tunnel_id: None,
+      }),
+    }
+  }
+
+  #[test]
+  fn puts_ungrouped_first_then_groups_alphabetically() {
+    let sections = group_connections(&[
+      profile("c1", Some("zeta")),
+      profile("c2", None),
+      profile("c3", Some("alpha")),
+      profile("c4", Some("zeta")),
+    ]);
+    let groups: Vec<Option<&str>> = sections.iter().map(|(g, _)| g.as_deref()).collect();
+    assert_eq!(groups, vec![None, Some("alpha"), Some("zeta")]);
+    let zeta: Vec<&str> = sections[2].1.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(zeta, vec!["c1", "c4"]);
+  }
+
+  #[test]
+  fn omits_the_ungrouped_section_when_everything_is_grouped() {
+    let sections = group_connections(&[profile("c1", Some("a"))]);
+    assert_eq!(sections.len(), 1);
+    assert_eq!(sections[0].0.as_deref(), Some("a"));
+  }
+
+  #[test]
+  fn dsn_renders_per_kind() {
+    let pg = profile("c", None);
+    assert_eq!(dsn(&pg.params), "postgres://u@h:5432/db");
+    assert_eq!(
+      dsn(&ConnectorParams::Sqlite {
+        path: "/tmp/x.db".into()
+      }),
+      "sqlite:///tmp/x.db"
+    );
+    let _ = ConnectorKind::Postgres;
+  }
+
+  #[gpui::test]
+  fn form_input_maps_and_validates(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let cx = cx.add_empty_window();
+    let state = std::sync::Arc::new(soquel_core::AppState::for_tests(
+      tempfile::tempdir().unwrap().path(),
+      Box::new(soquel_core::secrets::InMemoryStore::default()),
+    ));
+    let view = cx.update(|window, cx| cx.new(|cx| ConnectionsView::new(state, window, cx)));
+    cx.update(|window, cx| {
+      view.update(cx, |view, cx| {
+        // Empty form: the required fields refuse.
+        assert!(view.form_input(cx).is_err());
+
+        view
+          .form_name
+          .update(cx, |i, cx| i.set_value("db1", window, cx));
+        view
+          .form_host
+          .update(cx, |i, cx| i.set_value("h", window, cx));
+        view
+          .form_database
+          .update(cx, |i, cx| i.set_value("app", window, cx));
+        view
+          .form_user
+          .update(cx, |i, cx| i.set_value("u", window, cx));
+        view
+          .form_port
+          .update(cx, |i, cx| i.set_value("not-a-port", window, cx));
+        assert!(view.form_input(cx).unwrap_err().contains("port"));
+
+        view
+          .form_port
+          .update(cx, |i, cx| i.set_value("5433", window, cx));
+        view
+          .form_password
+          .update(cx, |i, cx| i.set_value("s3cret", window, cx));
+        let input = view.form_input(cx).unwrap();
+        assert_eq!(input.name, "db1");
+        assert_eq!(input.password.as_deref(), Some("s3cret"));
+        let ConnectorParams::Postgres(params) = &input.params else {
+          panic!("postgres form");
+        };
+        assert_eq!(params.port, 5433);
+        // No group typed = no group stored, not an empty string.
+        assert_eq!(input.group, None);
+      });
+    });
   }
 }

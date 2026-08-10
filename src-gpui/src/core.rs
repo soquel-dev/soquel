@@ -31,24 +31,33 @@ impl Db {
 
 /// Same data layout as the tauri app: dev builds share its /dev subtree so the
 /// two frontends see the same connections while both exist.
+pub fn resolve_data_dir(
+  override_dir: Option<&str>,
+  xdg_data_home: Option<&std::path::Path>,
+  home: Option<&std::path::Path>,
+  debug: bool,
+) -> std::path::PathBuf {
+  if let Some(dir) = override_dir {
+    return std::path::PathBuf::from(dir);
+  }
+  let base = xdg_data_home
+    .map(std::path::Path::to_path_buf)
+    .or_else(|| home.map(|home| home.join(".local/share")))
+    .unwrap_or_default();
+  let root = base.join("dev.soquel.app");
+  if debug { root.join("dev") } else { root }
+}
+
 pub fn init_state() -> Result<Arc<AppState>, Error> {
-  let data_dir = match std::env::var("SOQUEL_DATA_DIR") {
-    Ok(dir) => std::path::PathBuf::from(dir),
-    Err(_) => {
-      let base = std::env::var_os("XDG_DATA_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-          std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".local/share"))
-        })
-        .unwrap_or_default();
-      let root = base.join("dev.soquel.app");
-      if cfg!(debug_assertions) {
-        root.join("dev")
-      } else {
-        root
-      }
-    }
-  };
+  let override_dir = std::env::var("SOQUEL_DATA_DIR").ok();
+  let xdg = std::env::var_os("XDG_DATA_HOME").map(std::path::PathBuf::from);
+  let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+  let data_dir = resolve_data_dir(
+    override_dir.as_deref(),
+    xdg.as_deref(),
+    home.as_deref(),
+    cfg!(debug_assertions),
+  );
   std::fs::create_dir_all(&data_dir)?;
   let secrets = soquel_core::secrets::store_from_env(&data_dir)?;
   Ok(Arc::new(AppState::load(&data_dir, secrets)?))
@@ -329,6 +338,24 @@ mod tests {
       user.to_string(),
       pass.to_string(),
     ))
+  }
+
+  #[test]
+  fn data_dir_override_wins_and_dev_gets_its_subtree() {
+    use std::path::{Path, PathBuf};
+    assert_eq!(
+      resolve_data_dir(Some("/custom"), Some(Path::new("/xdg")), None, true),
+      PathBuf::from("/custom")
+    );
+    // The tauri identifier and the /dev split must match the installed app.
+    assert_eq!(
+      resolve_data_dir(None, Some(Path::new("/xdg")), None, true),
+      PathBuf::from("/xdg/dev.soquel.app/dev")
+    );
+    assert_eq!(
+      resolve_data_dir(None, None, Some(Path::new("/home/u")), false),
+      PathBuf::from("/home/u/.local/share/dev.soquel.app")
+    );
   }
 
   /// The whole grid path against a real postgres: browse, stage, apply, reread.
