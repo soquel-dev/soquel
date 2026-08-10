@@ -5,6 +5,7 @@ mod core;
 mod filters;
 mod grid;
 mod staged;
+mod tabs;
 mod theme;
 mod workspace;
 

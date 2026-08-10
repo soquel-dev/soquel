@@ -1,7 +1,11 @@
+use std::collections::HashMap;
+use std::rc::Rc;
+
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::notification::Notification;
 use gpui_component::resizable::{ResizableState, h_resizable, resizable_panel, v_resizable};
 use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::table::{DataTable, TableEvent, TableState};
@@ -11,26 +15,45 @@ use gpui_component::{
   WindowExt, h_flex, v_flex,
 };
 use soquel_core::connectors::{ColumnFilter, FilterOp, SchemaSnapshot, TableChanges, TableKind};
+use soquel_core::licence::tab_limit_override;
 
 use crate::actions::{
-  CancelCellEdit, FocusEditor, NextCell, PrevCell, RefreshSchema, RunQuery, ToggleThemeMode,
+  CancelCellEdit, FocusEditor, NewSqlTab, NextCell, NextTab, PrevCell, PrevTab, RefreshSchema,
+  RunQuery, ToggleThemeMode,
 };
 use crate::completion::{SchemaEntries, SqlCompletionProvider};
 use crate::core::{self, Db};
 use crate::filters::{filter_label, op_label, op_needs_value, ops_for_kind};
 use crate::grid::RowsDelegate;
 use crate::staged::{build_table_changes, preview_sql};
+use crate::tabs::{
+  FREE_TABS, TabsState, WorkspaceTab, activate_sibling, close_tab, open_sql_tab, open_table_tab,
+};
 use crate::theme;
 
+enum TabContent {
+  Table {
+    table: Entity<TableState<RowsDelegate>>,
+  },
+  Sql {
+    editor: Entity<InputState>,
+    results: Entity<TableState<RowsDelegate>>,
+    split: Entity<ResizableState>,
+    running: bool,
+  },
+}
+
 pub struct Workspace {
-  editor: Entity<InputState>,
-  table: Entity<TableState<RowsDelegate>>,
-  splits: (Entity<ResizableState>, Entity<ResizableState>),
+  focus_handle: FocusHandle,
+  tabs: TabsState,
+  contents: HashMap<String, TabContent>,
+  cell_editor: Entity<InputState>,
+  provider: Rc<SqlCompletionProvider>,
+  sidebar_split: Entity<ResizableState>,
   db: Option<Db>,
   snapshot: Option<SchemaSnapshot>,
   server_version: Option<String>,
-  browsing: Option<(String, String)>,
-  running: bool,
+  status: SharedString,
   filter_open: bool,
   filter_column: Entity<SelectState<Vec<String>>>,
   filter_op: Entity<SelectState<Vec<String>>>,
@@ -43,41 +66,19 @@ pub struct Workspace {
 
 impl Workspace {
   pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    let focus_handle = cx.focus_handle();
+    window.focus(&focus_handle, cx);
     let (provider, schema_entries) = SqlCompletionProvider::new();
-    let editor = cx.new(|cx| {
-      let mut state = InputState::new(window, cx)
-        .code_editor("sql")
-        .line_number(true)
-        .searchable(true)
-        .placeholder("select * from app.events limit 100  --  ctrl+enter runs");
-      state.lsp.completion_provider = Some(provider);
-      state
-    });
-
     let cell_editor = cx.new(|cx| InputState::new(window, cx));
-    let table = cx.new(|cx| {
-      TableState::new(RowsDelegate::new(cell_editor.clone()), window, cx)
-        .cell_selectable(true)
-        .col_resizable(true)
-    });
-    cx.observe(&table, |_, _, cx| cx.notify()).detach();
-
-    cx.subscribe_in(&table, window, |this, _, event: &TableEvent, window, cx| {
-      if let TableEvent::DoubleClickedCell(row_ix, col_ix) = event {
-        let (row_ix, col_ix) = (*row_ix, *col_ix);
-        this.table.update(cx, |table, cx| {
-          table.delegate_mut().start_edit(row_ix, col_ix, window, cx);
-        });
-      }
-    })
-    .detach();
 
     cx.subscribe_in(
       &cell_editor,
       window,
       |this, _, event: &InputEvent, _, cx| {
-        if let InputEvent::PressEnter { .. } = event {
-          this.table.update(cx, |table, cx| {
+        if let InputEvent::PressEnter { .. } = event
+          && let Some(table) = this.active_table()
+        {
+          table.update(cx, |table, cx| {
             table.delegate_mut().commit_edit(cx);
           });
         }
@@ -85,11 +86,7 @@ impl Workspace {
     )
     .detach();
 
-    let splits = (
-      cx.new(|_| ResizableState::default()),
-      cx.new(|_| ResizableState::default()),
-    );
-
+    let sidebar_split = cx.new(|_| ResizableState::default());
     let filter_column = cx.new(|cx| SelectState::new(Vec::<String>::new(), None, window, cx));
     let filter_op = cx.new(|cx| SelectState::new(Vec::<String>::new(), None, window, cx));
     let filter_value = cx.new(|cx| InputState::new(window, cx).placeholder("value"));
@@ -117,12 +114,14 @@ impl Workspace {
     )
     .detach();
 
+    let handle = window.window_handle();
     let connect_task = cx.spawn(async move |this, cx| {
       let db = match core::connect_dev().await {
         Ok(Ok(db)) => db,
         Ok(Err(error)) => {
           let _ = this.update(cx, |this, cx| {
-            this.set_status(format!("error: {error}"), cx);
+            this.status = format!("error: {error}").into();
+            cx.notify();
           });
           return;
         }
@@ -132,6 +131,7 @@ impl Workspace {
       let _ = this.update(cx, |this, cx| {
         this.db = Some(db.clone());
         this.server_version = db.server_version();
+        this.status = "connected".into();
         cx.notify();
       });
 
@@ -146,20 +146,25 @@ impl Workspace {
 
       let target = std::env::var("SOQUEL_GPUI_TABLE").unwrap_or_else(|_| "app.events".into());
       let (schema, table) = target.split_once('.').unwrap_or(("public", &*target));
-      let _ = this.update(cx, |this, cx| {
-        this.browse(schema.to_string(), table.to_string(), cx);
+      let (schema, table) = (schema.to_string(), table.to_string());
+      let _ = cx.update_window(handle, |_, window, app| {
+        let _ = this.update(app, |this, cx| {
+          this.open_table(schema, table, Vec::new(), window, cx);
+        });
       });
     });
 
     Self {
-      editor,
-      table,
-      splits,
+      focus_handle,
+      tabs: TabsState::default(),
+      contents: HashMap::new(),
+      cell_editor,
+      provider,
+      sidebar_split,
       db: None,
       snapshot: None,
       server_version: None,
-      browsing: None,
-      running: false,
+      status: "connecting...".into(),
       filter_open: false,
       filter_column,
       filter_op,
@@ -171,9 +176,215 @@ impl Workspace {
     }
   }
 
+  fn tab_limit(&self) -> usize {
+    // A licence lifts the cap; the surface for it is not here yet.
+    tab_limit_override().map_or(FREE_TABS, |limit| limit as usize)
+  }
+
+  fn active_tab(&self) -> Option<&WorkspaceTab> {
+    let id = self.tabs.active_id.as_deref()?;
+    self.tabs.tabs.iter().find(|tab| tab.id() == id)
+  }
+
+  /// The active tab's grid when it is a table tab; sql results are not it.
+  fn active_table(&self) -> Option<Entity<TableState<RowsDelegate>>> {
+    let id = self.tabs.active_id.as_deref()?;
+    match self.contents.get(id)? {
+      TabContent::Table { table } => Some(table.clone()),
+      TabContent::Sql { .. } => None,
+    }
+  }
+
+  fn active_sql(&self) -> Option<(String, Entity<InputState>, Entity<TableState<RowsDelegate>>)> {
+    let id = self.tabs.active_id.as_deref()?;
+    match self.contents.get(id)? {
+      TabContent::Sql {
+        editor, results, ..
+      } => Some((id.to_string(), editor.clone(), results.clone())),
+      TabContent::Table { .. } => None,
+    }
+  }
+
+  /// The delegate whose status line the status bar shows.
+  fn active_grid(&self) -> Option<Entity<TableState<RowsDelegate>>> {
+    let id = self.tabs.active_id.as_deref()?;
+    match self.contents.get(id)? {
+      TabContent::Table { table } => Some(table.clone()),
+      TabContent::Sql { results, .. } => Some(results.clone()),
+    }
+  }
+
+  fn new_grid(
+    &self,
+    window: &mut Window,
+    cx: &mut Context<Self>,
+  ) -> Entity<TableState<RowsDelegate>> {
+    let cell_editor = self.cell_editor.clone();
+    let table = cx.new(|cx| {
+      TableState::new(RowsDelegate::new(cell_editor), window, cx)
+        .cell_selectable(true)
+        .col_resizable(true)
+    });
+    cx.observe(&table, |_, _, cx| cx.notify()).detach();
+    cx.subscribe_in(
+      &table,
+      window,
+      |this, entity, event: &TableEvent, window, cx| {
+        if let TableEvent::DoubleClickedCell(row_ix, col_ix) = event {
+          let (row_ix, col_ix) = (*row_ix, *col_ix);
+          entity.update(cx, |table, cx| {
+            table.delegate_mut().start_edit(row_ix, col_ix, window, cx);
+          });
+          let _ = this;
+        }
+      },
+    )
+    .detach();
+    table
+  }
+
+  fn limit_refused(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    window.push_notification(
+      Notification::info(format!(
+        "{FREE_TABS} tabs at a time on the free tier. Close one, or unlock the app to open as many as you like.",
+      )),
+      cx,
+    );
+  }
+
+  fn open_table(
+    &mut self,
+    schema: String,
+    name: String,
+    filters: Vec<ColumnFilter>,
+    window: &mut Window,
+    cx: &mut Context<Self>,
+  ) {
+    let Some(db) = self.db.clone() else {
+      return;
+    };
+    let before = self.tabs.tabs.len();
+    let Some(next) = open_table_tab(
+      &self.tabs,
+      &schema,
+      &name,
+      filters.clone(),
+      self.tab_limit(),
+    ) else {
+      self.limit_refused(window, cx);
+      return;
+    };
+    let opened = next.tabs.len() > before;
+    self.tabs = next;
+
+    if opened {
+      let id = self.tabs.active_id.clone().expect("just opened");
+      let table = self.new_grid(window, cx);
+
+      // Row identity comes from the snapshot: kind gates editing, the pk keys it.
+      let info = self.snapshot.as_ref().and_then(|snapshot| {
+        snapshot
+          .schemas
+          .iter()
+          .find(|s| s.name == schema)
+          .and_then(|s| s.tables.iter().find(|t| t.name == name))
+      });
+      let can_ever_edit = info.is_some_and(|info| info.kind == TableKind::Table);
+      let primary_key = info
+        .map(|info| info.primary_key.clone())
+        .unwrap_or_default();
+
+      table.update(cx, |table, cx| {
+        let delegate = table.delegate_mut();
+        delegate.browse = Some((db, schema, name));
+        delegate.filters = filters;
+        delegate.can_ever_edit = can_ever_edit;
+        delegate.key_columns = primary_key;
+        delegate.include_xmin = can_ever_edit;
+        delegate.reload(cx);
+      });
+      self.contents.insert(id, TabContent::Table { table });
+    } else if let Some(table) = self.active_table() {
+      // Re-activated: the model kept the newest initial filters, apply them.
+      let filters = match self.active_tab() {
+        Some(WorkspaceTab::Table {
+          initial_filters, ..
+        }) => initial_filters.clone(),
+        _ => Vec::new(),
+      };
+      if !filters.is_empty() {
+        table.update(cx, |table, cx| {
+          table.delegate_mut().filters = filters;
+          table.delegate_mut().reload(cx);
+        });
+      }
+    }
+    cx.notify();
+  }
+
+  fn open_sql(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    let Some(next) = open_sql_tab(&self.tabs, self.tab_limit()) else {
+      self.limit_refused(window, cx);
+      return;
+    };
+    self.tabs = next;
+    let id = self.tabs.active_id.clone().expect("just opened");
+
+    let provider = self.provider.clone();
+    let editor = cx.new(|cx| {
+      let mut state = InputState::new(window, cx)
+        .code_editor("sql")
+        .line_number(true)
+        .searchable(true)
+        .placeholder("select * from app.events limit 100  --  ctrl+enter runs");
+      state.lsp.completion_provider = Some(provider);
+      state
+    });
+    let results = self.new_grid(window, cx);
+    results.update(cx, |table, cx| {
+      table.delegate_mut().loading = false;
+      table.delegate_mut().eof = true;
+      table.delegate_mut().status = "run a query".into();
+      cx.notify();
+    });
+    let split = cx.new(|_| ResizableState::default());
+    self.contents.insert(
+      id,
+      TabContent::Sql {
+        editor,
+        results,
+        split,
+        running: false,
+      },
+    );
+    cx.notify();
+  }
+
+  fn close(&mut self, id: &str, cx: &mut Context<Self>) {
+    self.tabs = close_tab(&self.tabs, id);
+    self.contents.remove(id);
+    cx.notify();
+  }
+
+  fn activate(&mut self, id: String, cx: &mut Context<Self>) {
+    // The close button lives inside the tab: its click also lands here with
+    // the id that just closed. Activating a ghost would blank the content.
+    if self.tabs.tabs.iter().any(|tab| tab.id() == id) {
+      self.tabs.active_id = Some(id);
+      cx.notify();
+    }
+  }
+
+  fn cycle(&mut self, direction: i32, cx: &mut Context<Self>) {
+    self.tabs = activate_sibling(&self.tabs, direction);
+    cx.notify();
+  }
+
   fn sync_filter_ops(&mut self, column: String, window: &mut Window, cx: &mut Context<Self>) {
-    let kind = self
-      .table
+    let Some(table) = self.active_table() else {
+      return;
+    };
+    let kind = table
       .read(cx)
       .delegate()
       .columns
@@ -195,9 +406,10 @@ impl Workspace {
 
   fn toggle_filter_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
     self.filter_open = !self.filter_open;
-    if self.filter_open {
-      let names: Vec<String> = self
-        .table
+    if self.filter_open
+      && let Some(table) = self.active_table()
+    {
+      let names: Vec<String> = table
         .read(cx)
         .delegate()
         .columns
@@ -212,6 +424,9 @@ impl Workspace {
   }
 
   fn apply_filter(&mut self, cx: &mut Context<Self>) {
+    let Some(table) = self.active_table() else {
+      return;
+    };
     let Some(column) = self.filter_column.read(cx).selected_value().cloned() else {
       return;
     };
@@ -235,7 +450,7 @@ impl Workspace {
       op,
       value: op_needs_value(op).then_some(value),
     };
-    self.table.update(cx, |table, cx| {
+    table.update(cx, |table, cx| {
       let delegate = table.delegate_mut();
       delegate.filters.retain(|f| f.column != column);
       delegate.filters.push(filter);
@@ -245,7 +460,10 @@ impl Workspace {
   }
 
   fn remove_filter(&mut self, column: &str, cx: &mut Context<Self>) {
-    self.table.update(cx, |table, cx| {
+    let Some(table) = self.active_table() else {
+      return;
+    };
+    table.update(cx, |table, cx| {
       let delegate = table.delegate_mut();
       delegate.filters.retain(|f| f.column != column);
       delegate.reload(cx);
@@ -254,7 +472,10 @@ impl Workspace {
   }
 
   fn clear_filters(&mut self, cx: &mut Context<Self>) {
-    self.table.update(cx, |table, cx| {
+    let Some(table) = self.active_table() else {
+      return;
+    };
+    table.update(cx, |table, cx| {
       let delegate = table.delegate_mut();
       delegate.filters.clear();
       delegate.reload(cx);
@@ -262,49 +483,12 @@ impl Workspace {
     cx.notify();
   }
 
-  fn set_status(&mut self, status: impl Into<SharedString>, cx: &mut Context<Self>) {
-    self.table.update(cx, |table, cx| {
-      table.delegate_mut().status = status.into();
-      cx.notify();
-    });
-  }
-
-  /// Point the grid at a table and reload; the delegate pages, sorts and filters.
-  fn browse(&mut self, schema: String, name: String, cx: &mut Context<Self>) {
-    let Some(db) = self.db.clone() else {
-      return;
-    };
-    // Row identity comes from the snapshot: kind gates editing, the pk keys it.
-    let info = self.snapshot.as_ref().and_then(|snapshot| {
-      snapshot
-        .schemas
-        .iter()
-        .find(|s| s.name == schema)
-        .and_then(|s| s.tables.iter().find(|t| t.name == name))
-    });
-    let can_ever_edit = info.is_some_and(|info| info.kind == TableKind::Table);
-    let primary_key = info
-      .map(|info| info.primary_key.clone())
-      .unwrap_or_default();
-
-    self.browsing = Some((schema.clone(), name.clone()));
-    self.table.update(cx, |table, cx| {
-      let delegate = table.delegate_mut();
-      delegate.browse = Some((db, schema, name));
-      // A new table means new columns: sort and filters do not carry over.
-      delegate.sort = None;
-      delegate.filters.clear();
-      delegate.can_ever_edit = can_ever_edit;
-      delegate.key_columns = primary_key;
-      delegate.ctid_mode = false;
-      delegate.include_xmin = can_ever_edit;
-      delegate.reload(cx);
-    });
-  }
-
   /// PK-less table rescue: ctid becomes the row identity, opt-in per table.
   fn enable_ctid(&mut self, cx: &mut Context<Self>) {
-    self.table.update(cx, |table, cx| {
+    let Some(table) = self.active_table() else {
+      return;
+    };
+    table.update(cx, |table, cx| {
       let delegate = table.delegate_mut();
       delegate.ctid_mode = true;
       delegate.key_columns = vec!["ctid".to_string()];
@@ -313,8 +497,11 @@ impl Workspace {
   }
 
   fn apply_staged(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    let Some(table) = self.active_table() else {
+      return;
+    };
     let (changes, db) = {
-      let table = self.table.read(cx);
+      let table = table.read(cx);
       let delegate = table.delegate();
       let Some((db, schema, name)) = delegate.browse.clone() else {
         return;
@@ -380,21 +567,21 @@ impl Workspace {
   }
 
   fn run_apply(&mut self, db: Db, changes: TableChanges, cx: &mut Context<Self>) {
-    self.set_status("applying...", cx);
+    let Some(table) = self.active_table() else {
+      return;
+    };
     let rx = core::apply_changes(&db, changes);
-    let table = self.table.clone();
     self._work_task = cx.spawn(async move |this, cx| {
       let result = rx.await;
       match result {
         Ok(Ok(applied)) => {
           let _ = this.update(cx, |this, cx| {
-            this.notify(
-              format!(
-                "applied: {} updated, {} inserted, {} deleted",
-                applied.updated, applied.inserted, applied.deleted
-              ),
-              cx,
-            );
+            this.status = format!(
+              "applied: {} updated, {} inserted, {} deleted",
+              applied.updated, applied.inserted, applied.deleted
+            )
+            .into();
+            cx.notify();
           });
           table.update(cx, |table, cx| {
             table.delegate_mut().reload(cx);
@@ -410,10 +597,6 @@ impl Workspace {
         Err(_) => {}
       }
     });
-  }
-
-  fn notify(&mut self, message: String, cx: &mut Context<Self>) {
-    self.set_status(message, cx);
   }
 
   fn refresh_schema(&mut self, cx: &mut Context<Self>) {
@@ -432,33 +615,41 @@ impl Workspace {
   }
 
   fn run(&mut self, cx: &mut Context<Self>) {
-    if self.running {
-      return;
-    }
     let Some(db) = self.db.clone() else {
       return;
     };
-    let sql = self.editor.read(cx).value().to_string();
+    let Some((id, editor, results)) = self.active_sql() else {
+      return;
+    };
+    if let Some(TabContent::Sql { running: true, .. }) = self.contents.get(&id) {
+      return;
+    }
+    let sql = editor.read(cx).value().to_string();
     if sql.trim().is_empty() {
       return;
     }
 
-    self.running = true;
-    self.set_status("running...", cx);
+    if let Some(TabContent::Sql { running, .. }) = self.contents.get_mut(&id) {
+      *running = true;
+    }
+    results.update(cx, |table, cx| {
+      table.delegate_mut().status = "running...".into();
+      cx.notify();
+    });
 
     let rx = core::run_query(&db, sql);
-    let table = self.table.clone();
     self._work_task = cx.spawn(async move |this, cx| {
       let result = rx.await;
       let _ = this.update(cx, |this, cx| {
-        this.running = false;
-        this.browsing = None;
+        if let Some(TabContent::Sql { running, .. }) = this.contents.get_mut(&id) {
+          *running = false;
+        }
         cx.notify();
       });
-      table.update(cx, |table, cx| {
+      results.update(cx, |table, cx| {
         {
           let delegate = table.delegate_mut();
-          // Query results replace the browse view; no paging on them.
+          // Query results never page.
           delegate.browse = None;
           delegate.eof = true;
           delegate.loading = false;
@@ -507,13 +698,17 @@ impl Workspace {
   }
 
   fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    let browsing = self.active_tab().and_then(|tab| match tab {
+      WorkspaceTab::Table { schema, table, .. } => Some((schema.clone(), table.clone())),
+      WorkspaceTab::Sql { .. } => None,
+    });
     let mut rows = Vec::new();
     if let Some(snapshot) = &self.snapshot {
       for schema in &snapshot.schemas {
         for table in &schema.tables {
           let schema = schema.name.clone();
           let name = table.name.clone();
-          let selected = self.browsing.as_ref() == Some(&(schema.clone(), name.clone()));
+          let selected = browsing.as_ref() == Some(&(schema.clone(), name.clone()));
           let label = format!("{schema}.{name}");
           rows.push(
             div()
@@ -529,8 +724,8 @@ impl Workspace {
                   .text_color(cx.theme().accent_foreground)
               })
               .hover(|this| this.bg(cx.theme().accent))
-              .on_click(cx.listener(move |this, _, _, cx| {
-                this.browse(schema.clone(), name.clone(), cx);
+              .on_click(cx.listener(move |this, _, window, cx| {
+                this.open_table(schema.clone(), name.clone(), Vec::new(), window, cx);
               }))
               .child(label),
           );
@@ -573,42 +768,78 @@ impl Workspace {
       )
   }
 
-  fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-    let status = self.table.read(cx).delegate().status.clone();
-    let connection = match (&self.db, &self.server_version) {
-      (Some(_), Some(version)) => format!("PostgreSQL {version}"),
-      (Some(_), None) => "connected".to_string(),
-      (None, _) => "connecting...".to_string(),
-    };
+  fn render_tab_strip(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    let active = self.tabs.active_id.clone();
     h_flex()
-      .px_3()
-      .py_1()
-      .justify_between()
-      .bg(cx.theme().secondary)
-      .border_t_1()
+      .px_2()
+      .pt_1()
+      .gap_1()
+      .border_b_1()
       .border_color(cx.theme().border)
-      .text_xs()
-      .text_color(cx.theme().muted_foreground)
-      .child(div().child(status))
-      .child(div().child(connection))
+      .children(self.tabs.tabs.iter().map(|tab| {
+        let id = tab.id().to_string();
+        let close_id = id.clone();
+        let selected = active.as_deref() == Some(tab.id());
+        h_flex()
+          .id(SharedString::from(format!("tab-{id}")))
+          .px_2()
+          .py_1()
+          .gap_1()
+          .items_center()
+          .rounded_t(cx.theme().radius)
+          .text_sm()
+          .cursor_default()
+          .when(selected, |this| {
+            this
+              .bg(cx.theme().accent)
+              .text_color(cx.theme().accent_foreground)
+          })
+          .when(!selected, |this| {
+            this.text_color(cx.theme().muted_foreground)
+          })
+          .hover(|this| this.bg(cx.theme().accent))
+          .on_click(cx.listener(move |this, _, _, cx| this.activate(id.clone(), cx)))
+          .child(tab.title())
+          .child(
+            Button::new(SharedString::from(format!("close-{close_id}")))
+              .ghost()
+              .xsmall()
+              .icon(Icon::new(IconName::Close))
+              .on_click(cx.listener(move |this, _, _, cx| {
+                this.close(&close_id.clone(), cx);
+              })),
+          )
+      }))
+      .child(
+        Button::new("new-sql-tab")
+          .ghost()
+          .xsmall()
+          .label("+ SQL")
+          .disabled(self.db.is_none())
+          .on_click(cx.listener(|this, _, window, cx| this.open_sql(window, cx))),
+      )
   }
 
-  fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-    let filter_count = self.table.read(cx).delegate().filters.len();
+  fn render_table_toolbar(
+    &self,
+    table: &Entity<TableState<RowsDelegate>>,
+    cx: &mut Context<Self>,
+  ) -> impl IntoElement {
+    let filter_count = table.read(cx).delegate().filters.len();
+    let editable = table.read(cx).delegate().editable();
+    let can_ever_edit = table.read(cx).delegate().can_ever_edit;
+    let selected_row = table.read(cx).selected_cell().map(|(row, _)| row);
+    let pending = table.read(cx).delegate().staged.count();
+    let grid = table.clone();
+    let grid_delete = table.clone();
+    let grid_discard = table.clone();
+
     h_flex()
       .px_2()
       .py_1()
       .gap_2()
       .border_b_1()
       .border_color(cx.theme().border)
-      .child(
-        Button::new("run")
-          .primary()
-          .xsmall()
-          .label(if self.running { "Running..." } else { "Run" })
-          .disabled(self.running || self.db.is_none())
-          .on_click(cx.listener(|this, _, _, cx| this.run(cx))),
-      )
       .child(
         Button::new("toggle-filter")
           .ghost()
@@ -618,20 +849,17 @@ impl Workspace {
           } else {
             "Filter".to_string()
           })
-          .disabled(self.browsing.is_none())
           .on_click(cx.listener(|this, _, window, cx| this.toggle_filter_row(window, cx))),
       )
-      .when(self.table.read(cx).delegate().editable(), |this| {
-        let selected_row = self.table.read(cx).selected_cell().map(|(row, _)| row);
-        let pending = self.table.read(cx).delegate().staged.count();
+      .when(editable, |this| {
         this
           .child(
             Button::new("add-row")
               .ghost()
               .xsmall()
               .label("+ Row")
-              .on_click(cx.listener(|this, _, _, cx| {
-                this.table.update(cx, |table, cx| {
+              .on_click(cx.listener(move |_, _, _, cx| {
+                grid.update(cx, |table, cx| {
                   table.delegate_mut().add_insert(None, cx);
                   // Inserts sit at the top: nothing shifts under them while paging.
                   table.scroll_to_row(0, cx);
@@ -644,9 +872,9 @@ impl Workspace {
               .xsmall()
               .label("Delete")
               .disabled(selected_row.is_none())
-              .on_click(cx.listener(move |this, _, _, cx| {
+              .on_click(cx.listener(move |_, _, _, cx| {
                 if let Some(row) = selected_row {
-                  this.table.update(cx, |table, cx| {
+                  grid_delete.update(cx, |table, cx| {
                     table.delegate_mut().toggle_delete(row, cx);
                   });
                 }
@@ -666,33 +894,30 @@ impl Workspace {
                   .ghost()
                   .xsmall()
                   .label("Discard")
-                  .on_click(cx.listener(|this, _, _, cx| {
-                    this.table.update(cx, |table, cx| {
+                  .on_click(cx.listener(move |_, _, _, cx| {
+                    grid_discard.update(cx, |table, cx| {
                       table.delegate_mut().discard(cx);
                     });
                   })),
               )
           })
       })
-      .when(
-        self.table.read(cx).delegate().can_ever_edit && !self.table.read(cx).delegate().editable(),
-        |this| {
-          this
-            .child(
-              div()
-                .text_xs()
-                .text_color(cx.theme().muted_foreground)
-                .child("no primary key - editing disabled"),
-            )
-            .child(
-              Button::new("enable-ctid")
-                .ghost()
-                .xsmall()
-                .label("edit via ctid")
-                .on_click(cx.listener(|this, _, _, cx| this.enable_ctid(cx))),
-            )
-        },
-      )
+      .when(can_ever_edit && !editable, |this| {
+        this
+          .child(
+            div()
+              .text_xs()
+              .text_color(cx.theme().muted_foreground)
+              .child("no primary key - editing disabled"),
+          )
+          .child(
+            Button::new("enable-ctid")
+              .ghost()
+              .xsmall()
+              .label("edit via ctid")
+              .on_click(cx.listener(|this, _, _, cx| this.enable_ctid(cx))),
+          )
+      })
   }
 
   fn render_filter_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -714,8 +939,12 @@ impl Workspace {
       )
   }
 
-  fn render_filter_chips(&self, cx: &mut Context<Self>) -> impl IntoElement {
-    let filters = self.table.read(cx).delegate().filters.clone();
+  fn render_filter_chips(
+    &self,
+    table: &Entity<TableState<RowsDelegate>>,
+    cx: &mut Context<Self>,
+  ) -> impl IntoElement {
+    let filters = table.read(cx).delegate().filters.clone();
     h_flex()
       .px_2()
       .py_1()
@@ -753,6 +982,116 @@ impl Workspace {
           .on_click(cx.listener(|this, _, _, cx| this.clear_filters(cx))),
       )
   }
+
+  fn render_active_content(&self, cx: &mut Context<Self>) -> AnyElement {
+    let Some(id) = self.tabs.active_id.clone() else {
+      return v_flex()
+        .flex_1()
+        .items_center()
+        .justify_center()
+        .text_sm()
+        .text_color(cx.theme().muted_foreground)
+        .child("open a table from the sidebar, or a sql tab")
+        .into_any_element();
+    };
+    match self.contents.get(&id) {
+      Some(TabContent::Table { table }) => {
+        let table = table.clone();
+        v_flex()
+          .flex_1()
+          .min_h_0()
+          .child(self.render_table_toolbar(&table, cx))
+          .when(self.filter_open, |this| {
+            this.child(self.render_filter_row(cx))
+          })
+          .when(!table.read(cx).delegate().filters.is_empty(), |this| {
+            this.child(self.render_filter_chips(&table, cx))
+          })
+          .child(
+            v_flex()
+              .flex_1()
+              .min_h_0()
+              .p_1()
+              .child(DataTable::new(&table).stripe(true)),
+          )
+          .into_any_element()
+      }
+      Some(TabContent::Sql {
+        editor,
+        results,
+        split,
+        running,
+      }) => v_flex()
+        .flex_1()
+        .min_h_0()
+        .child(
+          h_flex()
+            .px_2()
+            .py_1()
+            .gap_2()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(
+              Button::new("run")
+                .primary()
+                .xsmall()
+                .label(if *running { "Running..." } else { "Run" })
+                .disabled(*running || self.db.is_none())
+                .on_click(cx.listener(|this, _, _, cx| this.run(cx))),
+            ),
+        )
+        .child(
+          v_flex().flex_1().min_h_0().child(
+            v_resizable(SharedString::from(format!("sql-split-{id}")))
+              .with_state(split)
+              .child(
+                resizable_panel()
+                  .size(px(180.))
+                  .size_range(px(60.)..px(600.))
+                  .child(
+                    v_flex()
+                      .size_full()
+                      .p_1()
+                      .child(Input::new(editor).h_full()),
+                  ),
+              )
+              .child(
+                resizable_panel().child(
+                  v_flex()
+                    .size_full()
+                    .p_1()
+                    .child(DataTable::new(results).stripe(true)),
+                ),
+              ),
+          ),
+        )
+        .into_any_element(),
+      None => div().into_any_element(),
+    }
+  }
+
+  fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    let status = self
+      .active_grid()
+      .map(|grid| grid.read(cx).delegate().status.clone())
+      .unwrap_or_else(|| self.status.clone());
+    let connection = match (&self.db, &self.server_version) {
+      (Some(_), Some(version)) => format!("PostgreSQL {version}"),
+      (Some(_), None) => "connected".to_string(),
+      (None, _) => "connecting...".to_string(),
+    };
+    h_flex()
+      .px_3()
+      .py_1()
+      .justify_between()
+      .bg(cx.theme().secondary)
+      .border_t_1()
+      .border_color(cx.theme().border)
+      .text_xs()
+      .text_color(cx.theme().muted_foreground)
+      .child(div().child(status))
+      .child(div().child(connection))
+  }
 }
 
 impl Render for Workspace {
@@ -763,31 +1102,41 @@ impl Render for Workspace {
 
     v_flex()
       .size_full()
+      .track_focus(&self.focus_handle)
       .bg(cx.theme().background)
       .on_action(cx.listener(|this, _: &RunQuery, _, cx| this.run(cx)))
       .on_action(cx.listener(|this, _: &RefreshSchema, _, cx| this.refresh_schema(cx)))
+      .on_action(cx.listener(|this, _: &NextTab, _, cx| this.cycle(1, cx)))
+      .on_action(cx.listener(|this, _: &PrevTab, _, cx| this.cycle(-1, cx)))
+      .on_action(cx.listener(|this, _: &NewSqlTab, window, cx| this.open_sql(window, cx)))
       .on_action(cx.listener(|_, _: &ToggleThemeMode, window, cx| {
         theme::toggle(window, cx);
       }))
       .on_action(cx.listener(|this, _: &FocusEditor, window, cx| {
-        this
-          .editor
-          .update(cx, |editor, cx| editor.focus(window, cx));
+        if let Some((_, editor, _)) = this.active_sql() {
+          editor.update(cx, |editor, cx| editor.focus(window, cx));
+        }
       }))
       .on_action(cx.listener(|this, _: &CancelCellEdit, _, cx| {
-        this.table.update(cx, |table, cx| {
-          table.delegate_mut().cancel_edit(cx);
-        });
+        if let Some(table) = this.active_table() {
+          table.update(cx, |table, cx| {
+            table.delegate_mut().cancel_edit(cx);
+          });
+        }
       }))
       .on_action(cx.listener(|this, _: &NextCell, window, cx| {
-        this.table.update(cx, |table, cx| {
-          table.delegate_mut().edit_neighbor(1, window, cx);
-        });
+        if let Some(table) = this.active_table() {
+          table.update(cx, |table, cx| {
+            table.delegate_mut().edit_neighbor(1, window, cx);
+          });
+        }
       }))
       .on_action(cx.listener(|this, _: &PrevCell, window, cx| {
-        this.table.update(cx, |table, cx| {
-          table.delegate_mut().edit_neighbor(-1, window, cx);
-        });
+        if let Some(table) = this.active_table() {
+          table.update(cx, |table, cx| {
+            table.delegate_mut().edit_neighbor(-1, window, cx);
+          });
+        }
       }))
       .child(
         TitleBar::new().child(h_flex().child("soquel")).child(
@@ -807,7 +1156,7 @@ impl Render for Workspace {
       .child(
         h_flex().flex_1().min_h_0().child(
           h_resizable("sidebar-main")
-            .with_state(&self.splits.0)
+            .with_state(&self.sidebar_split)
             .child(
               resizable_panel()
                 .size(px(220.))
@@ -818,38 +1167,8 @@ impl Render for Workspace {
               resizable_panel().child(
                 v_flex()
                   .size_full()
-                  .child(self.render_toolbar(cx))
-                  .when(self.filter_open, |this| {
-                    this.child(self.render_filter_row(cx))
-                  })
-                  .when(!self.table.read(cx).delegate().filters.is_empty(), |this| {
-                    this.child(self.render_filter_chips(cx))
-                  })
-                  .child(
-                    v_flex().flex_1().min_h_0().child(
-                      v_resizable("editor-results")
-                        .with_state(&self.splits.1)
-                        .child(
-                          resizable_panel()
-                            .size(px(180.))
-                            .size_range(px(60.)..px(600.))
-                            .child(
-                              v_flex()
-                                .size_full()
-                                .p_1()
-                                .child(Input::new(&self.editor).h_full()),
-                            ),
-                        )
-                        .child(
-                          resizable_panel().child(
-                            v_flex()
-                              .size_full()
-                              .p_1()
-                              .child(DataTable::new(&self.table).stripe(true)),
-                          ),
-                        ),
-                    ),
-                  ),
+                  .child(self.render_tab_strip(cx))
+                  .child(self.render_active_content(cx)),
               ),
             ),
         ),

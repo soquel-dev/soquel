@@ -88,7 +88,9 @@ deleted. Each panel lands with its layer-3 tests; each flow with layer 4.
 - [ ] Command palette (from the action registry)
 - [ ] Theme: port tokens from `style.css`, light/dark
 - [ ] Toasts (gpui-component notifications)
-- [ ] Tab limit (`lib/tabs.ts` -> Rust, licence enforcement + tests)
+- [x] Tab limit (`tabs.rs` ports `lib/tabs.ts` with its tests; free-tier toast,
+      SOQUEL_TAB_LIMIT dev override honored; tab persistence across restarts
+      still to do)
 
 ### Connections
 
@@ -115,7 +117,8 @@ deleted. Each panel lands with its layer-3 tests; each flow with layer 4.
       (`query-history.ts` port)
 - [ ] Explain tree (`explain.ts` port)
 - [ ] Schema tree sidebar + DDL view
-- [ ] Results vs browse tabs model
+- [x] Results vs browse tabs model (table tabs and sql tabs each own their
+      grid/editor state; ctrl-tab cycles, close picks the right neighbor)
 
 ### Other engines
 

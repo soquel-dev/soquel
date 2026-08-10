@@ -7924,6 +7924,7 @@ dependencies = [
  "serde_json",
  "soquel-core",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
