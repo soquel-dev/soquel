@@ -292,3 +292,468 @@ pub async fn active(state: &AppState, id: &str) -> Result<Arc<dyn Connection>, E
       message: format!("connection {id} is not active"),
     })
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::connectors::connector_for;
+  use crate::profiles::ConnectorKind;
+  use crate::profiles::{
+    ConnectionInput, ConnectionProfile, ConnectorParams, CredentialSource, Env, SqlServerParams,
+    SslMode,
+  };
+  use crate::secrets::InMemoryStore;
+  use crate::transfer::{self, DuplicateStrategy};
+  use crate::tunnels::TunnelInput;
+
+  fn input(credential: CredentialSource, password: Option<&str>) -> ConnectionInput {
+    ConnectionInput {
+      name: "db".to_string(),
+      env: Env::Dev,
+      group: None,
+      agent_access: Default::default(),
+      credential,
+      params: ConnectorParams::Postgres(SqlServerParams {
+        host: "localhost".to_string(),
+        port: 5432,
+        database: "app".to_string(),
+        user: "soquel".to_string(),
+        ssl_mode: SslMode::Prefer,
+        ssl_root_cert: None,
+        tunnel_id: None,
+      }),
+      password: password.map(str::to_string),
+    }
+  }
+
+  fn key(id: &str) -> SecretKey {
+    SecretKey::Connection(id.to_string())
+  }
+
+  fn state(dir: &tempfile::TempDir) -> AppState {
+    AppState::for_tests(dir.path(), Box::new(InMemoryStore::default()))
+  }
+
+  /// A live connection to park in the state: the tunnel bookkeeping only reads
+  /// which ids are active, not what they talk to.
+  async fn parked_connection(dir: &tempfile::TempDir) -> ActiveConnection {
+    let file = dir.path().join("parked.db");
+    rusqlite::Connection::open(&file).unwrap();
+    let profile = ConnectionProfile {
+      id: String::new(),
+      name: "parked".to_string(),
+      env: Env::Dev,
+      group: None,
+      agent_access: Default::default(),
+      credential: Default::default(),
+      params: ConnectorParams::Sqlite {
+        path: file.to_string_lossy().into_owned(),
+      },
+    };
+    let connection = connector_for(ConnectorKind::Sqlite)
+      .connect(&profile, crate::credentials::Credentials::fixed(None), None)
+      .await
+      .unwrap();
+    ActiveConnection {
+      connection: connection.into(),
+      _tunnel: None,
+    }
+  }
+
+  fn tunnelled_input(tunnel_id: &str) -> ConnectionInput {
+    let mut input = input(CredentialSource::Keychain, None);
+    input.params.set_tunnel_id(Some(tunnel_id.to_string()));
+    input
+  }
+
+  #[test]
+  fn leaving_the_keychain_mode_wipes_the_stored_password() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = state(&dir);
+
+    let stored = state
+      .profiles
+      .lock()
+      .unwrap()
+      .create(&input(CredentialSource::Keychain, Some("s3cret")))
+      .unwrap();
+    persist_secret(&state, &key(&stored.id), &stored.credential, Some("s3cret")).unwrap();
+    state
+      .session_secrets
+      .set(&key(&stored.id), "typed".to_string(), true);
+    assert_eq!(
+      state.secrets.get(&key(&stored.id)).unwrap(),
+      Some("s3cret".to_string())
+    );
+
+    // The user switches the connection to "ask every time".
+    let switched = state
+      .profiles
+      .lock()
+      .unwrap()
+      .update(&stored.id, &input(CredentialSource::Prompt, None))
+      .unwrap();
+    persist_secret(&state, &key(&switched.id), &switched.credential, None).unwrap();
+
+    assert_eq!(state.secrets.get(&key(&stored.id)).unwrap(), None);
+    assert_eq!(state.session_secrets.get(&key(&stored.id)), None);
+  }
+
+  #[test]
+  fn a_command_profile_never_writes_a_password_to_the_keychain() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = state(&dir);
+    let credential = CredentialSource::Command {
+      command: "printf %s token".to_string(),
+      refresh_after_secs: None,
+    };
+
+    let profile = state
+      .profiles
+      .lock()
+      .unwrap()
+      .create(&input(credential, Some("typed-by-mistake")))
+      .unwrap();
+    crate::ops::persist_secret(
+      &state,
+      &key(&profile.id),
+      &profile.credential,
+      Some("typed-by-mistake"),
+    )
+    .unwrap();
+
+    assert_eq!(state.secrets.get(&key(&profile.id)).unwrap(), None);
+  }
+
+  #[test]
+  fn a_tunnel_leaving_the_keychain_mode_wipes_its_own_secret() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = state(&dir);
+    let stored = TunnelInput {
+      name: "bastion".to_string(),
+      host: "bastion.internal".to_string(),
+      port: 22,
+      user: "deploy".to_string(),
+      auth: crate::tunnels::SshAuth::Password,
+      credential: CredentialSource::Keychain,
+      secret: Some("s3cret".to_string()),
+    };
+    let tunnel = state.tunnels.lock().unwrap().create(&stored).unwrap();
+    let tunnel_key = SecretKey::Tunnel(tunnel.id.clone());
+    crate::ops::persist_secret(
+      &state,
+      &tunnel_key,
+      &tunnel.credential,
+      stored.secret.as_deref(),
+    )
+    .unwrap();
+    // A connection of the same id keeps its own secret: the keys differ.
+    state.secrets.set(&key(&tunnel.id), "db").unwrap();
+    state
+      .session_secrets
+      .set(&tunnel_key, "typed".to_string(), true);
+
+    let asked = TunnelInput {
+      credential: CredentialSource::Prompt,
+      secret: None,
+      ..stored
+    };
+    let switched = state
+      .tunnels
+      .lock()
+      .unwrap()
+      .update(&tunnel.id, &asked)
+      .unwrap();
+    persist_secret(&state, &tunnel_key, &switched.credential, None).unwrap();
+
+    assert_eq!(state.secrets.get(&tunnel_key).unwrap(), None);
+    assert_eq!(state.session_secrets.get(&tunnel_key), None);
+    assert_eq!(
+      state.secrets.get(&key(&tunnel.id)).unwrap(),
+      Some("db".to_string())
+    );
+  }
+
+  fn command(line: &str) -> CredentialSource {
+    CredentialSource::Command {
+      command: line.to_string(),
+      refresh_after_secs: None,
+    }
+  }
+
+  #[test]
+  fn saving_a_command_approves_it_but_importing_the_same_profile_does_not() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = state(&dir);
+    let line = "aws rds generate-db-auth-token --hostname {host}";
+
+    // Typed in the form: the user just read the argv under the field.
+    let saved = source
+      .profiles
+      .lock()
+      .unwrap()
+      .create(&input(command(line), None))
+      .unwrap();
+    approve_own_command(&source, &key(&saved.id), &saved.credential).unwrap();
+    assert!(source
+      .command_approvals
+      .lock()
+      .unwrap()
+      .is_approved(&key(&saved.id), line));
+
+    // The same profile arriving in a file: nothing grants it anything.
+    let target_dir = tempfile::tempdir().unwrap();
+    let target = state(&target_dir);
+    let path = target_dir.path().join("shared.json");
+    transfer::export(&source, &path, false, None).unwrap();
+    transfer::import_file(&target, &path, None, true, DuplicateStrategy::Skip).unwrap();
+
+    let imported = &target.profiles.lock().unwrap().list()[0];
+    assert_eq!(imported.credential, command(line));
+    assert!(
+      !target
+        .command_approvals
+        .lock()
+        .unwrap()
+        .is_approved(&key(&imported.id), line),
+      "an imported command must wait for a yes"
+    );
+  }
+
+  #[test]
+  fn the_approval_records_the_stored_command_not_what_the_caller_says() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = state(&dir);
+    let line = "aws rds generate-db-auth-token";
+    let profile = state
+      .profiles
+      .lock()
+      .unwrap()
+      .create(&input(command(line), None))
+      .unwrap();
+
+    // The webview only names a target: the command comes off the profile, so
+    // it cannot approve one thing and run another.
+    let stored = current_command(&state, &key(&profile.id)).unwrap();
+    assert_eq!(stored, line);
+
+    // A tunnel resolves against its own store, and a profile with no command
+    // has nothing to approve.
+    let tunnel = state
+      .tunnels
+      .lock()
+      .unwrap()
+      .create(&TunnelInput {
+        name: "bastion".to_string(),
+        host: "bastion.internal".to_string(),
+        port: 22,
+        user: "deploy".to_string(),
+        auth: crate::tunnels::SshAuth::Password,
+        credential: command("vault-ssh {host}"),
+        secret: None,
+      })
+      .unwrap();
+    assert_eq!(
+      current_command(&state, &SecretKey::Tunnel(tunnel.id.clone())).unwrap(),
+      "vault-ssh {host}"
+    );
+
+    let plain = state
+      .profiles
+      .lock()
+      .unwrap()
+      .create(&input(CredentialSource::Keychain, None))
+      .unwrap();
+    assert!(matches!(
+      current_command(&state, &key(&plain.id)),
+      Err(Error::NotFound { .. })
+    ));
+  }
+
+  #[test]
+  fn deleting_a_profile_takes_its_approval_with_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = state(&dir);
+    let line = "vault read db";
+    let profile = state
+      .profiles
+      .lock()
+      .unwrap()
+      .create(&input(command(line), None))
+      .unwrap();
+    approve_own_command(&state, &key(&profile.id), &profile.credential).unwrap();
+
+    state
+      .session_secrets
+      .set(&key(&profile.id), "typed".to_string(), true);
+
+    state.profiles.lock().unwrap().delete(&profile.id).unwrap();
+    forget(&state, &key(&profile.id)).unwrap();
+
+    assert_eq!(state.session_secrets.get(&key(&profile.id)), None);
+    assert!(!state
+      .command_approvals
+      .lock()
+      .unwrap()
+      .is_approved(&key(&profile.id), line));
+  }
+
+  #[test]
+  fn leaving_the_command_mode_drops_the_approval() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = state(&dir);
+    let line = "vault read db";
+    let profile = state
+      .profiles
+      .lock()
+      .unwrap()
+      .create(&input(command(line), None))
+      .unwrap();
+    approve_own_command(&state, &key(&profile.id), &profile.credential).unwrap();
+
+    let switched = state
+      .profiles
+      .lock()
+      .unwrap()
+      .update(&profile.id, &input(CredentialSource::Keychain, Some("pw")))
+      .unwrap();
+    approve_own_command(&state, &key(&profile.id), &switched.credential).unwrap();
+
+    assert!(!state
+      .command_approvals
+      .lock()
+      .unwrap()
+      .is_approved(&key(&profile.id), line));
+  }
+
+  #[tokio::test]
+  async fn a_shared_tunnel_keeps_its_password_until_the_last_connection_leaves() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = state(&dir);
+    let tunnel = state
+      .tunnels
+      .lock()
+      .unwrap()
+      .create(&TunnelInput {
+        name: "bastion".to_string(),
+        host: "bastion.internal".to_string(),
+        port: 22,
+        user: "deploy".to_string(),
+        auth: crate::tunnels::SshAuth::Password,
+        credential: CredentialSource::Prompt,
+        secret: None,
+      })
+      .unwrap();
+    let tunnel_key = SecretKey::Tunnel(tunnel.id.clone());
+
+    let first = state
+      .profiles
+      .lock()
+      .unwrap()
+      .create(&tunnelled_input(&tunnel.id))
+      .unwrap();
+    let second = state
+      .profiles
+      .lock()
+      .unwrap()
+      .create(&tunnelled_input(&tunnel.id))
+      .unwrap();
+    {
+      let mut connections = state.connections.lock().await;
+      connections.insert(first.id.clone(), parked_connection(&dir).await);
+      connections.insert(second.id.clone(), parked_connection(&dir).await);
+    }
+    state
+      .session_secrets
+      .set(&tunnel_key, "bastion-pw".to_string(), true);
+
+    disconnect(&state, &first.id).await.unwrap();
+    assert_eq!(
+      state.session_secrets.get(&tunnel_key),
+      Some("bastion-pw".to_string()),
+      "the second connection still rides the tunnel"
+    );
+
+    disconnect(&state, &second.id).await.unwrap();
+    assert_eq!(state.session_secrets.get(&tunnel_key), None);
+  }
+
+  #[tokio::test]
+  async fn a_failed_connect_forgets_the_tunnel_password_it_was_given_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = state(&dir);
+    let tunnel = state
+      .tunnels
+      .lock()
+      .unwrap()
+      .create(&TunnelInput {
+        name: "bastion".to_string(),
+        // Nothing listens here: the connect fails on the tunnel, which is the point.
+        host: "127.0.0.1".to_string(),
+        port: 1,
+        user: "deploy".to_string(),
+        auth: crate::tunnels::SshAuth::Password,
+        credential: CredentialSource::Prompt,
+        secret: None,
+      })
+      .unwrap();
+    let tunnel_key = SecretKey::Tunnel(tunnel.id.clone());
+    let profile = state
+      .profiles
+      .lock()
+      .unwrap()
+      .create(&tunnelled_input(&tunnel.id))
+      .unwrap();
+
+    // No password for the tunnel: the core asks instead of dialling.
+    let Err(err) = connect(&state, profile.id.clone()).await else {
+      panic!("the tunnel must ask for its password");
+    };
+    assert!(
+      matches!(&err, Error::SecretRequired { subject, target_id, .. }
+        if *subject == SecretSubject::Tunnel && target_id == &tunnel.id)
+    );
+
+    state
+      .session_secrets
+      .set(&tunnel_key, "one-off".to_string(), false);
+    assert!(connect(&state, profile.id.clone()).await.is_err());
+    // Given for that attempt only: a failed connect must not keep it around.
+    assert_eq!(state.session_secrets.get(&tunnel_key), None);
+  }
+
+  #[tokio::test]
+  async fn a_one_shot_password_dies_with_the_connect_attempt() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = state(&dir);
+    let file = dir.path().join("app.db");
+    rusqlite::Connection::open(&file).unwrap();
+
+    let mut sqlite = input(CredentialSource::Prompt, None);
+    sqlite.params = ConnectorParams::Sqlite {
+      path: file.to_string_lossy().into_owned(),
+    };
+    let profile = state.profiles.lock().unwrap().create(&sqlite).unwrap();
+
+    // No password anywhere: the core asks for one instead of connecting.
+    let err = connect(&state, profile.id.clone()).await.unwrap_err();
+    assert!(matches!(&err, Error::SecretRequired { target_name, .. } if target_name == "db"));
+
+    state
+      .session_secrets
+      .set(&key(&profile.id), "typed".to_string(), false);
+    connect(&state, profile.id.clone()).await.unwrap();
+    assert!(state.connections.lock().await.contains_key(&profile.id));
+    // Not remembered: the next connect asks again.
+    assert_eq!(state.session_secrets.get(&key(&profile.id)), None);
+
+    state
+      .session_secrets
+      .set(&key(&profile.id), "typed".to_string(), true);
+    connect(&state, profile.id.clone()).await.unwrap();
+    assert_eq!(
+      state.session_secrets.get(&key(&profile.id)),
+      Some("typed".to_string())
+    );
+  }
+}
