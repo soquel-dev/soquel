@@ -14,12 +14,13 @@ use gpui_component::table::{DataTable, TableEvent, TableState};
 use gpui_component::text::TextView;
 use gpui_component::tree::{TreeItem, TreeState, tree};
 use gpui_component::{
-  ActiveTheme, Disableable, Icon, IconName, IndexPath, Root, Selectable, Sizable, StyledExt,
-  TitleBar, WindowExt, h_flex, v_flex,
+  ActiveTheme, Disableable, Icon, IconName, IndexPath, Selectable, Sizable, StyledExt, WindowExt,
+  h_flex, v_flex,
 };
 use soquel_core::connectors::{ColumnFilter, FilterOp, SchemaSnapshot, TableChanges, TableKind};
 use soquel_core::export::ExportFormat;
 use soquel_core::licence::tab_limit_override;
+use soquel_core::profiles::ConnectionProfile;
 
 use crate::actions::{
   CancelCellEdit, FocusEditor, NewSqlTab, NextCell, NextTab, PrevCell, PrevTab, RefreshSchema,
@@ -60,8 +61,15 @@ enum TabContent {
   },
 }
 
+pub enum WorkspaceEvent {
+  Close,
+}
+
+impl EventEmitter<WorkspaceEvent> for Workspace {}
+
 pub struct Workspace {
   focus_handle: FocusHandle,
+  profile: ConnectionProfile,
   tabs: TabsState,
   contents: HashMap<String, TabContent>,
   cell_editor: Entity<InputState>,
@@ -86,7 +94,38 @@ pub struct Workspace {
 }
 
 impl Workspace {
-  pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+  pub fn new(
+    db: Db,
+    profile: ConnectionProfile,
+    window: &mut Window,
+    cx: &mut Context<Self>,
+  ) -> Self {
+    Self::build(Some(db), profile, window, cx)
+  }
+
+  /// Tab-lifecycle tests need no live database behind the workspace.
+  #[cfg(test)]
+  pub fn test_new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    let profile = ConnectionProfile {
+      id: "test".to_string(),
+      name: "test".to_string(),
+      env: soquel_core::profiles::Env::Dev,
+      group: None,
+      agent_access: Default::default(),
+      credential: Default::default(),
+      params: soquel_core::profiles::ConnectorParams::Sqlite {
+        path: String::new(),
+      },
+    };
+    Self::build(None, profile, window, cx)
+  }
+
+  fn build(
+    db: Option<Db>,
+    profile: ConnectionProfile,
+    window: &mut Window,
+    cx: &mut Context<Self>,
+  ) -> Self {
     let focus_handle = cx.focus_handle();
     window.focus(&focus_handle, cx);
     let (provider, schema_entries) = SqlCompletionProvider::new();
@@ -150,48 +189,40 @@ impl Workspace {
     .detach();
 
     let handle = window.window_handle();
-    let connect_task = cx.spawn(async move |this, cx| {
-      let db = match core::connect_dev().await {
-        Ok(Ok(db)) => db,
-        Ok(Err(error)) => {
+    let server_version = db.as_ref().and_then(|db| db.server_version());
+    let connect_task = {
+      let db = db.clone();
+      cx.spawn(async move |this, cx| {
+        let Some(db) = db else {
+          return;
+        };
+        // Schema first: it fills the sidebar and the completion entries.
+        if let Ok(Ok(snapshot)) = core::schema_snapshot(&db).await {
           let _ = this.update(cx, |this, cx| {
-            this.status = format!("error: {error}").into();
+            this.schema_entries.fill(&snapshot);
+            this.snapshot = Some(snapshot);
+            this.rebuild_tree(cx);
             cx.notify();
           });
-          return;
         }
-        Err(_) => return,
-      };
 
-      let _ = this.update(cx, |this, cx| {
-        this.db = Some(db.clone());
-        this.server_version = db.server_version();
-        this.status = "connected".into();
-        cx.notify();
-      });
-
-      // Schema first: it fills the sidebar and the completion entries.
-      if let Ok(Ok(snapshot)) = core::schema_snapshot(&db).await {
-        let _ = this.update(cx, |this, cx| {
-          this.schema_entries.fill(&snapshot);
-          this.snapshot = Some(snapshot);
-          this.rebuild_tree(cx);
-          cx.notify();
-        });
-      }
-
-      let target = std::env::var("SOQUEL_GPUI_TABLE").unwrap_or_else(|_| "app.events".into());
-      let (schema, table) = target.split_once('.').unwrap_or(("public", &*target));
-      let (schema, table) = (schema.to_string(), table.to_string());
-      let _ = cx.update_window(handle, |_, window, app| {
-        let _ = this.update(app, |this, cx| {
-          this.open_table(schema, table, Vec::new(), window, cx);
-        });
-      });
-    });
+        // Dev convenience only: SOQUEL_GPUI_TABLE opens a tab on arrival.
+        if let Ok(target) = std::env::var("SOQUEL_GPUI_TABLE")
+          && let Some((schema, table)) = target.split_once('.')
+        {
+          let (schema, table) = (schema.to_string(), table.to_string());
+          let _ = cx.update_window(handle, |_, window, app| {
+            let _ = this.update(app, |this, cx| {
+              this.open_table(schema, table, Vec::new(), window, cx);
+            });
+          });
+        }
+      })
+    };
 
     Self {
       focus_handle,
+      profile,
       tabs: TabsState::default(),
       contents: HashMap::new(),
       cell_editor,
@@ -199,10 +230,10 @@ impl Workspace {
       sidebar_split,
       tree,
       tree_filter,
-      db: None,
+      db,
       snapshot: None,
-      server_version: None,
-      status: "connecting...".into(),
+      server_version,
+      status: "connected".into(),
       filter_open: false,
       filter_column,
       filter_op,
@@ -1594,11 +1625,23 @@ impl Workspace {
           .justify_between()
           .items_center()
           .child(
-            div()
-              .text_xs()
-              .font_semibold()
-              .text_color(cx.theme().muted_foreground)
-              .child("TABLES"),
+            h_flex()
+              .gap_1()
+              .items_center()
+              .child(
+                Button::new("back-to-connections")
+                  .ghost()
+                  .xsmall()
+                  .icon(Icon::new(IconName::ChevronLeft))
+                  .on_click(cx.listener(|_, _, _, cx| cx.emit(WorkspaceEvent::Close))),
+              )
+              .child(
+                div()
+                  .text_xs()
+                  .font_semibold()
+                  .text_color(cx.theme().muted_foreground)
+                  .child("TABLES"),
+              ),
           )
           .child(
             Button::new("refresh-schema")
@@ -2128,10 +2171,9 @@ impl Workspace {
       .active_grid()
       .map(|grid| grid.read(cx).delegate().status.clone())
       .unwrap_or_else(|| self.status.clone());
-    let connection = match (&self.db, &self.server_version) {
-      (Some(_), Some(version)) => format!("PostgreSQL {version}"),
-      (Some(_), None) => "connected".to_string(),
-      (None, _) => "connecting...".to_string(),
+    let connection = match &self.server_version {
+      Some(version) => format!("{} - PostgreSQL {version}", self.profile.name),
+      None => self.profile.name.clone(),
     };
     h_flex()
       .px_3()
@@ -2148,13 +2190,10 @@ impl Workspace {
 }
 
 impl Render for Workspace {
-  fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-    // Root does not render these itself: without them dialogs and toasts are silent no-ops.
-    let dialog_layer = Root::render_dialog_layer(window, cx);
-    let notification_layer = Root::render_notification_layer(window, cx);
-
+  fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
     v_flex()
-      .size_full()
+      .flex_1()
+      .min_h_0()
       .track_focus(&self.focus_handle)
       .bg(cx.theme().background)
       .on_action(cx.listener(|this, _: &RunQuery, _, cx| this.run(cx)))
@@ -2192,21 +2231,6 @@ impl Render for Workspace {
         }
       }))
       .child(
-        TitleBar::new().child(h_flex().child("soquel")).child(
-          h_flex().flex_1().justify_end().pr_2().child(
-            Button::new("toggle-theme")
-              .ghost()
-              .xsmall()
-              .icon(Icon::new(if cx.theme().mode.is_dark() {
-                IconName::Sun
-              } else {
-                IconName::Moon
-              }))
-              .on_click(cx.listener(|_, _, window, cx| theme::toggle(window, cx))),
-          ),
-        ),
-      )
-      .child(
         h_flex().flex_1().min_h_0().child(
           h_resizable("sidebar-main")
             .with_state(&self.sidebar_split)
@@ -2227,8 +2251,6 @@ impl Render for Workspace {
         ),
       )
       .child(self.render_status_bar(cx))
-      .children(dialog_layer)
-      .children(notification_layer)
   }
 }
 
@@ -2245,7 +2267,7 @@ mod tests {
   fn activating_a_ghost_tab_is_ignored(cx: &mut TestAppContext) {
     cx.update(gpui_component::init);
     let cx = cx.add_empty_window();
-    let workspace = cx.update(|window, cx| cx.new(|cx| Workspace::new(window, cx)));
+    let workspace = cx.update(|window, cx| cx.new(|cx| Workspace::test_new(window, cx)));
     cx.update(|window, cx| {
       workspace.update(cx, |this, cx| {
         this.open_sql(window, cx);
@@ -2261,7 +2283,7 @@ mod tests {
   fn closing_a_tab_drops_its_content_and_picks_the_neighbor(cx: &mut TestAppContext) {
     cx.update(gpui_component::init);
     let cx = cx.add_empty_window();
-    let workspace = cx.update(|window, cx| cx.new(|cx| Workspace::new(window, cx)));
+    let workspace = cx.update(|window, cx| cx.new(|cx| Workspace::test_new(window, cx)));
     cx.update(|window, cx| {
       workspace.update(cx, |this, cx| {
         this.open_sql(window, cx);
@@ -2280,7 +2302,7 @@ mod tests {
   fn sql_tabs_number_past_closed_ones(cx: &mut TestAppContext) {
     cx.update(gpui_component::init);
     let cx = cx.add_empty_window();
-    let workspace = cx.update(|window, cx| cx.new(|cx| Workspace::new(window, cx)));
+    let workspace = cx.update(|window, cx| cx.new(|cx| Workspace::test_new(window, cx)));
     cx.update(|window, cx| {
       workspace.update(cx, |this, cx| {
         this.open_sql(window, cx);
