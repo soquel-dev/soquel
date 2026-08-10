@@ -1,3 +1,4 @@
+#![recursion_limit = "256"]
 mod actions;
 mod cell_editing;
 mod completion;

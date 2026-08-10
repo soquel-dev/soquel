@@ -62,19 +62,21 @@ Four layers, from cheapest to heaviest. The first two exist today.
    `.test.ts` is pure logic that moves to Rust with its tests (see checklist).
    The tab-limit rules (`tabs.ts`) are licence enforcement: their tests port
    first.
-3. **Panel tests** (`#[gpui::test]` + `TestAppContext`): state logic per panel
-   through its `test_new` constructor: delegate paging, staged edits, dialog
-   state machines. No window needed, milliseconds each.
-4. **Flow tests** (`#[gpui::test]` + `VisualTestContext` + real test DBs):
-   the wdio e2e suite's replacement, in-process this time: connect -> browse
-   -> stage a cell edit -> apply; run a query -> read the grid; import a
-   `.soquel` file; licence dialog states. Gated by the same `SOQUEL_TEST_*`
-   env vars as the core suites, so they skip silently without docker.
-
-To validate early: that gpui-component's widgets respond to
-`simulate_keystrokes` through their own key contexts. Proven inside the first
-flow test; if a widget resists, its panel test drives the entity directly
-instead.
+3. **Panel tests** (`#[gpui::test]` + `TestAppContext`): state logic per panel.
+   Started: `grid.rs` covers the insert-on-top slot math, commit un-dirtying,
+   readonly/deleted guards, hidden-lead + xmin keys and fk lookup;
+   `workspace.rs` covers the ghost-activate guard, close picking the neighbor
+   and sql tab numbering. Gotcha, learned the hard way: a file whose parent
+   has `use gpui::*` must `use ::core::prelude::v1::test;` inside its tests
+   module, or `#[gpui::test]`'s generated `#[test]` resolves to gpui's own
+   macro and recurses (the crate also carries `#![recursion_limit = "256"]`).
+4. **Flow tests** (real test DBs): started with
+   `integration_flow_browse_stage_apply` in the gpui crate (connect ->
+   browse sorted -> stage -> apply -> reread), wired into
+   `test-integration.sh` and gated by `SOQUEL_TEST_PG` like the core suites.
+   Still to grow: input-simulation flows (`VisualTestContext`
+   `simulate_keystrokes` through gpui-component widgets), import and licence
+   dialogs.
 
 ## Parity checklist
 

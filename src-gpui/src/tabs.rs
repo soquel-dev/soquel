@@ -211,7 +211,7 @@ mod tests {
     let titles: Vec<String> = state.tabs.iter().map(|tab| tab.title()).collect();
     assert_eq!(titles, vec!["sql 1", "sql 2"]);
 
-    let state = close_tab(&state, &state.tabs[0].id().to_string());
+    let state = close_tab(&state, state.tabs[0].id());
     let state = open_sql_tab(&state, NO_LIMIT).unwrap();
     // "sql 2" is still open: the next editor must not reuse its number.
     let titles: Vec<String> = state.tabs.iter().map(|tab| tab.title()).collect();
@@ -228,13 +228,13 @@ mod tests {
   fn activates_the_right_neighbor_then_the_left_one_at_the_end() {
     let mut state = three();
     state.active_id = Some(state.tabs[1].id().to_string());
-    let state = close_tab(&state, &state.tabs[1].id().to_string());
+    let state = close_tab(&state, state.tabs[1].id());
     // was "c", shifted into slot 1
     assert_eq!(state.active_id.as_deref(), Some(state.tabs[1].id()));
 
     let mut state = state;
     state.active_id = Some(state.tabs[1].id().to_string());
-    let state = close_tab(&state, &state.tabs[1].id().to_string());
+    let state = close_tab(&state, state.tabs[1].id());
     assert_eq!(state.active_id.as_deref(), Some(state.tabs[0].id()));
   }
 
@@ -242,14 +242,14 @@ mod tests {
   fn keeps_the_active_tab_when_closing_another_one() {
     let state = three();
     let active = state.active_id.clone();
-    let state = close_tab(&state, &state.tabs[0].id().to_string());
+    let state = close_tab(&state, state.tabs[0].id());
     assert_eq!(state.active_id, active);
   }
 
   #[test]
   fn empties_cleanly() {
     let state = open_table(&TabsState::default(), "app", "a", NO_LIMIT);
-    let state = close_tab(&state, &state.tabs[0].id().to_string());
+    let state = close_tab(&state, state.tabs[0].id());
     assert!(state.tabs.is_empty());
     assert!(state.active_id.is_none());
   }

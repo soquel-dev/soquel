@@ -60,17 +60,25 @@ fn dev_profile() -> (ConnectionProfile, Arc<Credentials>) {
   (profile, secret)
 }
 
-pub fn connect_dev() -> oneshot::Receiver<Result<Db, Error>> {
+pub fn connect_with(
+  profile: ConnectionProfile,
+  secret: Arc<Credentials>,
+) -> oneshot::Receiver<Result<Db, Error>> {
   let (tx, rx) = oneshot::channel();
   runtime().spawn(async move {
-    let (profile, secret) = dev_profile();
-    let result = connector_for(ConnectorKind::Postgres)
+    let kind = profile.params.kind();
+    let result = connector_for(kind)
       .connect(&profile, secret, None)
       .await
-      .map(|conn| Db(Arc::from(conn), ConnectorKind::Postgres));
+      .map(|conn| Db(Arc::from(conn), kind));
     let _ = tx.send(result);
   });
   rx
+}
+
+pub fn connect_dev() -> oneshot::Receiver<Result<Db, Error>> {
+  let (profile, secret) = dev_profile();
+  connect_with(profile, secret)
 }
 
 pub fn fetch_rows(
@@ -229,5 +237,129 @@ pub fn page_request(schema: &str, table: &str, offset: u32, limit: u32) -> Table
     filters: Vec::new(),
     include_ctid: false,
     include_xmin: false,
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::staged::StagedChanges;
+
+  /// postgres://user:pass@host:port/db, the shape test-integration.sh exports.
+  fn parse_pg_url(url: &str) -> Option<(String, u16, String, String, String)> {
+    let rest = url.strip_prefix("postgres://")?;
+    let (creds, host_db) = rest.split_once('@')?;
+    let (user, pass) = creds.split_once(':')?;
+    let (host_port, db) = host_db.split_once('/')?;
+    let (host, port) = host_port.split_once(':')?;
+    Some((
+      host.to_string(),
+      port.parse().ok()?,
+      db.to_string(),
+      user.to_string(),
+      pass.to_string(),
+    ))
+  }
+
+  /// The whole grid path against a real postgres: browse, stage, apply, reread.
+  /// Skipped silently without SOQUEL_TEST_PG, like the core suites.
+  #[tokio::test]
+  async fn integration_flow_browse_stage_apply() {
+    let Ok(url) = std::env::var("SOQUEL_TEST_PG") else {
+      return;
+    };
+    let (host, port, database, user, pass) = parse_pg_url(&url).expect("parsable test url");
+    let profile = ConnectionProfile {
+      id: "flow-test".to_string(),
+      name: "flow test".to_string(),
+      env: Env::Dev,
+      group: None,
+      agent_access: AgentAccess::None,
+      credential: CredentialSource::Prompt,
+      params: ConnectorParams::Postgres(SqlServerParams {
+        host,
+        port,
+        database,
+        user,
+        ssl_mode: Default::default(),
+        ssl_root_cert: None,
+        tunnel_id: None,
+      }),
+    };
+    let db = connect_with(profile, Credentials::fixed(Some(pass)))
+      .await
+      .expect("channel")
+      .expect("connects to the compose postgres");
+
+    let table = format!("gpui_flow_{}", std::process::id());
+    let session = open_session(&db).await.expect("channel").expect("session");
+    run_session_query(
+      &session,
+      format!("create table {table} (id int primary key, name text)"),
+    )
+    .await
+    .expect("channel")
+    .expect("create");
+    run_session_query(
+      &session,
+      format!("insert into {table} values (1, 'Ada'), (2, 'Alan')"),
+    )
+    .await
+    .expect("channel")
+    .expect("insert");
+
+    // Browse the first page like the grid does; an update moves the row in the
+    // heap, so ordering must be explicit like the grid's sort would be.
+    let sorted = |offset| {
+      let mut request = page_request("public", &table, offset, 10);
+      request.sort = Some(soquel_core::connectors::SortSpec {
+        column: "id".to_string(),
+        direction: soquel_core::connectors::SortDirection::Asc,
+      });
+      request
+    };
+    let page = fetch_rows(&db, sorted(0))
+      .await
+      .expect("channel")
+      .expect("fetch");
+    let statement = &page.statements[0];
+    assert_eq!(statement.rows.len(), 2);
+
+    // Stage an edit and apply it through the shared builder.
+    let mut staged = StagedChanges::default();
+    staged.edits.insert(
+      0,
+      [("name".to_string(), Some("Ada II".to_string()))]
+        .into_iter()
+        .collect(),
+    );
+    let changes = crate::staged::build_table_changes(
+      &staged,
+      &statement.rows,
+      &statement.columns,
+      &["id".to_string()],
+      "public",
+      &table,
+    );
+    assert_eq!(changes.updates.len(), 1);
+    assert_eq!(changes.updates[0].key[0].column, "id");
+    assert_eq!(changes.updates[0].key[0].value, Some("1".to_string()));
+    let applied = apply_changes(&db, changes)
+      .await
+      .expect("channel")
+      .expect("apply");
+    assert_eq!(applied.updated, 1);
+
+    // The reread sees the committed value.
+    let page = fetch_rows(&db, sorted(0))
+      .await
+      .expect("channel")
+      .expect("refetch");
+    assert_eq!(page.statements[0].rows[0][1], Some("Ada II".to_string()));
+
+    let _ = run_session_query(&session, format!("drop table {table}"))
+      .await
+      .expect("channel");
+    close_session(session);
   }
 }
