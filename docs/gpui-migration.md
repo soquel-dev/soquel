@@ -113,8 +113,10 @@ deleted. Each panel lands with its layer-3 tests; each flow with layer 4.
 - [ ] Grid inspector (cell detail)
 - [ ] Export menu (rows/statement to file)
 - [x] SQL editor: highlighting, completion, run (spike)
-- [ ] SQL editor: sessions (SET/transactions), cancel, format, history
-      (`query-history.ts` port)
+- [x] SQL editor: sessions, cancel, history (`history.rs` ports
+      `query-history.ts` with its tests; one pinned session per sql tab,
+      selection-or-all runs, cancel while running; history is in-memory until
+      the persistence layer lands - same gap as tab restore)
 - [ ] Explain tree (`explain.ts` port)
 - [x] Schema tree sidebar + DDL view (gpui-component Tree, kind icons via the
       custom `SoquelIcon` set in `assets/icons/`, filter input, compact row
