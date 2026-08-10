@@ -56,32 +56,36 @@ impl Workspace {
         let first_page = core::fetch_rows(&db, request).await;
 
         table.update(cx, |table, cx| {
-          let delegate = table.delegate_mut();
-          delegate.db = Some(db);
-          delegate.loading = false;
-          match first_page {
-            Ok(Ok(result)) => {
-              if let Some(statement) = result.statements.into_iter().next() {
-                delegate.columns = statement.columns;
-                delegate.eof = (statement.rows.len() as u32) < PAGE_SIZE;
-                delegate.rows = statement.rows;
+          {
+            let delegate = table.delegate_mut();
+            delegate.db = Some(db);
+            delegate.loading = false;
+            match first_page {
+              Ok(Ok(result)) => {
+                if let Some(statement) = result.statements.into_iter().next() {
+                  delegate.columns = statement.columns;
+                  delegate.eof = (statement.rows.len() as u32) < PAGE_SIZE;
+                  delegate.rows = statement.rows;
+                }
+                delegate.status = format!(
+                  "{}.{} - {} rows - first page {:.0} ms",
+                  delegate.schema,
+                  delegate.table,
+                  delegate.rows.len(),
+                  result.duration_ms
+                )
+                .into();
               }
-              delegate.status = format!(
-                "{}.{} - {} rows - first page {:.0} ms",
-                delegate.schema,
-                delegate.table,
-                delegate.rows.len(),
-                result.duration_ms
-              )
-              .into();
-            }
-            Ok(Err(error)) => {
-              delegate.status = format!("error: {error}").into();
-            }
-            Err(_) => {
-              delegate.status = "error: fetch canceled".into();
+              Ok(Err(error)) => {
+                delegate.status = format!("error: {error}").into();
+              }
+              Err(_) => {
+                delegate.status = "error: fetch canceled".into();
+              }
             }
           }
+          // Columns land after creation: the state only re-reads them on refresh.
+          table.refresh(cx);
           cx.notify();
         });
       })
