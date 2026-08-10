@@ -117,7 +117,10 @@ deleted. Each panel lands with its layer-3 tests; each flow with layer 4.
       `query-history.ts` with its tests; one pinned session per sql tab,
       selection-or-all runs, cancel while running; history is in-memory until
       the persistence layer lands - same gap as tab restore)
-- [ ] Explain tree (`explain.ts` port)
+- [x] Explain tree (`explain.rs` ports `explain.ts` with its full suite and
+      the real captured fixtures: pg json, mysql wrappers/prefix_cost,
+      mariadb flavor, sqlite EQP, tree text; heat bars, collapse, estimate-off.
+      mysql/sqlite parsers wait on their connectors; raw json view to add)
 - [x] Schema tree sidebar + DDL view (gpui-component Tree, kind icons via the
       custom `SoquelIcon` set in `assets/icons/`, filter input, compact row
       estimates; Data/DDL toggle with highlighted sql and copy)

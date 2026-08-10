@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder;
@@ -25,6 +25,9 @@ use crate::actions::{
 };
 use crate::completion::{SchemaEntries, SqlCompletionProvider};
 use crate::core::{self, Db};
+use crate::explain::{
+  ExplainPlan, explain_sql, flatten_plan, format_ms, format_rows, hidden_by_collapse, parse_explain,
+};
 use crate::filters::{filter_label, op_label, op_needs_value, ops_for_kind};
 use crate::format::format_estimated_rows;
 use crate::grid::RowsDelegate;
@@ -48,6 +51,8 @@ enum TabContent {
     split: Entity<ResizableState>,
     session: Option<core::Session>,
     running: bool,
+    explain: Option<(Vec<ExplainPlan>, String)>,
+    explain_collapsed: HashSet<String>,
   },
 }
 
@@ -394,6 +399,8 @@ impl Workspace {
         split,
         session: None,
         running: false,
+        explain: None,
+        explain_collapsed: HashSet::new(),
       },
     );
     cx.notify();
@@ -662,6 +669,15 @@ impl Workspace {
   }
 
   fn run(&mut self, cx: &mut Context<Self>) {
+    self.run_inner(None, cx);
+  }
+
+  /// EXPLAIN wraps a single statement: use the selection to explain one of many.
+  fn run_explain(&mut self, analyze: bool, cx: &mut Context<Self>) {
+    self.run_inner(Some(analyze), cx);
+  }
+
+  fn run_inner(&mut self, explain: Option<bool>, cx: &mut Context<Self>) {
     let Some(db) = self.db.clone() else {
       return;
     };
@@ -686,6 +702,14 @@ impl Workspace {
     if sql.is_empty() {
       return;
     }
+    let sql = match explain {
+      Some(analyze) => explain_sql(
+        soquel_core::profiles::ConnectorKind::Postgres,
+        analyze,
+        sql.trim_end_matches(';').trim_end(),
+      ),
+      None => sql,
+    };
 
     if let Some(TabContent::Sql { running, .. }) = self.contents.get_mut(&id) {
       *running = true;
@@ -737,8 +761,32 @@ impl Workspace {
         _ => (false, 0.),
       };
       let _ = this.update(cx, |this, cx| {
-        if let Some(TabContent::Sql { running, .. }) = this.contents.get_mut(&id) {
+        if let Some(TabContent::Sql {
+          running,
+          explain,
+          explain_collapsed,
+          ..
+        }) = this.contents.get_mut(&id)
+        {
           *running = false;
+          *explain = None;
+          explain_collapsed.clear();
+          if let Ok(Ok(result)) = &result
+            && let Some(statement) = result
+              .statements
+              .iter()
+              .rev()
+              .find(|s| !s.columns.is_empty())
+            && let Some(plans) = parse_explain(&statement.columns, &statement.rows)
+          {
+            let raw = statement
+              .rows
+              .iter()
+              .map(|row| row.first().and_then(|c| c.as_deref()).unwrap_or(""))
+              .collect::<Vec<_>>()
+              .join("\n");
+            *explain = Some((plans, raw));
+          }
         }
         this.history = push_history(
           std::mem::take(&mut this.history),
@@ -976,6 +1024,187 @@ impl Workspace {
         editor.focus(window, cx);
       });
     }
+  }
+
+  fn toggle_explain_node(&mut self, id: &str, cx: &mut Context<Self>) {
+    let Some(tab_id) = self.tabs.active_id.clone() else {
+      return;
+    };
+    if let Some(TabContent::Sql {
+      explain_collapsed, ..
+    }) = self.contents.get_mut(&tab_id)
+    {
+      if !explain_collapsed.remove(id) {
+        explain_collapsed.insert(id.to_string());
+      }
+      cx.notify();
+    }
+  }
+
+  fn render_explain(
+    &self,
+    plans: &[ExplainPlan],
+    collapsed: &HashSet<String>,
+    cx: &mut Context<Self>,
+  ) -> impl IntoElement {
+    let mut header: Vec<String> = Vec::new();
+    for plan in plans {
+      if let Some(ms) = plan.planning_ms {
+        header.push(format!("planning {}", format_ms(ms)));
+      }
+      if let Some(ms) = plan.execution_ms {
+        header.push(format!("execution {}", format_ms(ms)));
+      }
+      if !plan.analyzed {
+        header.push(
+          if plan.root.total_cost > 0. {
+            "estimated costs only"
+          } else {
+            "query structure only"
+          }
+          .to_string(),
+        );
+      }
+    }
+
+    let mut rows = Vec::new();
+    for plan in plans {
+      for node in flatten_plan(&plan.root) {
+        if hidden_by_collapse(&node.id, collapsed) {
+          continue;
+        }
+        let heat_color = if node.heat >= 0.4 {
+          cx.theme().red
+        } else if node.heat >= 0.1 {
+          cx.theme().yellow
+        } else {
+          cx.theme().muted_foreground
+        };
+        let timing = if !plan.analyzed {
+          if node.total_cost > 0. {
+            format!(
+              "cost {:.*}",
+              if node.total_cost >= 100. { 0 } else { 2 },
+              node.total_cost
+            )
+          } else {
+            String::new()
+          }
+        } else {
+          node.inclusive_ms.map(format_ms).unwrap_or_default()
+        };
+        let rows_label = if node.plan_rows > 0. || node.actual_rows.is_some() {
+          let mut label = format!("rows {}", format_rows(node.plan_rows));
+          if let Some(actual) = node.actual_rows {
+            label.push_str(&format!(" -> {}", format_rows(actual)));
+          }
+          Some(label)
+        } else {
+          None
+        };
+        let node_id = node.id.clone();
+        let is_collapsed = collapsed.contains(&node.id);
+        rows.push(
+          h_flex()
+            .px_3()
+            .py_0p5()
+            .gap_2()
+            .items_center()
+            .font_family("IBM Plex Mono")
+            .text_xs()
+            .pl(px(12. + node.depth as f32 * 16.))
+            .child(if node.children.is_empty() {
+              div().w_4().into_any_element()
+            } else {
+              Button::new(SharedString::from(format!("ex-{node_id}")))
+                .ghost()
+                .xsmall()
+                .icon(Icon::new(if is_collapsed {
+                  IconName::ChevronRight
+                } else {
+                  IconName::ChevronDown
+                }))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                  this.toggle_explain_node(&node_id, cx);
+                }))
+                .into_any_element()
+            })
+            .child(div().font_semibold().child(node.node_type.clone()))
+            .when_some(node.target.clone(), |this, target| {
+              this.child(div().text_color(cx.theme().muted_foreground).child(target))
+            })
+            .when_some(node.condition.clone(), |this, condition| {
+              this.child(
+                div()
+                  .flex_1()
+                  .min_w_0()
+                  .truncate()
+                  .text_color(cx.theme().muted_foreground)
+                  .child(condition),
+              )
+            })
+            .child(div().flex_1())
+            .when(node.never_executed, |this| {
+              this.child(
+                div()
+                  .text_color(cx.theme().muted_foreground)
+                  .italic()
+                  .child("never executed"),
+              )
+            })
+            .when(!node.never_executed, |this| {
+              this
+                .when_some(rows_label.clone(), |this, label| {
+                  this.child(
+                    div()
+                      .text_color(if node.estimate_off {
+                        cx.theme().yellow
+                      } else {
+                        cx.theme().muted_foreground
+                      })
+                      .child(label),
+                  )
+                })
+                .child(div().text_color(heat_color).child(timing.clone()))
+            })
+            .child(
+              // Exclusive share of total: the folded-flamegraph signature.
+              div()
+                .w_10()
+                .h_1()
+                .rounded_full()
+                .bg(cx.theme().muted)
+                .child(div().h_full().rounded_full().bg(heat_color).w(relative(
+                  (node.heat as f32).max(if node.heat > 0. { 0.04 } else { 0. }),
+                ))),
+            ),
+        );
+      }
+    }
+
+    v_flex()
+      .size_full()
+      .child(
+        h_flex()
+          .px_3()
+          .py_1()
+          .gap_3()
+          .border_b_1()
+          .border_color(cx.theme().border)
+          .font_family("IBM Plex Mono")
+          .text_xs()
+          .text_color(cx.theme().muted_foreground)
+          .children(header.into_iter().map(|part| div().child(part))),
+      )
+      .child(
+        v_flex()
+          .id("explain-rows")
+          .flex_1()
+          .min_h_0()
+          .overflow_y_scroll()
+          .py_1()
+          .children(rows),
+      )
   }
 
   fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1396,6 +1625,8 @@ impl Workspace {
         results,
         split,
         running,
+        explain,
+        explain_collapsed,
         ..
       }) => v_flex()
         .flex_1()
@@ -1425,6 +1656,22 @@ impl Workspace {
               )
             })
             .child(
+              Button::new("explain")
+                .ghost()
+                .xsmall()
+                .label("Explain")
+                .disabled(*running || self.db.is_none())
+                .on_click(cx.listener(|this, _, _, cx| this.run_explain(false, cx))),
+            )
+            .child(
+              Button::new("explain-analyze")
+                .ghost()
+                .xsmall()
+                .label("Analyze")
+                .disabled(*running || self.db.is_none())
+                .on_click(cx.listener(|this, _, _, cx| this.run_explain(true, cx))),
+            )
+            .child(
               Button::new("history")
                 .ghost()
                 .xsmall()
@@ -1449,12 +1696,21 @@ impl Workspace {
                   ),
               )
               .child(
-                resizable_panel().child(
-                  v_flex()
+                resizable_panel().child(match explain {
+                  Some((plans, _)) => {
+                    let plans = plans.clone();
+                    let collapsed = explain_collapsed.clone();
+                    v_flex()
+                      .size_full()
+                      .child(self.render_explain(&plans, &collapsed, cx))
+                      .into_any_element()
+                  }
+                  None => v_flex()
                     .size_full()
                     .p_1()
-                    .child(DataTable::new(results).stripe(true)),
-                ),
+                    .child(DataTable::new(results).stripe(true))
+                    .into_any_element(),
+                }),
               ),
           ),
         )

@@ -2,6 +2,7 @@ mod actions;
 mod cell_editing;
 mod completion;
 mod core;
+mod explain;
 mod filters;
 mod format;
 mod grid;

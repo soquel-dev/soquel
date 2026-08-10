@@ -1,0 +1,64 @@
+{
+  "query_block": {
+    "union_result": {
+      "using_temporary_table": true,
+      "select_id": 3,
+      "table_name": "<union1,2>",
+      "access_type": "ALL",
+      "query_specifications": [
+        {
+          "dependent": false,
+          "cacheable": true,
+          "query_block": {
+            "select_id": 1,
+            "cost_info": {
+              "query_cost": "1.30"
+            },
+            "table": {
+              "table_name": "customers",
+              "access_type": "ALL",
+              "rows_examined_per_scan": 3,
+              "rows_produced_per_join": 3,
+              "filtered": "100.00",
+              "cost_info": {
+                "read_cost": "1.00",
+                "eval_cost": "0.30",
+                "prefix_cost": "1.30",
+                "data_read_per_join": "3K"
+              },
+              "used_columns": [
+                "name"
+              ]
+            }
+          }
+        },
+        {
+          "dependent": false,
+          "cacheable": true,
+          "query_block": {
+            "select_id": 2,
+            "cost_info": {
+              "query_cost": "1.85"
+            },
+            "table": {
+              "table_name": "events",
+              "access_type": "ALL",
+              "rows_examined_per_scan": 16,
+              "rows_produced_per_join": 16,
+              "filtered": "100.00",
+              "cost_info": {
+                "read_cost": "0.25",
+                "eval_cost": "1.60",
+                "prefix_cost": "1.85",
+                "data_read_per_join": "2K"
+              },
+              "used_columns": [
+                "kind"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}
