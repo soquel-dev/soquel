@@ -87,6 +87,24 @@ pub fn fetch_rows(
   rx
 }
 
+pub fn apply_changes(
+  db: &Db,
+  changes: soquel_core::connectors::TableChanges,
+) -> oneshot::Receiver<Result<soquel_core::connectors::ApplyResult, Error>> {
+  let (tx, rx) = oneshot::channel();
+  let conn = db.0.clone();
+  runtime().spawn(async move {
+    let result = match conn.sql() {
+      Some(surface) => surface.apply_changes(&changes).await,
+      None => Err(Error::Unsupported {
+        message: "connection has no sql surface".to_string(),
+      }),
+    };
+    let _ = tx.send(result);
+  });
+  rx
+}
+
 pub fn run_query(db: &Db, sql: String) -> oneshot::Receiver<Result<QueryResult, Error>> {
   let (tx, rx) = oneshot::channel();
   let conn = db.0.clone();

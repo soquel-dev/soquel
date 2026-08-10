@@ -105,7 +105,9 @@ deleted. Each panel lands with its layer-3 tests; each flow with layer 4.
 
 - [x] Table grid: virtual scroll, cell selection, column resize (spike)
 - [x] Grid: server-side sort + filters (`filters.rs` ports `lib/filters.ts` with its tests)
-- [ ] Cell editing: staged changes, apply, ctid/xmin guards (`staged.ts` port)
+- [x] Cell editing: staged changes, apply, ctid/xmin guards (`staged.rs` and
+      `cell_editing.rs` port `staged.ts` / `cell-editing.ts` with their tests;
+      bool/date cells edit as text for now, preview dialog wrapping to polish)
 - [ ] Grid inspector (cell detail)
 - [ ] Export menu (rows/statement to file)
 - [x] SQL editor: highlighting, completion, run (spike)

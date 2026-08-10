@@ -1,8 +1,10 @@
 mod actions;
+mod cell_editing;
 mod completion;
 mod core;
 mod filters;
 mod grid;
+mod staged;
 mod theme;
 mod workspace;
 

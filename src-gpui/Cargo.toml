@@ -17,6 +17,7 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["fo
 gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "55968d167bd6959551c3417c3622899c33ecda20", features = ["tree-sitter-sql"] }
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "55968d167bd6959551c3417c3622899c33ecda20" }
 lsp-types = { version = "0.97.0", features = ["proposed"] }
+serde_json = "1"
 soquel-core = { path = "../crates/core" }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 
