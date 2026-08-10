@@ -116,7 +116,9 @@ deleted. Each panel lands with its layer-3 tests; each flow with layer 4.
 - [ ] SQL editor: sessions (SET/transactions), cancel, format, history
       (`query-history.ts` port)
 - [ ] Explain tree (`explain.ts` port)
-- [ ] Schema tree sidebar + DDL view
+- [x] Schema tree sidebar + DDL view (gpui-component Tree, kind icons via the
+      custom `SoquelIcon` set in `assets/icons/`, filter input, compact row
+      estimates; Data/DDL toggle with highlighted sql and copy)
 - [x] Results vs browse tabs model (table tabs and sql tabs each own their
       grid/editor state; ctrl-tab cycles, close picks the right neighbor)
 

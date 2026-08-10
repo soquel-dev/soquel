@@ -7921,6 +7921,7 @@ dependencies = [
  "gpui-component-assets",
  "gpui_platform",
  "lsp-types",
+ "rust-embed",
  "serde_json",
  "soquel-core",
  "tokio",

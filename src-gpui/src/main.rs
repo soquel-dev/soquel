@@ -3,7 +3,9 @@ mod cell_editing;
 mod completion;
 mod core;
 mod filters;
+mod format;
 mod grid;
+mod icons;
 mod staged;
 mod tabs;
 mod theme;
@@ -17,7 +19,7 @@ use crate::workspace::Workspace;
 fn main() {
   // Without the asset source, every Icon (sort chevrons, titlebar, chips) is invisible.
   gpui_platform::application()
-    .with_assets(gpui_component_assets::Assets)
+    .with_assets(crate::icons::Assets)
     .run(move |cx| {
       gpui_component::init(cx);
       theme::init(cx);
