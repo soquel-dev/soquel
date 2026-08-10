@@ -1,0 +1,22 @@
+[package]
+name = "soquel-gpui"
+version = "0.1.0"
+description = "Soquel gpui frontend"
+license = "FSL-1.1-MIT"
+authors = ["Joris Gallot"]
+edition = "2024"
+
+# Detached from any parent workspace: src-tauri keeps its own target dir.
+[workspace]
+
+[dependencies]
+anyhow = "1"
+futures = "0.3"
+gpui = { git = "https://github.com/zed-industries/zed" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
+gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "55968d167bd6959551c3417c3622899c33ecda20", features = ["tree-sitter-sql"] }
+soquel = { path = "../src-tauri" }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+
+[profile.dev]
+debug = "limited"
