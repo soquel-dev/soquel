@@ -5,59 +5,18 @@ use tauri::State;
 use soquel_core::connectors::{
   connector_for, ApplyResult, Capability, Connection, DocBrowse, DocCollection, DocCount,
   DocDatabase, DocDetail, DocFindRequest, DocPage, DocQueryResult, IndexInfo, KeyDetail,
-  KeyScanPage, KvBrowse, KvDatabases, LocalForward, QueryColumn, QueryResult, RowsChunk,
-  SchemaSnapshot, SqlQuery, SqlSession, StreamSummary, TableChanges, TableRowsRequest,
+  KeyScanPage, KvBrowse, KvDatabases, QueryColumn, QueryResult, RowsChunk, SchemaSnapshot,
+  SqlQuery, SqlSession, StreamSummary, TableChanges, TableRowsRequest,
 };
 use soquel_core::credentials::{self, resolve_credentials, CredentialTarget};
 use soquel_core::error::{Error, SecretSubject};
 use soquel_core::export::ExportFormat;
-use soquel_core::profiles::{ConnectionInput, ConnectionProfile, ConnectorKind, CredentialSource};
+use soquel_core::profiles::{ConnectionInput, ConnectionProfile, ConnectorKind};
 use soquel_core::secrets::SecretKey;
 use soquel_core::ssh::{self, SshTunnel, TunnelTarget};
 use soquel_core::transfer::{self, DuplicateStrategy, ExportSummary, ImportOutcome, ImportPreview};
 use soquel_core::tunnels::{TunnelInput, TunnelProfile};
-use soquel_core::{ActiveConnection, AppState, SessionEntry};
-
-/// Resolve a profile's tunnel (if any); the returned forward tells the
-/// connector where TCP actually goes while the profile keeps the logical host.
-async fn open_tunnel(
-  state: &AppState,
-  profile: &ConnectionProfile,
-) -> Result<Option<(SshTunnel, LocalForward)>, Error> {
-  let Some(remote) = profile.params.remote() else {
-    return Ok(None);
-  };
-  let Some(tunnel_id) = remote.tunnel_id else {
-    return Ok(None);
-  };
-  let tunnel = state.tunnels.lock().unwrap().get(tunnel_id)?;
-  // Opened once per connection: no pool to re-resolve for, so a command runs
-  // at each bring-up, which is what a short-lived token wants.
-  let secret = resolve_credentials(state, &CredentialTarget::tunnel(&tunnel, tunnel_id), None)?
-    .resolve()
-    .await?;
-  let known_key = state
-    .known_hosts
-    .lock()
-    .unwrap()
-    .get(&tunnel.host, tunnel.port)
-    .map(|raw| ssh::parse_public_key(&raw))
-    .transpose()?;
-  let opened = SshTunnel::open(
-    &tunnel,
-    secret.as_deref(),
-    known_key,
-    TunnelTarget {
-      host: remote.host.to_string(),
-      port: remote.port,
-    },
-  )
-  .await?;
-  let forward = LocalForward {
-    port: opened.local_port,
-  };
-  Ok(Some((opened, forward)))
-}
+use soquel_core::{AppState, SessionEntry};
 
 #[tauri::command]
 #[specta::specta]
@@ -73,83 +32,13 @@ pub async fn test_connection(
   input: ConnectionInput,
   existing_id: Option<String>,
 ) -> Result<(), Error> {
-  let profile = ConnectionProfile {
-    id: String::new(),
-    name: input.name.clone(),
-    env: input.env,
-    group: input.group.clone(),
-    agent_access: input.agent_access,
-    credential: input.credential.clone(),
-    params: input.params.clone(),
-  };
-  let target = CredentialTarget::connection(&profile, existing_id.as_deref().unwrap_or_default());
-  let secret = resolve_credentials(state.inner(), &target, input.password.clone())?;
-  let result = test_run(&state, &profile, secret).await;
-  // A password typed to test an unsaved profile has no connection to outlive.
-  state.session_secrets.clear_one_shot(&target.key);
-  result
-}
-
-async fn test_run(
-  state: &AppState,
-  profile: &ConnectionProfile,
-  secret: Arc<soquel_core::credentials::Credentials>,
-) -> Result<(), Error> {
-  let opened = open_tunnel(state, profile).await?;
-  let connection = connector_for(profile.params.kind())
-    .connect(profile, secret, opened.as_ref().map(|(_, f)| *f))
-    .await?;
-  connection.health().await?;
-  connection.close().await
+  soquel_core::ops::test_connection(state.inner(), &input, existing_id.as_deref()).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn connect(state: State<'_, AppState>, id: String) -> Result<(), Error> {
-  connect_impl(state.inner(), id).await
-}
-
-pub(crate) async fn connect_impl(state: &AppState, id: String) -> Result<(), Error> {
-  let result = connect_attempt(state, &id).await;
-  // A password typed for this attempt only dies with it, success or failure,
-  // on both ends of the hop.
-  state
-    .session_secrets
-    .clear_one_shot(&SecretKey::Connection(id.clone()));
-  if let Some(tunnel_id) = tunnel_of(state, &id) {
-    state
-      .session_secrets
-      .clear_one_shot(&SecretKey::Tunnel(tunnel_id));
-  }
-  result
-}
-
-/// The tunnel a connection rides on, if any.
-fn tunnel_of(state: &AppState, id: &str) -> Option<String> {
-  let profile = state.profiles.lock().unwrap().get(id).ok()?;
-  profile
-    .params
-    .remote()
-    .and_then(|remote| remote.tunnel_id)
-    .map(str::to_string)
-}
-
-async fn connect_attempt(state: &AppState, id: &str) -> Result<(), Error> {
-  let profile = state.profiles.lock().unwrap().get(id)?;
-  let secret = resolve_credentials(state, &CredentialTarget::connection(&profile, id), None)?;
-  let opened = open_tunnel(state, &profile).await?;
-  let forward = opened.as_ref().map(|(_, f)| *f);
-  let connection = connector_for(profile.params.kind())
-    .connect(&profile, secret, forward)
-    .await?;
-  state.connections.lock().await.insert(
-    id.to_string(),
-    ActiveConnection {
-      connection: connection.into(),
-      _tunnel: opened.map(|(tunnel, _)| tunnel),
-    },
-  );
-  Ok(())
+  soquel_core::ops::connect(state.inner(), id).await
 }
 
 /// Hands the core a password for whatever asked for one at connect time.
@@ -164,17 +53,8 @@ pub fn unlock_secret(
   secret: String,
   remember: bool,
 ) -> Result<(), Error> {
-  state
-    .session_secrets
-    .set(&key_for(subject, id), secret, remember);
+  soquel_core::ops::unlock_secret(state.inner(), subject, id, secret, remember);
   Ok(())
-}
-
-fn key_for(subject: SecretSubject, id: String) -> SecretKey {
-  match subject {
-    SecretSubject::Connection => SecretKey::Connection(id),
-    SecretSubject::Tunnel => SecretKey::Tunnel(id),
-  }
 }
 
 /// Agrees to run the credential command a profile carries, as it stands now.
@@ -186,8 +66,8 @@ pub fn approve_credential_command(
   subject: SecretSubject,
   id: String,
 ) -> Result<(), Error> {
-  let key = key_for(subject, id);
-  let command = current_command(state.inner(), &key)?;
+  let key = soquel_core::ops::key_for(subject, id);
+  let command = soquel_core::ops::current_command(state.inner(), &key)?;
   state
     .command_approvals
     .lock()
@@ -206,23 +86,7 @@ pub fn revoke_credential_command(
     .command_approvals
     .lock()
     .unwrap()
-    .revoke(&key_for(subject, id))
-}
-
-/// Reads the command off the stored profile: approving what the webview echoes
-/// back would approve whatever it says instead of what will run.
-fn current_command(state: &AppState, key: &SecretKey) -> Result<String, Error> {
-  let credential = match key {
-    SecretKey::Connection(id) => state.profiles.lock().unwrap().get(id)?.credential,
-    SecretKey::Tunnel(id) => state.tunnels.lock().unwrap().get(id)?.credential,
-    SecretKey::McpToken => CredentialSource::Keychain,
-  };
-  match credential {
-    CredentialSource::Command { command, .. } => Ok(command),
-    _ => Err(Error::NotFound {
-      message: "this connection does not get its password from a command".to_string(),
-    }),
-  }
+    .revoke(&soquel_core::ops::key_for(subject, id))
 }
 
 /// Splits a credential command the way the core will run it, so the form can
@@ -237,47 +101,7 @@ pub fn parse_credential_command(line: String) -> Result<Vec<String>, Error> {
 #[tauri::command]
 #[specta::specta]
 pub async fn disconnect(state: State<'_, AppState>, id: String) -> Result<(), Error> {
-  disconnect_impl(state.inner(), &id).await
-}
-
-pub(crate) async fn disconnect_impl(state: &AppState, id: &str) -> Result<(), Error> {
-  let orphaned: Vec<Arc<dyn SqlSession>> = {
-    let mut sessions = state.sessions.lock().await;
-    let ids: Vec<String> = sessions
-      .iter()
-      .filter(|(_, entry)| entry.connection_id == id)
-      .map(|(session_id, _)| session_id.clone())
-      .collect();
-    ids
-      .iter()
-      .filter_map(|session_id| sessions.remove(session_id))
-      .map(|entry| entry.session)
-      .collect()
-  };
-  for session in orphaned {
-    let _ = session.close().await;
-  }
-  state
-    .session_secrets
-    .clear(&SecretKey::Connection(id.to_string()));
-  // The tunnel's password only outlives the hop while another connection still
-  // rides it.
-  if let Some(tunnel_id) = tunnel_of(state, id) {
-    let still_used = state
-      .connections
-      .lock()
-      .await
-      .keys()
-      .any(|other| other != id && tunnel_of(state, other).as_deref() == Some(&tunnel_id));
-    if !still_used {
-      state.session_secrets.clear(&SecretKey::Tunnel(tunnel_id));
-    }
-  }
-  let active = state.connections.lock().await.remove(id);
-  match active {
-    Some(active) => active.connection.close().await,
-    None => Ok(()),
-  }
+  soquel_core::ops::disconnect(state.inner(), &id).await
 }
 
 #[tauri::command]
@@ -500,17 +324,8 @@ fn introspect_surface(
   })
 }
 
-// Clone the Arc out so queries never hold the map lock.
 pub(crate) async fn active(state: &AppState, id: &str) -> Result<Arc<dyn Connection>, Error> {
-  state
-    .connections
-    .lock()
-    .await
-    .get(id)
-    .map(|active| active.connection.clone())
-    .ok_or_else(|| Error::NotFound {
-      message: format!("connection {id} is not active"),
-    })
+  soquel_core::ops::active(state, id).await
 }
 
 fn sql_surface(connection: &Arc<dyn Connection>) -> Result<&dyn SqlQuery, Error> {
@@ -748,59 +563,13 @@ pub fn get_connection(state: State<'_, AppState>, id: String) -> Result<Connecti
   state.profiles.lock().unwrap().get(&id)
 }
 
-/// Keeps the stores in step with the mode: only `keychain` stores a password,
-/// and leaving it wipes what was stored for something that no longer keeps one.
-pub(crate) fn persist_secret(
-  state: &AppState,
-  key: &SecretKey,
-  credential: &CredentialSource,
-  password: Option<&str>,
-) -> Result<(), Error> {
-  if credential == &CredentialSource::Keychain {
-    if let Some(password) = password {
-      state.secrets.set(key, password)?;
-    }
-    return Ok(());
-  }
-  state.secrets.delete(key)?;
-  state.session_secrets.clear(key);
-  Ok(())
-}
-
-/// A command typed in the form is approved by saving it: the user just read
-/// the argv under the field. Only imports leave one waiting.
-fn approve_own_command(
-  state: &AppState,
-  key: &SecretKey,
-  credential: &CredentialSource,
-) -> Result<(), Error> {
-  let mut approvals = state.command_approvals.lock().unwrap();
-  match credential {
-    CredentialSource::Command { command, .. } => approvals.approve(key, command),
-    _ => approvals.revoke(key),
-  }
-}
-
 #[tauri::command]
 #[specta::specta]
 pub fn create_connection(
   state: State<'_, AppState>,
   input: ConnectionInput,
 ) -> Result<ConnectionProfile, Error> {
-  let profile = state.profiles.lock().unwrap().create(&input)?;
-  // No orphan profile when the keychain is unavailable.
-  let key = SecretKey::Connection(profile.id.clone());
-  if let Err(err) = persist_secret(
-    state.inner(),
-    &key,
-    &profile.credential,
-    input.password.as_deref(),
-  ) {
-    let _ = state.profiles.lock().unwrap().delete(&profile.id);
-    return Err(err);
-  }
-  approve_own_command(state.inner(), &key, &profile.credential)?;
-  Ok(profile)
+  soquel_core::ops::create_connection(state.inner(), &input)
 }
 
 #[tauri::command]
@@ -810,32 +579,16 @@ pub fn update_connection(
   id: String,
   input: ConnectionInput,
 ) -> Result<ConnectionProfile, Error> {
-  let profile = state.profiles.lock().unwrap().update(&id, &input)?;
-  let key = SecretKey::Connection(profile.id.clone());
-  persist_secret(
-    state.inner(),
-    &key,
-    &profile.credential,
-    input.password.as_deref(),
-  )?;
-  approve_own_command(state.inner(), &key, &profile.credential)?;
-  Ok(profile)
+  soquel_core::ops::update_connection(state.inner(), &id, &input)
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn delete_connection(state: State<'_, AppState>, id: String) -> Result<(), Error> {
-  state.profiles.lock().unwrap().delete(&id)?;
-  forget(state.inner(), &SecretKey::Connection(id))
+  soquel_core::ops::delete_connection(state.inner(), &id)
 }
 
 /// Everything kept next to a profile rather than in it, dropped with it.
-fn forget(state: &AppState, key: &SecretKey) -> Result<(), Error> {
-  state.command_approvals.lock().unwrap().revoke(key)?;
-  state.session_secrets.clear(key);
-  state.secrets.delete(key)
-}
-
 /// Writes every connection, tunnel and group to a file. Passwords ride along
 /// only with `include_secrets`, and only inside a passphrase-encrypted payload.
 #[tauri::command]
@@ -935,7 +688,7 @@ pub fn create_tunnel(
   let tunnel = state.tunnels.lock().unwrap().create(&input)?;
   // No orphan tunnel when the keychain is unavailable.
   let key = SecretKey::Tunnel(tunnel.id.clone());
-  if let Err(err) = persist_secret(
+  if let Err(err) = soquel_core::ops::persist_secret(
     state.inner(),
     &key,
     &tunnel.credential,
@@ -944,7 +697,7 @@ pub fn create_tunnel(
     let _ = state.tunnels.lock().unwrap().delete(&tunnel.id);
     return Err(err);
   }
-  approve_own_command(state.inner(), &key, &tunnel.credential)?;
+  soquel_core::ops::approve_own_command(state.inner(), &key, &tunnel.credential)?;
   Ok(tunnel)
 }
 
@@ -957,13 +710,13 @@ pub fn update_tunnel(
 ) -> Result<TunnelProfile, Error> {
   let tunnel = state.tunnels.lock().unwrap().update(&id, &input)?;
   let key = SecretKey::Tunnel(tunnel.id.clone());
-  persist_secret(
+  soquel_core::ops::persist_secret(
     state.inner(),
     &key,
     &tunnel.credential,
     input.secret.as_deref(),
   )?;
-  approve_own_command(state.inner(), &key, &tunnel.credential)?;
+  soquel_core::ops::approve_own_command(state.inner(), &key, &tunnel.credential)?;
   Ok(tunnel)
 }
 
@@ -985,7 +738,7 @@ pub fn delete_tunnel(state: State<'_, AppState>, id: String) -> Result<(), Error
     });
   }
   state.tunnels.lock().unwrap().delete(&id)?;
-  forget(state.inner(), &SecretKey::Tunnel(id))
+  soquel_core::ops::forget(state.inner(), &SecretKey::Tunnel(id))
 }
 
 /// Ephemeral tunnel bring-up: validates the host key and the credentials
@@ -1228,8 +981,12 @@ pub async fn install_update(app: tauri::AppHandle) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use soquel_core::profiles::{ConnectorParams, Env, SqlServerParams, SslMode};
+  use soquel_core::ops::{
+    approve_own_command, current_command, disconnect as disconnect_impl, forget, persist_secret,
+  };
+  use soquel_core::profiles::{ConnectorParams, CredentialSource, Env, SqlServerParams, SslMode};
   use soquel_core::secrets::InMemoryStore;
+  use soquel_core::ActiveConnection;
 
   fn input(credential: CredentialSource, password: Option<&str>) -> ConnectionInput {
     ConnectionInput {
@@ -1343,7 +1100,7 @@ mod tests {
       .unwrap()
       .create(&input(credential, Some("typed-by-mistake")))
       .unwrap();
-    persist_secret(
+    soquel_core::ops::persist_secret(
       &state,
       &key(&profile.id),
       &profile.credential,
@@ -1369,7 +1126,7 @@ mod tests {
     };
     let tunnel = state.tunnels.lock().unwrap().create(&stored).unwrap();
     let tunnel_key = SecretKey::Tunnel(tunnel.id.clone());
-    persist_secret(
+    soquel_core::ops::persist_secret(
       &state,
       &tunnel_key,
       &tunnel.credential,
@@ -1635,7 +1392,7 @@ mod tests {
       .unwrap();
 
     // No password for the tunnel: the core asks instead of dialling.
-    let Err(err) = connect_impl(&state, profile.id.clone()).await else {
+    let Err(err) = soquel_core::ops::connect(&state, profile.id.clone()).await else {
       panic!("the tunnel must ask for its password");
     };
     assert!(
@@ -1646,7 +1403,7 @@ mod tests {
     state
       .session_secrets
       .set(&tunnel_key, "one-off".to_string(), false);
-    assert!(connect_impl(&state, profile.id.clone()).await.is_err());
+    assert!(soquel_core::ops::connect(&state, profile.id.clone()).await.is_err());
     // Given for that attempt only: a failed connect must not keep it around.
     assert_eq!(state.session_secrets.get(&tunnel_key), None);
   }
@@ -1665,13 +1422,13 @@ mod tests {
     let profile = state.profiles.lock().unwrap().create(&sqlite).unwrap();
 
     // No password anywhere: the core asks for one instead of connecting.
-    let err = connect_impl(&state, profile.id.clone()).await.unwrap_err();
+    let err = soquel_core::ops::connect(&state, profile.id.clone()).await.unwrap_err();
     assert!(matches!(&err, Error::SecretRequired { target_name, .. } if target_name == "db"));
 
     state
       .session_secrets
       .set(&key(&profile.id), "typed".to_string(), false);
-    connect_impl(&state, profile.id.clone()).await.unwrap();
+    soquel_core::ops::connect(&state, profile.id.clone()).await.unwrap();
     assert!(state.connections.lock().await.contains_key(&profile.id));
     // Not remembered: the next connect asks again.
     assert_eq!(state.session_secrets.get(&key(&profile.id)), None);
@@ -1679,7 +1436,7 @@ mod tests {
     state
       .session_secrets
       .set(&key(&profile.id), "typed".to_string(), true);
-    connect_impl(&state, profile.id.clone()).await.unwrap();
+    soquel_core::ops::connect(&state, profile.id.clone()).await.unwrap();
     assert_eq!(
       state.session_secrets.get(&key(&profile.id)),
       Some("typed".to_string())

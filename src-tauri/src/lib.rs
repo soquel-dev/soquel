@@ -1,6 +1,5 @@
 use tauri::Manager;
 
-use soquel_core::secrets::{FileStore, InMemoryStore, KeyringStore, SecretStore};
 use soquel_core::AppState;
 
 mod commands;
@@ -132,14 +131,7 @@ pub fn run() {
         Err(_) if cfg!(debug_assertions) => app.path().app_data_dir()?.join("dev"),
         Err(_) => app.path().app_data_dir()?,
       };
-      // Keychain-less environments: e2e/CI (ephemeral) and WSL dev (plaintext file, opt-in).
-      let secrets: Box<dyn SecretStore> = if std::env::var("SOQUEL_EPHEMERAL_SECRETS").is_ok() {
-        Box::new(InMemoryStore::default())
-      } else if std::env::var("SOQUEL_INSECURE_FILE_SECRETS").is_ok() {
-        Box::new(FileStore::load(data_dir.join("secrets.json"))?)
-      } else {
-        Box::new(KeyringStore)
-      };
+      let secrets = soquel_core::secrets::store_from_env(&data_dir)?;
       app.manage(AppState::load(&data_dir, secrets)?);
       mcp::autostart(app.handle());
       Ok(())

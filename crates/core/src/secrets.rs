@@ -239,3 +239,15 @@ mod tests {
     assert_eq!(emptied.get(&key).unwrap(), None);
   }
 }
+
+/// Keychain-less environments pick their store by env var: e2e/CI run
+/// ephemeral, WSL dev opts into a plaintext file, everything else keyrings.
+pub fn store_from_env(data_dir: &std::path::Path) -> Result<Box<dyn SecretStore>, crate::error::Error> {
+  if std::env::var("SOQUEL_EPHEMERAL_SECRETS").is_ok() {
+    return Ok(Box::new(InMemoryStore::default()));
+  }
+  if std::env::var("SOQUEL_INSECURE_FILE_SECRETS").is_ok() {
+    return Ok(Box::new(FileStore::load(data_dir.join("secrets.json"))?));
+  }
+  Ok(Box::new(KeyringStore))
+}
