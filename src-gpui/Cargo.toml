@@ -9,6 +9,11 @@ edition = "2024"
 # Detached from any parent workspace: src-tauri keeps its own target dir.
 [workspace]
 
+# The core's Error is deliberately large (rich variants for the IPC boundary);
+# the lint only fires on foreign error types, so core itself stays clean.
+[lints.clippy]
+result_large_err = "allow"
+
 [dependencies]
 anyhow = "1"
 futures = "0.3"

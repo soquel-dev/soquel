@@ -1,7 +1,9 @@
 #![recursion_limit = "256"]
 mod actions;
+mod app;
 mod cell_editing;
 mod completion;
+mod connections;
 mod core;
 mod explain;
 mod export;
@@ -17,8 +19,6 @@ mod workspace;
 
 use gpui::*;
 use gpui_component::{Root, TitleBar};
-
-use crate::workspace::Workspace;
 
 fn main() {
   // Without the asset source, every Icon (sort chevrons, titlebar, chips) is invisible.
@@ -36,7 +36,8 @@ fn main() {
             ..Default::default()
           },
           |window, cx| {
-            let view = cx.new(|cx| Workspace::new(window, cx));
+            let state = crate::core::init_state().expect("app state loads");
+            let view = cx.new(|cx| crate::app::App::new(state, window, cx));
             cx.new(|cx| Root::new(view, window, cx))
           },
         )

@@ -1,15 +1,10 @@
 use std::sync::{Arc, OnceLock};
 
 use futures::channel::oneshot;
-use soquel_core::connectors::{
-  Connection, QueryResult, SchemaSnapshot, TableRowsRequest, connector_for,
-};
-use soquel_core::credentials::Credentials;
-use soquel_core::error::Error;
-use soquel_core::profiles::{
-  AgentAccess, ConnectionProfile, ConnectorKind, ConnectorParams, CredentialSource, Env,
-  SqlServerParams,
-};
+use soquel_core::AppState;
+use soquel_core::connectors::{Connection, QueryResult, SchemaSnapshot, TableRowsRequest};
+use soquel_core::error::{Error, SecretSubject};
+use soquel_core::profiles::{ConnectionInput, ConnectionProfile, ConnectorKind};
 
 fn runtime() -> &'static tokio::runtime::Runtime {
   static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -34,51 +29,121 @@ impl Db {
   }
 }
 
-fn env_or(key: &str, default: &str) -> String {
-  std::env::var(key).unwrap_or_else(|_| default.to_string())
-}
-
-fn dev_profile() -> (ConnectionProfile, Arc<Credentials>) {
-  let profile = ConnectionProfile {
-    id: "gpui-dev".to_string(),
-    name: "gpui dev".to_string(),
-    env: Env::Dev,
-    group: None,
-    agent_access: AgentAccess::None,
-    credential: CredentialSource::Prompt,
-    params: ConnectorParams::Postgres(SqlServerParams {
-      host: env_or("SOQUEL_PG_HOST", "localhost"),
-      port: env_or("SOQUEL_PG_PORT", "5470").parse().unwrap_or(5470),
-      database: env_or("SOQUEL_PG_DATABASE", "soquel_dev"),
-      user: env_or("SOQUEL_PG_USER", "soquel"),
-      ssl_mode: Default::default(),
-      ssl_root_cert: None,
-      tunnel_id: None,
-    }),
+/// Same data layout as the tauri app: dev builds share its /dev subtree so the
+/// two frontends see the same connections while both exist.
+pub fn init_state() -> Result<Arc<AppState>, Error> {
+  let data_dir = match std::env::var("SOQUEL_DATA_DIR") {
+    Ok(dir) => std::path::PathBuf::from(dir),
+    Err(_) => {
+      let base = std::env::var_os("XDG_DATA_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+          std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".local/share"))
+        })
+        .unwrap_or_default();
+      let root = base.join("dev.soquel.app");
+      if cfg!(debug_assertions) {
+        root.join("dev")
+      } else {
+        root
+      }
+    }
   };
-  let secret = Credentials::fixed(Some(env_or("SOQUEL_PG_PASSWORD", "soquel")));
-  (profile, secret)
+  std::fs::create_dir_all(&data_dir)?;
+  let secrets = soquel_core::secrets::store_from_env(&data_dir)?;
+  Ok(Arc::new(AppState::load(&data_dir, secrets)?))
 }
 
+pub fn list_connections(state: &AppState) -> Vec<ConnectionProfile> {
+  state.profiles.lock().unwrap().list()
+}
+
+/// ops::connect fills the state's map; the grid plumbing rides a Db handle.
+pub fn connect_id(state: Arc<AppState>, id: String) -> oneshot::Receiver<Result<Db, Error>> {
+  let (tx, rx) = oneshot::channel();
+  runtime().spawn(async move {
+    let result = async {
+      soquel_core::ops::connect(&state, id.clone()).await?;
+      let kind = state.profiles.lock().unwrap().get(&id)?.params.kind();
+      let connection = soquel_core::ops::active(&state, &id).await?;
+      Ok(Db(connection, kind))
+    }
+    .await;
+    let _ = tx.send(result);
+  });
+  rx
+}
+
+pub fn disconnect_id(state: Arc<AppState>, id: String) {
+  runtime().spawn(async move {
+    let _ = soquel_core::ops::disconnect(&state, &id).await;
+  });
+}
+
+pub fn test_input(
+  state: Arc<AppState>,
+  input: ConnectionInput,
+  existing_id: Option<String>,
+) -> oneshot::Receiver<Result<(), Error>> {
+  let (tx, rx) = oneshot::channel();
+  runtime().spawn(async move {
+    let result = soquel_core::ops::test_connection(&state, &input, existing_id.as_deref()).await;
+    let _ = tx.send(result);
+  });
+  rx
+}
+
+/// Store writes can touch the OS keychain: off the UI thread like everything else.
+pub fn save_connection(
+  state: Arc<AppState>,
+  editing: Option<String>,
+  input: ConnectionInput,
+) -> oneshot::Receiver<Result<ConnectionProfile, Error>> {
+  let (tx, rx) = oneshot::channel();
+  runtime().spawn(async move {
+    let result = match editing {
+      Some(id) => soquel_core::ops::update_connection(&state, &id, &input),
+      None => soquel_core::ops::create_connection(&state, &input),
+    };
+    let _ = tx.send(result);
+  });
+  rx
+}
+
+pub fn delete_connection(state: Arc<AppState>, id: String) -> oneshot::Receiver<Result<(), Error>> {
+  let (tx, rx) = oneshot::channel();
+  runtime().spawn(async move {
+    let _ = tx.send(soquel_core::ops::delete_connection(&state, &id));
+  });
+  rx
+}
+
+pub fn unlock_secret(
+  state: &AppState,
+  subject: SecretSubject,
+  id: String,
+  secret: String,
+  remember: bool,
+) {
+  soquel_core::ops::unlock_secret(state, subject, id, secret, remember);
+}
+
+/// Test-only direct connect, bypassing the stores.
+#[cfg(test)]
 pub fn connect_with(
   profile: ConnectionProfile,
-  secret: Arc<Credentials>,
+  secret: Arc<soquel_core::credentials::Credentials>,
 ) -> oneshot::Receiver<Result<Db, Error>> {
   let (tx, rx) = oneshot::channel();
   runtime().spawn(async move {
     let kind = profile.params.kind();
-    let result = connector_for(kind)
+    let result = soquel_core::connectors::connector_for(kind)
       .connect(&profile, secret, None)
       .await
       .map(|conn| Db(Arc::from(conn), kind));
     let _ = tx.send(result);
   });
   rx
-}
-
-pub fn connect_dev() -> oneshot::Receiver<Result<Db, Error>> {
-  let (profile, secret) = dev_profile();
-  connect_with(profile, secret)
 }
 
 pub fn fetch_rows(
@@ -242,6 +307,11 @@ pub fn page_request(schema: &str, table: &str, offset: u32, limit: u32) -> Table
 
 #[cfg(test)]
 mod tests {
+  use soquel_core::credentials::Credentials;
+  use soquel_core::profiles::{
+    AgentAccess, ConnectorParams, CredentialSource, Env, SqlServerParams,
+  };
+
   use super::*;
   use crate::staged::StagedChanges;
 

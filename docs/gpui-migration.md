@@ -85,10 +85,10 @@ deleted. Each panel lands with its layer-3 tests; each flow with layer 4.
 
 ### Shell
 
-- [ ] Workspace shell: sidebar + tabs + panel host + status bar
-- [ ] Actions + keymap registry
+- [x] Workspace shell: sidebar + tabs + panel host + status bar
+- [x] Actions + keymap registry
 - [ ] Command palette (from the action registry)
-- [ ] Theme: port tokens from `style.css`, light/dark
+- [x] Theme: port tokens from `style.css`, light/dark
 - [ ] Toasts (gpui-component notifications)
 - [x] Tab limit (`tabs.rs` ports `lib/tabs.ts` with its tests; free-tier toast,
       SOQUEL_TAB_LIMIT dev override honored; tab persistence across restarts
@@ -96,10 +96,15 @@ deleted. Each panel lands with its layer-3 tests; each flow with layer 4.
 
 ### Connections
 
-- [ ] Connections page: list, groups, env badges
-- [ ] Connection form (create/update, test connection, credential modes)
+- [x] Connections page: list, groups, env badges, connect/edit/delete (the
+      startup screen; connects through core::ops against the same data dir as
+      the tauri dev app)
+- [x] Connection form (postgres fields, test connection, keychain/prompt
+      credential modes; command mode, agent access, other kinds and
+      small-screen dialog height still to do)
 - [ ] Tunnel form + tunnel list
-- [ ] Secret prompt dialog (`prompt` credential mode)
+- [x] Secret prompt dialog (SecretRequired -> unlock -> retry, with the
+      keep-for-session checkbox)
 - [ ] Credential command approval dialog
 - [ ] Host key trust dialog + panel
 - [ ] Import dialog (preview, duplicates, passphrase, `.soquel` open/drop)
