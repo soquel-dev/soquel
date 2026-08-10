@@ -27,6 +27,7 @@ pub mod known_hosts;
 pub mod licence;
 mod mongo;
 mod mysql;
+pub mod ops;
 mod postgres;
 pub mod profiles;
 mod redis;

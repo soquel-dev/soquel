@@ -515,7 +515,7 @@ async fn ensure_connected(state: &AppState, id: &str) -> Result<(), Error> {
   if state.connections.lock().await.contains_key(id) {
     return Ok(());
   }
-  commands::connect_impl(state, id.to_string()).await.map_err(
+  soquel_core::ops::connect(state, id.to_string()).await.map_err(
     // Nobody can answer a prompt, or vouch for a command, on this side.
     |err| match err {
       Error::SecretRequired { target_name, .. } => Error::Unsupported {
