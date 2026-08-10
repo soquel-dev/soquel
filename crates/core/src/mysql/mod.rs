@@ -146,7 +146,7 @@ impl PoolHolder {
     if live.secret != secret {
       let stale = std::mem::replace(&mut live.pool, Pool::new(self.opts_with(&secret)));
       live.secret = secret;
-      tauri::async_runtime::spawn(async move { stale.disconnect().await });
+      tokio::spawn(async move { stale.disconnect().await });
     }
     Ok(live.pool.clone())
   }

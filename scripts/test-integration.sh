@@ -4,7 +4,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-manifest=src-tauri/Cargo.toml
+# Connector suites live in the core crate; the mcp agent surface stays app-side.
+core=crates/core/Cargo.toml
+app=src-tauri/Cargo.toml
 
 echo "==> full suite (current versions)"
 SOQUEL_TEST_PG=postgres://soquel:soquel@localhost:5455/soquel_test \
@@ -14,22 +16,22 @@ SOQUEL_TEST_REDIS=localhost:5457 \
 SOQUEL_TEST_MONGO=localhost:5464 \
 SOQUEL_TEST_SSH=localhost:5458 \
 SOQUEL_TEST_SSH_RECONNECT=localhost:5461 \
-  cargo test --manifest-path "$manifest" integration_
+  cargo test --manifest-path "$core" integration_
 
 echo "==> postgres oldest supported"
 SOQUEL_TEST_PG=postgres://soquel:soquel@localhost:5460/soquel_test \
-  cargo test --manifest-path "$manifest" integration_postgres_
+  cargo test --manifest-path "$core" integration_postgres_
 
 echo "==> mysql oldest supported"
 SOQUEL_TEST_MYSQL=localhost:5462 \
-  cargo test --manifest-path "$manifest" integration_mysql_
+  cargo test --manifest-path "$core" integration_mysql_
 
 echo "==> mcp agent surface (needs pg + redis + mongo)"
 SOQUEL_TEST_PG=postgres://soquel:soquel@localhost:5455/soquel_test \
 SOQUEL_TEST_REDIS=localhost:5457 \
 SOQUEL_TEST_MONGO=localhost:5464 \
-  cargo test --manifest-path "$manifest" integration_mcp_
+  cargo test --manifest-path "$app" integration_mcp_
 
 echo "==> mariadb (mysql kind)"
 SOQUEL_TEST_MYSQL=localhost:5463 \
-  cargo test --manifest-path "$manifest" integration_mysql_
+  cargo test --manifest-path "$core" integration_mysql_

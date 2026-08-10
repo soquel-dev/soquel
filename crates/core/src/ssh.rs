@@ -19,7 +19,7 @@ pub struct TunnelTarget {
 /// SSH session to the target. Dropping it tears everything down.
 pub struct SshTunnel {
   pub local_port: u16,
-  task: tauri::async_runtime::JoinHandle<()>,
+  task: tokio::task::JoinHandle<()>,
 }
 
 impl Drop for SshTunnel {
@@ -49,7 +49,7 @@ impl SshTunnel {
 
     let tunnel = tunnel.clone();
     let secret = secret.map(str::to_string);
-    let task = tauri::async_runtime::spawn(accept_loop(
+    let task = tokio::spawn(accept_loop(
       listener, session, tunnel, secret, known_key, target,
     ));
     Ok(SshTunnel { local_port, task })
@@ -94,7 +94,7 @@ async fn accept_loop(
         continue;
       }
     };
-    tauri::async_runtime::spawn(pipe(tcp, channel));
+    tokio::spawn(pipe(tcp, channel));
   }
 }
 
@@ -362,11 +362,11 @@ mod tests {
   const TEST_TARGET: (&str, u16) = ("postgres", 5432);
   const TEST_KEY: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../scripts/test-ssh/id_ed25519"
+    "/../../scripts/test-ssh/id_ed25519"
   );
   const TEST_KEY_PP: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../scripts/test-ssh/id_ed25519_pp"
+    "/../../scripts/test-ssh/id_ed25519_pp"
   );
   const TEST_KEY_PP_PASSPHRASE: &str = "soquel-test";
 
@@ -969,7 +969,7 @@ mod tests {
     select_one_through(&tunnel).await;
 
     // Kill the SSH session server-side; the container (and its host key) survives.
-    let compose = concat!(env!("CARGO_MANIFEST_DIR"), "/../docker-compose.test.yml");
+    let compose = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docker-compose.test.yml");
     let status = std::process::Command::new("docker")
       .args(["compose", "-f", compose, "restart", "sshd-reconnect"])
       .status()

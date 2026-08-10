@@ -1,12 +1,12 @@
 use std::sync::{Arc, OnceLock};
 
 use futures::channel::oneshot;
-use soquel_lib::connectors::{
+use soquel_core::connectors::{
   Connection, QueryResult, SchemaSnapshot, TableRowsRequest, connector_for,
 };
-use soquel_lib::credentials::Credentials;
-use soquel_lib::error::Error;
-use soquel_lib::profiles::{
+use soquel_core::credentials::Credentials;
+use soquel_core::error::Error;
+use soquel_core::profiles::{
   AgentAccess, ConnectionProfile, ConnectorKind, ConnectorParams, CredentialSource, Env,
   SqlServerParams,
 };

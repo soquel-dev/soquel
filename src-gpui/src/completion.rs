@@ -8,7 +8,7 @@ use lsp_types::{
   CompletionContext, CompletionItem, CompletionItemKind, CompletionResponse, CompletionTextEdit,
   TextEdit,
 };
-use soquel_lib::connectors::SchemaSnapshot;
+use soquel_core::connectors::SchemaSnapshot;
 
 const KEYWORDS: &[&str] = &[
   "SELECT",

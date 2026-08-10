@@ -16,6 +16,7 @@ dist
 src-tauri/target/
 src-tauri/gen/schemas/
 src-gpui/target/
+crates/core/target/
 
 # Editor directories and files
 .vscode/*

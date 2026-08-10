@@ -114,7 +114,7 @@ async fn connect_pg(
   let server_version = connection.parameter("server_version").map(str::to_string);
   let notices: Arc<Mutex<Vec<ServerNotice>>> = Arc::default();
   let sink = notices.clone();
-  tauri::async_runtime::spawn(async move {
+  tokio::spawn(async move {
     while let Some(message) = std::future::poll_fn(|cx| connection.poll_message(cx)).await {
       match message {
         Ok(AsyncMessage::Notice(notice)) => sink.lock().unwrap().push(ServerNotice {

@@ -6,7 +6,14 @@ use tauri::AppHandle;
 use tauri_plugin_updater::{Update, UpdaterExt};
 use tauri_specta::Event as _;
 
-use crate::error::Error;
+use soquel_core::error::Error;
+
+// The From impl cannot live in core anymore (orphan rule), so map here.
+fn update_error(err: tauri_plugin_updater::Error) -> Error {
+  Error::Update {
+    message: err.to_string(),
+  }
+}
 
 /// Dev-only endpoint override: a release build must not be redirectable.
 #[cfg(debug_assertions)]
@@ -77,9 +84,14 @@ async fn pending(app: &AppHandle) -> Result<Option<Update>, Error> {
       .map_err(|err| Error::Update {
         message: format!("invalid {ENDPOINT_ENV}: {err}"),
       })?;
-    builder = builder.endpoints(vec![url])?;
+    builder = builder.endpoints(vec![url]).map_err(update_error)?;
   }
-  Ok(builder.build()?.check().await?)
+  builder
+    .build()
+    .map_err(update_error)?
+    .check()
+    .await
+    .map_err(update_error)
 }
 
 pub async fn check(app: &AppHandle) -> Result<Option<UpdateInfo>, Error> {
@@ -121,7 +133,8 @@ pub async fn install(app: AppHandle) -> Result<(), Error> {
       },
       || {},
     )
-    .await?;
+    .await
+    .map_err(update_error)?;
   // Windows exits on its own during the install step; elsewhere we drive it.
   app.restart();
 }
