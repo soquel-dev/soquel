@@ -2231,3 +2231,68 @@ impl Render for Workspace {
       .children(notification_layer)
   }
 }
+
+#[cfg(test)]
+mod tests {
+  // The parent's `use gpui::*` puts gpui's `test` macro in scope, which would
+  // make the generated `#[test]` expand itself forever. Shadow it back.
+  use ::core::prelude::v1::test;
+  use gpui::TestAppContext;
+
+  use super::*;
+
+  #[gpui::test]
+  fn activating_a_ghost_tab_is_ignored(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let cx = cx.add_empty_window();
+    let workspace = cx.update(|window, cx| cx.new(|cx| Workspace::new(window, cx)));
+    cx.update(|window, cx| {
+      workspace.update(cx, |this, cx| {
+        this.open_sql(window, cx);
+        let real = this.tabs.active_id.clone();
+        // The close button's click also bubbles to the tab with the closed id.
+        this.activate("ghost".to_string(), cx);
+        assert_eq!(this.tabs.active_id, real);
+      });
+    });
+  }
+
+  #[gpui::test]
+  fn closing_a_tab_drops_its_content_and_picks_the_neighbor(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let cx = cx.add_empty_window();
+    let workspace = cx.update(|window, cx| cx.new(|cx| Workspace::new(window, cx)));
+    cx.update(|window, cx| {
+      workspace.update(cx, |this, cx| {
+        this.open_sql(window, cx);
+        let first = this.tabs.active_id.clone().unwrap();
+        this.open_sql(window, cx);
+        let second = this.tabs.active_id.clone().unwrap();
+
+        this.close(&second, cx);
+        assert!(!this.contents.contains_key(&second));
+        assert_eq!(this.tabs.active_id.as_deref(), Some(first.as_str()));
+      });
+    });
+  }
+
+  #[gpui::test]
+  fn sql_tabs_number_past_closed_ones(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let cx = cx.add_empty_window();
+    let workspace = cx.update(|window, cx| cx.new(|cx| Workspace::new(window, cx)));
+    cx.update(|window, cx| {
+      workspace.update(cx, |this, cx| {
+        this.open_sql(window, cx);
+        let first = this.tabs.active_id.clone().unwrap();
+        this.open_sql(window, cx);
+        this.close(&first, cx);
+        // The model is covered in tabs.rs; this asserts the workspace routes
+        // through it rather than numbering on its own.
+        this.open_sql(window, cx);
+        let titles: Vec<String> = this.tabs.tabs.iter().map(|tab| tab.title()).collect();
+        assert_eq!(titles, vec!["sql 2", "sql 3"]);
+      });
+    });
+  }
+}

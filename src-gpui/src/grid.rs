@@ -494,3 +494,196 @@ impl TableDelegate for RowsDelegate {
     self.reload(cx);
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use gpui::{AppContext, TestAppContext};
+  use gpui_component::input::InputState;
+  use soquel_core::connectors::{ColumnKind, ForeignKeyInfo};
+
+  use super::*;
+
+  fn column(name: &str, data_type: &str, kind: ColumnKind) -> QueryColumn {
+    QueryColumn {
+      name: name.to_string(),
+      data_type: Some(data_type.to_string()),
+      kind,
+    }
+  }
+
+  /// Two data rows of (id, name), editable, keyed on id.
+  fn seeded(editor: Entity<InputState>) -> RowsDelegate {
+    let mut delegate = RowsDelegate::new(editor);
+    delegate.columns = vec![
+      column("id", "int4", ColumnKind::Number),
+      column("name", "text", ColumnKind::Text),
+    ];
+    delegate.rows = vec![
+      vec![Some("1".into()), Some("Ada".into())],
+      vec![Some("2".into()), Some("Alan".into())],
+    ];
+    delegate.can_ever_edit = true;
+    delegate.key_columns = vec!["id".to_string()];
+    delegate.loading = false;
+    delegate
+  }
+
+  #[gpui::test]
+  fn inserts_sit_on_top_and_indexes_follow(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let cx = cx.add_empty_window();
+    cx.update(|window, cx| {
+      let editor = cx.new(|cx| InputState::new(window, cx));
+      let table = cx.new(|cx| TableState::new(seeded(editor), window, cx));
+      table.update(cx, |table, cx| {
+        table.delegate_mut().add_insert(None, cx);
+        let delegate = table.delegate();
+        // The insert renders first; data rows shift below it.
+        assert_eq!(delegate.rows.len() + delegate.staged.inserts.len(), 3);
+        assert_eq!(delegate.display_value(0, 0), None); // DEFAULT
+        assert_eq!(delegate.display_value(1, 0), Some("1".to_string()));
+        assert_eq!(delegate.display_value(2, 1), Some("Alan".to_string()));
+
+        // Deleting the insert row removes it outright.
+        table.delegate_mut().toggle_delete(0, cx);
+        let delegate = table.delegate();
+        assert!(delegate.staged.inserts.is_empty());
+        assert!(delegate.staged.deletes.is_empty());
+
+        // Deleting a data row stages it; the delete uses the DATA index.
+        table.delegate_mut().add_insert(None, cx);
+        table.delegate_mut().toggle_delete(2, cx);
+        let delegate = table.delegate();
+        assert!(delegate.staged.deletes.contains(&1));
+      });
+    });
+  }
+
+  #[gpui::test]
+  fn duplicate_copies_the_data_row_not_the_insert_offset(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let cx = cx.add_empty_window();
+    cx.update(|window, cx| {
+      let editor = cx.new(|cx| InputState::new(window, cx));
+      let table = cx.new(|cx| TableState::new(seeded(editor), window, cx));
+      table.update(cx, |table, cx| {
+        table.delegate_mut().add_insert(None, cx);
+        // Display row 1 = data row 0 once an insert sits on top.
+        table.delegate_mut().add_insert(Some(1), cx);
+        let delegate = table.delegate();
+        assert_eq!(
+          delegate.staged.inserts[1].get("name"),
+          Some(&Some("Ada".to_string()))
+        );
+      });
+    });
+  }
+
+  #[gpui::test]
+  fn commit_un_dirties_a_cell_returned_to_its_original(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let cx = cx.add_empty_window();
+    cx.update(|window, cx| {
+      let editor = cx.new(|cx| InputState::new(window, cx));
+      let table = cx.new(|cx| TableState::new(seeded(editor.clone()), window, cx));
+      table.update(cx, |table, cx| {
+        table.delegate_mut().start_edit(0, 1, window, cx);
+      });
+      editor.update(cx, |editor, cx| editor.set_value("Ada II", window, cx));
+      table.update(cx, |table, cx| {
+        assert!(table.delegate_mut().commit_edit(cx));
+        assert_eq!(
+          table.delegate().staged.edits[&0].get("name"),
+          Some(&Some("Ada II".to_string()))
+        );
+      });
+
+      // Editing back to the original clears the dirty cell entirely.
+      table.update(cx, |table, cx| {
+        table.delegate_mut().start_edit(0, 1, window, cx);
+      });
+      editor.update(cx, |editor, cx| editor.set_value("Ada", window, cx));
+      table.update(cx, |table, cx| {
+        assert!(table.delegate_mut().commit_edit(cx));
+        assert!(table.delegate().staged.edits.is_empty());
+      });
+    });
+  }
+
+  #[gpui::test]
+  fn start_edit_refuses_deleted_rows_and_readonly_grids(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let cx = cx.add_empty_window();
+    cx.update(|window, cx| {
+      let editor = cx.new(|cx| InputState::new(window, cx));
+      let table = cx.new(|cx| TableState::new(seeded(editor.clone()), window, cx));
+      table.update(cx, |table, cx| {
+        table.delegate_mut().toggle_delete(0, cx);
+        table.delegate_mut().start_edit(0, 1, window, cx);
+        assert!(table.delegate().editing.is_none());
+      });
+
+      let readonly = cx.new(|cx| {
+        let mut delegate = seeded(editor);
+        delegate.can_ever_edit = false;
+        TableState::new(delegate, window, cx)
+      });
+      readonly.update(cx, |table, cx| {
+        table.delegate_mut().start_edit(0, 1, window, cx);
+        assert!(table.delegate().editing.is_none());
+      });
+    });
+  }
+
+  #[gpui::test]
+  fn hidden_lead_and_xmin_keys(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let cx = cx.add_empty_window();
+    cx.update(|window, cx| {
+      let editor = cx.new(|cx| InputState::new(window, cx));
+      let mut delegate = seeded(editor);
+      // The driver prepends the system columns when asked for them.
+      delegate
+        .columns
+        .insert(0, column("xmin", "xid", ColumnKind::Other));
+      for (ix, row) in delegate.rows.iter_mut().enumerate() {
+        row.insert(0, Some(format!("77{ix}")));
+      }
+      delegate.include_xmin = true;
+      let table = cx.new(|cx| TableState::new(delegate, window, cx));
+      let state = table.read(cx);
+      let delegate = state.delegate();
+
+      assert_eq!(delegate.hidden_lead(), 1);
+      assert_eq!(delegate.display_columns().len(), 2);
+      // Keys carry the pk plus the optimistic-lock guard.
+      assert_eq!(
+        delegate.change_keys(),
+        vec!["id".to_string(), "xmin".to_string()]
+      );
+      // Display indexes skip the hidden lead.
+      assert_eq!(delegate.display_value(0, 0), Some("1".to_string()));
+    });
+  }
+
+  #[gpui::test]
+  fn fk_lookup_matches_columns(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let cx = cx.add_empty_window();
+    cx.update(|window, cx| {
+      let editor = cx.new(|cx| InputState::new(window, cx));
+      let mut delegate = seeded(editor);
+      delegate.foreign_keys = vec![ForeignKeyInfo {
+        name: "fk_org".into(),
+        columns: vec!["id".into()],
+        referenced_schema: "app".into(),
+        referenced_table: "organizations".into(),
+        referenced_columns: vec!["id".into()],
+      }];
+      let table = cx.new(|cx| TableState::new(delegate, window, cx));
+      let state = table.read(cx);
+      assert!(state.delegate().fk_for("id").is_some());
+      assert!(state.delegate().fk_for("name").is_none());
+    });
+  }
+}
