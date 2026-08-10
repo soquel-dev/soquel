@@ -5,6 +5,7 @@ mod core;
 mod filters;
 mod format;
 mod grid;
+mod history;
 mod icons;
 mod staged;
 mod tabs;

@@ -28,6 +28,7 @@ use crate::core::{self, Db};
 use crate::filters::{filter_label, op_label, op_needs_value, ops_for_kind};
 use crate::format::format_estimated_rows;
 use crate::grid::RowsDelegate;
+use crate::history::{HistoryEntry, filter_history, push_history};
 use crate::icons::SoquelIcon;
 use crate::staged::{build_table_changes, preview_sql};
 use crate::tabs::{
@@ -45,6 +46,7 @@ enum TabContent {
     editor: Entity<InputState>,
     results: Entity<TableState<RowsDelegate>>,
     split: Entity<ResizableState>,
+    session: Option<core::Session>,
     running: bool,
   },
 }
@@ -67,6 +69,8 @@ pub struct Workspace {
   filter_op: Entity<SelectState<Vec<String>>>,
   filter_ops: Vec<FilterOp>,
   filter_value: Entity<InputState>,
+  history: Vec<HistoryEntry>,
+  history_search: Entity<InputState>,
   schema_entries: SchemaEntries,
   _connect_task: Task<()>,
   _work_task: Task<()>,
@@ -110,6 +114,8 @@ impl Workspace {
     let filter_column = cx.new(|cx| SelectState::new(Vec::<String>::new(), None, window, cx));
     let filter_op = cx.new(|cx| SelectState::new(Vec::<String>::new(), None, window, cx));
     let filter_value = cx.new(|cx| InputState::new(window, cx).placeholder("value"));
+    let history_search =
+      cx.new(|cx| InputState::new(window, cx).placeholder("search query history..."));
 
     cx.subscribe_in(
       &filter_column,
@@ -193,6 +199,8 @@ impl Workspace {
       filter_op,
       filter_ops: Vec::new(),
       filter_value,
+      history: Vec::new(),
+      history_search,
       schema_entries,
       _connect_task: connect_task,
       _work_task: Task::ready(()),
@@ -384,6 +392,7 @@ impl Workspace {
         editor,
         results,
         split,
+        session: None,
         running: false,
       },
     );
@@ -392,7 +401,14 @@ impl Workspace {
 
   fn close(&mut self, id: &str, cx: &mut Context<Self>) {
     self.tabs = close_tab(&self.tabs, id);
-    self.contents.remove(id);
+    // Frees the pinned client when its tab closes.
+    if let Some(TabContent::Sql {
+      session: Some(session),
+      ..
+    }) = self.contents.remove(id)
+    {
+      core::close_session(session);
+    }
     cx.notify();
   }
 
@@ -655,8 +671,19 @@ impl Workspace {
     if let Some(TabContent::Sql { running: true, .. }) = self.contents.get(&id) {
       return;
     }
-    let sql = editor.read(cx).value().to_string();
-    if sql.trim().is_empty() {
+    // The selection runs alone when there is one; otherwise the whole editor.
+    let sql = {
+      let state = editor.read(cx);
+      let value = state.value().to_string();
+      let range = state.selected_range();
+      let selected = value.get(range).unwrap_or("").trim().to_string();
+      if selected.is_empty() {
+        value.trim().to_string()
+      } else {
+        selected
+      }
+    };
+    if sql.is_empty() {
       return;
     }
 
@@ -668,13 +695,60 @@ impl Workspace {
       cx.notify();
     });
 
-    let rx = core::run_query(&db, sql);
+    let session = match self.contents.get(&id) {
+      Some(TabContent::Sql { session, .. }) => session.clone(),
+      _ => None,
+    };
     self._work_task = cx.spawn(async move |this, cx| {
-      let result = rx.await;
+      // One pinned session per editor tab: SET and transactions stick to it.
+      let session = match session {
+        Some(session) => session,
+        None => match core::open_session(&db).await {
+          Ok(Ok(session)) => {
+            let _ = this.update(cx, |this, _| {
+              if let Some(TabContent::Sql { session: slot, .. }) = this.contents.get_mut(&id) {
+                *slot = Some(session.clone());
+              }
+            });
+            session
+          }
+          _ => {
+            let _ = this.update(cx, |this, cx| {
+              if let Some(TabContent::Sql { running, .. }) = this.contents.get_mut(&id) {
+                *running = false;
+              }
+              cx.notify();
+            });
+            results.update(cx, |table, cx| {
+              table.delegate_mut().status = "error: could not open a session".into();
+              cx.notify();
+            });
+            return;
+          }
+        },
+      };
+      let result = core::run_session_query(&session, sql.clone()).await;
+      let at_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or_default();
+      let (ok, duration_ms) = match &result {
+        Ok(Ok(result)) => (true, result.duration_ms),
+        _ => (false, 0.),
+      };
       let _ = this.update(cx, |this, cx| {
         if let Some(TabContent::Sql { running, .. }) = this.contents.get_mut(&id) {
           *running = false;
         }
+        this.history = push_history(
+          std::mem::take(&mut this.history),
+          HistoryEntry {
+            sql,
+            at_ms,
+            duration_ms,
+            ok,
+          },
+        );
         cx.notify();
       });
       results.update(cx, |table, cx| {
@@ -808,6 +882,100 @@ impl Workspace {
         cx.notify();
       });
     });
+  }
+
+  fn cancel_query(&mut self, cx: &mut Context<Self>) {
+    let Some((id, _, results)) = self.active_sql() else {
+      return;
+    };
+    if let Some(TabContent::Sql {
+      session: Some(session),
+      running: true,
+      ..
+    }) = self.contents.get(&id)
+    {
+      core::cancel_session(session);
+      results.update(cx, |table, cx| {
+        table.delegate_mut().status = "canceling...".into();
+        cx.notify();
+      });
+    }
+  }
+
+  fn open_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    self.history_search.update(cx, |state, cx| {
+      state.set_value("", window, cx);
+    });
+    let this = cx.entity();
+    let search = self.history_search.clone();
+    window.open_dialog(cx, move |dialog, _, cx| {
+      let this_entity = this.clone();
+      let entries = {
+        let workspace = this_entity.read(cx);
+        let query = search.read(cx).value().to_string();
+        filter_history(&workspace.history, &query)
+      };
+      dialog.title("Query history").child(
+        v_flex().gap_2().child(Input::new(&search)).child(
+          v_flex()
+            .id("history-entries")
+            .max_h(px(360.))
+            .min_h(px(120.))
+            .overflow_y_scroll()
+            .gap_px()
+            .children(entries.into_iter().enumerate().map(|(ix, entry)| {
+              let this = this_entity.clone();
+              let sql = entry.sql.clone();
+              let label = if entry.ok {
+                format!("{:.0} ms", entry.duration_ms)
+              } else {
+                "failed".to_string()
+              };
+              h_flex()
+                .id(SharedString::from(format!("h-{ix}")))
+                .px_2()
+                .py_1()
+                .gap_2()
+                .rounded(cx.theme().radius)
+                .cursor_default()
+                .hover(|s| s.bg(cx.theme().accent))
+                .on_click(move |_, window, app| {
+                  let sql = sql.clone();
+                  window.close_dialog(app);
+                  this.update(app, |this, cx| this.load_history_entry(sql, window, cx));
+                })
+                .child(
+                  div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_sm()
+                    .font_family("IBM Plex Mono")
+                    .child(entry.sql.clone()),
+                )
+                .child(
+                  div()
+                    .text_xs()
+                    .text_color(if entry.ok {
+                      cx.theme().muted_foreground
+                    } else {
+                      cx.theme().danger
+                    })
+                    .child(label),
+                )
+            })),
+        ),
+      )
+    });
+  }
+
+  fn load_history_entry(&mut self, sql: String, window: &mut Window, cx: &mut Context<Self>) {
+    if let Some((_, editor, _)) = self.active_sql() {
+      editor.update(cx, |editor, cx| {
+        editor.set_value(sql, window, cx);
+        editor.focus(window, cx);
+      });
+    }
   }
 
   fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1228,6 +1396,7 @@ impl Workspace {
         results,
         split,
         running,
+        ..
       }) => v_flex()
         .flex_1()
         .min_h_0()
@@ -1245,6 +1414,23 @@ impl Workspace {
                 .label(if *running { "Running..." } else { "Run" })
                 .disabled(*running || self.db.is_none())
                 .on_click(cx.listener(|this, _, _, cx| this.run(cx))),
+            )
+            .when(*running, |this| {
+              this.child(
+                Button::new("cancel-query")
+                  .ghost()
+                  .xsmall()
+                  .label("Cancel")
+                  .on_click(cx.listener(|this, _, _, cx| this.cancel_query(cx))),
+              )
+            })
+            .child(
+              Button::new("history")
+                .ghost()
+                .xsmall()
+                .label("History")
+                .disabled(self.history.is_empty())
+                .on_click(cx.listener(|this, _, window, cx| this.open_history(window, cx))),
             ),
         )
         .child(

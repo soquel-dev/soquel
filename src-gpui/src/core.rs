@@ -105,12 +105,17 @@ pub fn apply_changes(
   rx
 }
 
-pub fn run_query(db: &Db, sql: String) -> oneshot::Receiver<Result<QueryResult, Error>> {
+/// A dedicated client outside the pool: SET and transactions stick,
+/// and cancel targets only this session.
+#[derive(Clone)]
+pub struct Session(Arc<dyn soquel_core::connectors::SqlSession>);
+
+pub fn open_session(db: &Db) -> oneshot::Receiver<Result<Session, Error>> {
   let (tx, rx) = oneshot::channel();
   let conn = db.0.clone();
   runtime().spawn(async move {
     let result = match conn.sql() {
-      Some(surface) => surface.run_query(&sql).await,
+      Some(surface) => surface.open_session().await.map(|s| Session(Arc::from(s))),
       None => Err(Error::Unsupported {
         message: "connection has no sql surface".to_string(),
       }),
@@ -118,6 +123,32 @@ pub fn run_query(db: &Db, sql: String) -> oneshot::Receiver<Result<QueryResult, 
     let _ = tx.send(result);
   });
   rx
+}
+
+pub fn run_session_query(
+  session: &Session,
+  sql: String,
+) -> oneshot::Receiver<Result<QueryResult, Error>> {
+  let (tx, rx) = oneshot::channel();
+  let session = session.0.clone();
+  runtime().spawn(async move {
+    let _ = tx.send(session.run_query(&sql).await);
+  });
+  rx
+}
+
+pub fn cancel_session(session: &Session) {
+  let session = session.0.clone();
+  runtime().spawn(async move {
+    // The query may have finished in the meantime; the run itself reports.
+    let _ = session.cancel().await;
+  });
+}
+
+pub fn close_session(session: Session) {
+  runtime().spawn(async move {
+    let _ = session.0.close().await;
+  });
 }
 
 pub fn table_ddl(
