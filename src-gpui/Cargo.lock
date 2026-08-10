@@ -9401,6 +9401,7 @@ dependencies = [
  "gpui",
  "gpui-component",
  "gpui_platform",
+ "lsp-types",
  "soquel",
  "tokio",
 ]

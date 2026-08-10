@@ -1,7 +1,9 @@
 use std::sync::{Arc, OnceLock};
 
 use futures::channel::oneshot;
-use soquel_lib::connectors::{Connection, QueryResult, TableRowsRequest, connector_for};
+use soquel_lib::connectors::{
+  Connection, QueryResult, SchemaSnapshot, TableRowsRequest, connector_for,
+};
 use soquel_lib::credentials::Credentials;
 use soquel_lib::error::Error;
 use soquel_lib::profiles::{
@@ -72,6 +74,36 @@ pub fn fetch_rows(
       Some(sql) => sql.table_rows(&request).await,
       None => Err(Error::Unsupported {
         message: "connection has no sql surface".to_string(),
+      }),
+    };
+    let _ = tx.send(result);
+  });
+  rx
+}
+
+pub fn run_query(db: &Db, sql: String) -> oneshot::Receiver<Result<QueryResult, Error>> {
+  let (tx, rx) = oneshot::channel();
+  let conn = db.0.clone();
+  runtime().spawn(async move {
+    let result = match conn.sql() {
+      Some(surface) => surface.run_query(&sql).await,
+      None => Err(Error::Unsupported {
+        message: "connection has no sql surface".to_string(),
+      }),
+    };
+    let _ = tx.send(result);
+  });
+  rx
+}
+
+pub fn schema_snapshot(db: &Db) -> oneshot::Receiver<Result<SchemaSnapshot, Error>> {
+  let (tx, rx) = oneshot::channel();
+  let conn = db.0.clone();
+  runtime().spawn(async move {
+    let result = match conn.introspect() {
+      Some(introspect) => introspect.schema_snapshot().await,
+      None => Err(Error::Unsupported {
+        message: "connection has no introspection surface".to_string(),
       }),
     };
     let _ = tx.send(result);
