@@ -110,7 +110,8 @@ deleted. Each panel lands with its layer-3 tests; each flow with layer 4.
 - [x] Cell editing: staged changes, apply, ctid/xmin guards (`staged.rs` and
       `cell_editing.rs` port `staged.ts` / `cell-editing.ts` with their tests;
       bool/date cells edit as text for now, preview dialog wrapping to polish)
-- [ ] Grid inspector (cell detail)
+- [x] Grid inspector (cell detail panel: json pretty + highlight, copy,
+      FK hop into a filtered tab; the inline cell hop arrow is still to add)
 - [x] Export menu (copy-as to clipboard, save-as via the native dialog; table
       tabs stream the full filtered/sorted table with live progress, sql tabs
       write the held result; format/export helpers moved into core, shared
