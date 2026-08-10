@@ -19,6 +19,7 @@ gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", 
 lsp-types = { version = "0.97.0", features = ["proposed"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
+rust-embed = "8"
 soquel-core = { path = "../crates/core" }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 

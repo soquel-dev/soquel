@@ -5,14 +5,16 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::list::ListItem;
 use gpui_component::notification::Notification;
 use gpui_component::resizable::{ResizableState, h_resizable, resizable_panel, v_resizable};
 use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::table::{DataTable, TableEvent, TableState};
 use gpui_component::text::TextView;
+use gpui_component::tree::{TreeItem, TreeState, tree};
 use gpui_component::{
-  ActiveTheme, Disableable, Icon, IconName, IndexPath, Root, Sizable, StyledExt, TitleBar,
-  WindowExt, h_flex, v_flex,
+  ActiveTheme, Disableable, Icon, IconName, IndexPath, Root, Selectable, Sizable, StyledExt,
+  TitleBar, WindowExt, h_flex, v_flex,
 };
 use soquel_core::connectors::{ColumnFilter, FilterOp, SchemaSnapshot, TableChanges, TableKind};
 use soquel_core::licence::tab_limit_override;
@@ -24,7 +26,9 @@ use crate::actions::{
 use crate::completion::{SchemaEntries, SqlCompletionProvider};
 use crate::core::{self, Db};
 use crate::filters::{filter_label, op_label, op_needs_value, ops_for_kind};
+use crate::format::format_estimated_rows;
 use crate::grid::RowsDelegate;
+use crate::icons::SoquelIcon;
 use crate::staged::{build_table_changes, preview_sql};
 use crate::tabs::{
   FREE_TABS, TabsState, WorkspaceTab, activate_sibling, close_tab, open_sql_tab, open_table_tab,
@@ -34,6 +38,8 @@ use crate::theme;
 enum TabContent {
   Table {
     table: Entity<TableState<RowsDelegate>>,
+    show_ddl: bool,
+    ddl: Option<String>,
   },
   Sql {
     editor: Entity<InputState>,
@@ -50,6 +56,8 @@ pub struct Workspace {
   cell_editor: Entity<InputState>,
   provider: Rc<SqlCompletionProvider>,
   sidebar_split: Entity<ResizableState>,
+  tree: Entity<TreeState>,
+  tree_filter: Entity<InputState>,
   db: Option<Db>,
   snapshot: Option<SchemaSnapshot>,
   server_version: Option<String>,
@@ -87,6 +95,18 @@ impl Workspace {
     .detach();
 
     let sidebar_split = cx.new(|_| ResizableState::default());
+    let tree = cx.new(|cx| TreeState::new(cx));
+    let tree_filter = cx.new(|cx| InputState::new(window, cx).placeholder("filter tables"));
+    cx.subscribe_in(
+      &tree_filter,
+      window,
+      |this, _, event: &InputEvent, _, cx| {
+        if let InputEvent::Change = event {
+          this.rebuild_tree(cx);
+        }
+      },
+    )
+    .detach();
     let filter_column = cx.new(|cx| SelectState::new(Vec::<String>::new(), None, window, cx));
     let filter_op = cx.new(|cx| SelectState::new(Vec::<String>::new(), None, window, cx));
     let filter_value = cx.new(|cx| InputState::new(window, cx).placeholder("value"));
@@ -140,6 +160,7 @@ impl Workspace {
         let _ = this.update(cx, |this, cx| {
           this.schema_entries.fill(&snapshot);
           this.snapshot = Some(snapshot);
+          this.rebuild_tree(cx);
           cx.notify();
         });
       }
@@ -161,6 +182,8 @@ impl Workspace {
       cell_editor,
       provider,
       sidebar_split,
+      tree,
+      tree_filter,
       db: None,
       snapshot: None,
       server_version: None,
@@ -190,7 +213,7 @@ impl Workspace {
   fn active_table(&self) -> Option<Entity<TableState<RowsDelegate>>> {
     let id = self.tabs.active_id.as_deref()?;
     match self.contents.get(id)? {
-      TabContent::Table { table } => Some(table.clone()),
+      TabContent::Table { table, .. } => Some(table.clone()),
       TabContent::Sql { .. } => None,
     }
   }
@@ -209,7 +232,7 @@ impl Workspace {
   fn active_grid(&self) -> Option<Entity<TableState<RowsDelegate>>> {
     let id = self.tabs.active_id.as_deref()?;
     match self.contents.get(id)? {
-      TabContent::Table { table } => Some(table.clone()),
+      TabContent::Table { table, .. } => Some(table.clone()),
       TabContent::Sql { results, .. } => Some(results.clone()),
     }
   }
@@ -303,7 +326,14 @@ impl Workspace {
         delegate.include_xmin = can_ever_edit;
         delegate.reload(cx);
       });
-      self.contents.insert(id, TabContent::Table { table });
+      self.contents.insert(
+        id,
+        TabContent::Table {
+          table,
+          show_ddl: false,
+          ddl: None,
+        },
+      );
     } else if let Some(table) = self.active_table() {
       // Re-activated: the model kept the newest initial filters, apply them.
       let filters = match self.active_tab() {
@@ -608,6 +638,7 @@ impl Workspace {
         let _ = this.update(cx, |this, cx| {
           this.schema_entries.fill(&snapshot);
           this.snapshot = Some(snapshot);
+          this.rebuild_tree(cx);
           cx.notify();
         });
       }
@@ -697,41 +728,90 @@ impl Workspace {
     });
   }
 
-  fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-    let browsing = self.active_tab().and_then(|tab| match tab {
-      WorkspaceTab::Table { schema, table, .. } => Some((schema.clone(), table.clone())),
-      WorkspaceTab::Sql { .. } => None,
-    });
-    let mut rows = Vec::new();
-    if let Some(snapshot) = &self.snapshot {
-      for schema in &snapshot.schemas {
-        for table in &schema.tables {
-          let schema = schema.name.clone();
-          let name = table.name.clone();
-          let selected = browsing.as_ref() == Some(&(schema.clone(), name.clone()));
-          let label = format!("{schema}.{name}");
-          rows.push(
-            div()
-              .id(SharedString::from(format!("t-{schema}-{name}")))
-              .px_2()
-              .py_1()
-              .rounded(cx.theme().radius)
-              .text_sm()
-              .cursor_default()
-              .when(selected, |this| {
-                this
-                  .bg(cx.theme().accent)
-                  .text_color(cx.theme().accent_foreground)
-              })
-              .hover(|this| this.bg(cx.theme().accent))
-              .on_click(cx.listener(move |this, _, window, cx| {
-                this.open_table(schema.clone(), name.clone(), Vec::new(), window, cx);
-              }))
-              .child(label),
+  /// Ids carry the row's facts (schema, table, kind, estimate) so the render
+  /// closure can draw without reaching back into the snapshot.
+  fn rebuild_tree(&mut self, cx: &mut Context<Self>) {
+    let needle = self.tree_filter.read(cx).value().trim().to_lowercase();
+    let Some(snapshot) = &self.snapshot else {
+      return;
+    };
+    let mut items = Vec::new();
+    for schema in &snapshot.schemas {
+      let tables: Vec<TreeItem> = schema
+        .tables
+        .iter()
+        .filter(|table| needle.is_empty() || table.name.to_lowercase().contains(&needle))
+        .map(|table| {
+          let marker = match table.kind {
+            TableKind::Table => "T",
+            TableKind::View => "V",
+            TableKind::MaterializedView => "M",
+          };
+          let id = format!(
+            "{}\t{}\t{}\t{}",
+            schema.name,
+            table.name,
+            marker,
+            format_estimated_rows(table.estimated_rows)
           );
-        }
+          TreeItem::new(id, table.name.clone())
+        })
+        .collect();
+      if tables.is_empty() {
+        continue;
       }
+      items.push(
+        TreeItem::new(format!("schema:{}", schema.name), schema.name.clone())
+          .expanded(true)
+          .children(tables),
+      );
     }
+    self.tree.update(cx, |state, cx| {
+      state.set_items(items, cx);
+    });
+    cx.notify();
+  }
+
+  fn toggle_ddl(&mut self, show: bool, cx: &mut Context<Self>) {
+    let Some(id) = self.tabs.active_id.clone() else {
+      return;
+    };
+    let Some(TabContent::Table {
+      show_ddl,
+      ddl,
+      table,
+    }) = self.contents.get_mut(&id)
+    else {
+      return;
+    };
+    *show_ddl = show;
+    let needs_fetch = show && ddl.is_none();
+    let browse = table.read(cx).delegate().browse.clone();
+    cx.notify();
+    if !needs_fetch {
+      return;
+    }
+    let Some((db, schema, name)) = browse else {
+      return;
+    };
+    let rx = core::table_ddl(&db, schema, name);
+    self._work_task = cx.spawn(async move |this, cx| {
+      let result = rx.await;
+      let _ = this.update(cx, |this, cx| {
+        if let Some(TabContent::Table { ddl, .. }) = this.contents.get_mut(&id) {
+          *ddl = Some(match result {
+            Ok(Ok(sql)) => sql,
+            Ok(Err(error)) => format!("-- error: {error}"),
+            Err(_) => "-- error: fetch canceled".to_string(),
+          });
+        }
+        cx.notify();
+      });
+    });
+  }
+
+  fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    let workspace = cx.entity();
     v_flex()
       .size_full()
       .bg(cx.theme().sidebar)
@@ -757,14 +837,82 @@ impl Workspace {
           ),
       )
       .child(
-        v_flex()
-          .id("tables")
-          .flex_1()
-          .min_h_0()
-          .overflow_y_scroll()
+        div()
           .px_2()
-          .gap_px()
-          .children(rows),
+          .pb_1()
+          .child(Input::new(&self.tree_filter).xsmall()),
+      )
+      .child(
+        v_flex().flex_1().min_h_0().px_1().child(
+          tree(&self.tree, move |ix, entry, selected, _, cx| {
+            let item = entry.item();
+            if entry.is_folder() {
+              return ListItem::new(ix).child(
+                h_flex()
+                  .gap_1()
+                  .pl(px(4.))
+                  .items_center()
+                  .text_xs()
+                  .text_color(cx.theme().muted_foreground)
+                  .child(
+                    Icon::new(if entry.is_expanded() {
+                      IconName::ChevronDown
+                    } else {
+                      IconName::ChevronRight
+                    })
+                    .size_3(),
+                  )
+                  .child(item.label.clone()),
+              );
+            }
+            let mut parts = item.id.split('\t');
+            let schema = parts.next().unwrap_or_default().to_string();
+            let name = parts.next().unwrap_or_default().to_string();
+            let marker = parts.next().unwrap_or_default();
+            let estimate = parts.next().unwrap_or_default().to_string();
+            let icon = match marker {
+              "V" => Icon::new(IconName::Eye),
+              "M" => Icon::new(SoquelIcon::Layers),
+              _ => Icon::new(SoquelIcon::Table2),
+            };
+            let workspace = workspace.clone();
+            ListItem::new(ix)
+              .selected(selected)
+              .on_click(move |_, window, app| {
+                let (schema, name) = (schema.clone(), name.clone());
+                workspace.update(app, |this, cx| {
+                  this.open_table(schema, name, Vec::new(), window, cx);
+                });
+              })
+              .child(
+                h_flex()
+                  .pl(px(20.))
+                  .pr_2()
+                  .gap_2()
+                  .items_center()
+                  .text_sm()
+                  .child(
+                    div()
+                      .text_color(cx.theme().muted_foreground)
+                      .child(icon.size_3()),
+                  )
+                  .child(
+                    div()
+                      .flex_1()
+                      .min_w_0()
+                      .truncate()
+                      .child(item.label.clone()),
+                  )
+                  .child(
+                    div()
+                      .text_xs()
+                      .text_color(cx.theme().muted_foreground)
+                      .child(estimate),
+                  ),
+              )
+          })
+          .size_full(),
+        ),
       )
   }
 
@@ -823,9 +971,12 @@ impl Workspace {
   fn render_table_toolbar(
     &self,
     table: &Entity<TableState<RowsDelegate>>,
+    show_ddl: bool,
+    ddl: Option<&String>,
     cx: &mut Context<Self>,
   ) -> impl IntoElement {
     let filter_count = table.read(cx).delegate().filters.len();
+    let ddl_text = ddl.cloned();
     let editable = table.read(cx).delegate().editable();
     let can_ever_edit = table.read(cx).delegate().can_ever_edit;
     let selected_row = table.read(cx).selected_cell().map(|(row, _)| row);
@@ -841,17 +992,49 @@ impl Workspace {
       .border_b_1()
       .border_color(cx.theme().border)
       .child(
-        Button::new("toggle-filter")
+        Button::new("view-data")
           .ghost()
           .xsmall()
-          .label(if filter_count > 0 {
-            format!("Filter ({filter_count})")
-          } else {
-            "Filter".to_string()
-          })
-          .on_click(cx.listener(|this, _, window, cx| this.toggle_filter_row(window, cx))),
+          .label("Data")
+          .selected(!show_ddl)
+          .on_click(cx.listener(|this, _, _, cx| this.toggle_ddl(false, cx))),
       )
-      .when(editable, |this| {
+      .child(
+        Button::new("view-ddl")
+          .ghost()
+          .xsmall()
+          .label("DDL")
+          .selected(show_ddl)
+          .on_click(cx.listener(|this, _, _, cx| this.toggle_ddl(true, cx))),
+      )
+      .when(show_ddl, |this| {
+        this.child(
+          Button::new("copy-ddl")
+            .ghost()
+            .xsmall()
+            .label("Copy")
+            .disabled(ddl_text.is_none())
+            .on_click(move |_, _, cx| {
+              if let Some(sql) = &ddl_text {
+                cx.write_to_clipboard(ClipboardItem::new_string(sql.clone()));
+              }
+            }),
+        )
+      })
+      .when(!show_ddl, |this| {
+        this.child(
+          Button::new("toggle-filter")
+            .ghost()
+            .xsmall()
+            .label(if filter_count > 0 {
+              format!("Filter ({filter_count})")
+            } else {
+              "Filter".to_string()
+            })
+            .on_click(cx.listener(|this, _, window, cx| this.toggle_filter_row(window, cx))),
+        )
+      })
+      .when(!show_ddl && editable, |this| {
         this
           .child(
             Button::new("add-row")
@@ -902,7 +1085,7 @@ impl Workspace {
               )
           })
       })
-      .when(can_ever_edit && !editable, |this| {
+      .when(!show_ddl && can_ever_edit && !editable, |this| {
         this
           .child(
             div()
@@ -995,25 +1178,49 @@ impl Workspace {
         .into_any_element();
     };
     match self.contents.get(&id) {
-      Some(TabContent::Table { table }) => {
+      Some(TabContent::Table {
+        table,
+        show_ddl,
+        ddl,
+      }) => {
         let table = table.clone();
+        let show_ddl = *show_ddl;
+        let ddl = ddl.clone();
         v_flex()
           .flex_1()
           .min_h_0()
-          .child(self.render_table_toolbar(&table, cx))
-          .when(self.filter_open, |this| {
-            this.child(self.render_filter_row(cx))
+          .child(self.render_table_toolbar(&table, show_ddl, ddl.as_ref(), cx))
+          .when(!show_ddl, |this| {
+            this
+              .when(self.filter_open, |this| {
+                this.child(self.render_filter_row(cx))
+              })
+              .when(!table.read(cx).delegate().filters.is_empty(), |this| {
+                this.child(self.render_filter_chips(&table, cx))
+              })
+              .child(
+                v_flex()
+                  .flex_1()
+                  .min_h_0()
+                  .p_1()
+                  .child(DataTable::new(&table).stripe(true)),
+              )
           })
-          .when(!table.read(cx).delegate().filters.is_empty(), |this| {
-            this.child(self.render_filter_chips(&table, cx))
+          .when(show_ddl, |this| {
+            this.child(
+              v_flex()
+                .id("ddl-view")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .p_3()
+                .text_sm()
+                .child(TextView::markdown(
+                  "ddl",
+                  format!("```sql\n{}\n```", ddl.as_deref().unwrap_or("-- loading...")),
+                )),
+            )
           })
-          .child(
-            v_flex()
-              .flex_1()
-              .min_h_0()
-              .p_1()
-              .child(DataTable::new(&table).stripe(true)),
-          )
           .into_any_element()
       }
       Some(TabContent::Sql {

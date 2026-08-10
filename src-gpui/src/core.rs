@@ -120,6 +120,25 @@ pub fn run_query(db: &Db, sql: String) -> oneshot::Receiver<Result<QueryResult, 
   rx
 }
 
+pub fn table_ddl(
+  db: &Db,
+  schema: String,
+  table: String,
+) -> oneshot::Receiver<Result<String, Error>> {
+  let (tx, rx) = oneshot::channel();
+  let conn = db.0.clone();
+  runtime().spawn(async move {
+    let result = match conn.introspect() {
+      Some(introspect) => introspect.table_ddl(&schema, &table).await,
+      None => Err(Error::Unsupported {
+        message: "connection has no introspection surface".to_string(),
+      }),
+    };
+    let _ = tx.send(result);
+  });
+  rx
+}
+
 pub fn schema_snapshot(db: &Db) -> oneshot::Receiver<Result<SchemaSnapshot, Error>> {
   let (tx, rx) = oneshot::channel();
   let conn = db.0.clone();
