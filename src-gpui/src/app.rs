@@ -13,6 +13,7 @@ use crate::actions::ToggleCommandPalette;
 use crate::command_palette::{CommandPaletteDelegate, PaletteItem};
 use crate::connections::{ConnectionsEvent, ConnectionsView, group_connections};
 use crate::core;
+use crate::kv::{KvWorkspace, KvWorkspaceEvent};
 use crate::theme;
 use crate::workspace::{Workspace, WorkspaceEvent};
 
@@ -20,6 +21,11 @@ enum Screen {
   Connections(Entity<ConnectionsView>),
   Workspace {
     view: Entity<Workspace>,
+    connection_id: String,
+    _subscription: Subscription,
+  },
+  KvWorkspace {
+    view: Entity<KvWorkspace>,
     connection_id: String,
     _subscription: Subscription,
   },
@@ -64,26 +70,54 @@ impl App {
     cx: &mut Context<Self>,
   ) {
     let connection_id = profile.id.clone();
-    let view = cx.new(|cx| Workspace::new(db, profile, window, cx));
-    let subscription = cx.subscribe_in(
-      &view,
-      window,
-      |this, _, event: &WorkspaceEvent, window, cx| {
-        let WorkspaceEvent::Close = event;
-        this.close_workspace(window, cx);
-      },
-    );
-    self.screen = Screen::Workspace {
-      view,
-      connection_id,
-      _subscription: subscription,
+    // The first branch on kind: a key-value connection gets the redis browser,
+    // everything else the SQL workspace.
+    let browses_keys = soquel_core::connectors::connector_for(db.kind())
+      .capabilities()
+      .contains(&soquel_core::connectors::Capability::KvBrowse);
+    self.screen = if browses_keys {
+      let view = cx.new(|cx| KvWorkspace::new(self.state.clone(), db, profile, window, cx));
+      let subscription = cx.subscribe_in(
+        &view,
+        window,
+        |this, _, event: &KvWorkspaceEvent, window, cx| {
+          let KvWorkspaceEvent::Close = event;
+          this.close_workspace(window, cx);
+        },
+      );
+      Screen::KvWorkspace {
+        view,
+        connection_id,
+        _subscription: subscription,
+      }
+    } else {
+      let view = cx.new(|cx| Workspace::new(db, profile, window, cx));
+      let subscription = cx.subscribe_in(
+        &view,
+        window,
+        |this, _, event: &WorkspaceEvent, window, cx| {
+          let WorkspaceEvent::Close = event;
+          this.close_workspace(window, cx);
+        },
+      );
+      Screen::Workspace {
+        view,
+        connection_id,
+        _subscription: subscription,
+      }
     };
     cx.notify();
   }
 
   fn close_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-    if let Screen::Workspace { connection_id, .. } = &self.screen {
-      core::disconnect_id(self.state.clone(), connection_id.clone());
+    let open_id = match &self.screen {
+      Screen::Workspace { connection_id, .. } | Screen::KvWorkspace { connection_id, .. } => {
+        Some(connection_id.clone())
+      }
+      Screen::Connections(_) => None,
+    };
+    if let Some(id) = open_id {
+      core::disconnect_id(self.state.clone(), id);
     }
     let connections = cx.new(|cx| ConnectionsView::new(self.state.clone(), window, cx));
     self._connections_subscription = cx.subscribe_in(
@@ -221,6 +255,15 @@ impl App {
           run: Rc::new(move |window, cx| app.update(cx, |app, cx| app.close_workspace(window, cx))),
         });
       }
+      Screen::KvWorkspace { .. } => {
+        let app = cx.entity();
+        items.push(PaletteItem {
+          label: "Back to connections".into(),
+          hint: None,
+          keywords: "back connections close disconnect".to_string(),
+          run: Rc::new(move |window, cx| app.update(cx, |app, cx| app.close_workspace(window, cx))),
+        });
+      }
     }
     items
   }
@@ -285,6 +328,7 @@ impl Render for App {
       .child(match &self.screen {
         Screen::Connections(view) => view.clone().into_any_element(),
         Screen::Workspace { view, .. } => view.clone().into_any_element(),
+        Screen::KvWorkspace { view, .. } => view.clone().into_any_element(),
       })
       .children(dialog_layer)
       .children(notification_layer)

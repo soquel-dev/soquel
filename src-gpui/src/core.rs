@@ -2,7 +2,9 @@ use std::sync::{Arc, OnceLock};
 
 use futures::channel::oneshot;
 use soquel_core::AppState;
-use soquel_core::connectors::{Connection, QueryResult, SchemaSnapshot, TableRowsRequest};
+use soquel_core::connectors::{
+  Connection, KeyDetail, KeyScanPage, KvDatabases, QueryResult, SchemaSnapshot, TableRowsRequest,
+};
 use soquel_core::error::{Error, SecretSubject};
 use soquel_core::profiles::{ConnectionInput, ConnectionProfile, ConnectorKind};
 use soquel_core::tunnels::{TunnelInput, TunnelProfile};
@@ -424,6 +426,133 @@ pub fn schema_snapshot(db: &Db) -> oneshot::Receiver<Result<SchemaSnapshot, Erro
   rx
 }
 
+fn no_kv() -> Error {
+  Error::Unsupported {
+    message: "connection does not browse keys".to_string(),
+  }
+}
+
+pub fn kv_scan(
+  db: &Db,
+  pattern: String,
+  cursor: Option<String>,
+  count: u32,
+) -> oneshot::Receiver<Result<KeyScanPage, Error>> {
+  let (tx, rx) = oneshot::channel();
+  let conn = db.0.clone();
+  runtime().spawn(async move {
+    let result = match conn.kv() {
+      Some(kv) => kv.scan_keys(&pattern, cursor.as_deref(), count).await,
+      None => Err(no_kv()),
+    };
+    let _ = tx.send(result);
+  });
+  rx
+}
+
+pub fn kv_key_detail(db: &Db, key: String) -> oneshot::Receiver<Result<KeyDetail, Error>> {
+  let (tx, rx) = oneshot::channel();
+  let conn = db.0.clone();
+  runtime().spawn(async move {
+    let result = match conn.kv() {
+      Some(kv) => kv.key_detail(&key).await,
+      None => Err(no_kv()),
+    };
+    let _ = tx.send(result);
+  });
+  rx
+}
+
+pub fn kv_databases(db: &Db) -> oneshot::Receiver<Result<KvDatabases, Error>> {
+  let (tx, rx) = oneshot::channel();
+  let conn = db.0.clone();
+  runtime().spawn(async move {
+    let result = match conn.kv() {
+      Some(kv) => kv.databases().await,
+      None => Err(no_kv()),
+    };
+    let _ = tx.send(result);
+  });
+  rx
+}
+
+pub fn kv_run_command(db: &Db, command: String) -> oneshot::Receiver<Result<Vec<String>, Error>> {
+  let (tx, rx) = oneshot::channel();
+  let conn = db.0.clone();
+  runtime().spawn(async move {
+    let result = match conn.kv() {
+      Some(kv) => kv.run_command(&command).await,
+      None => Err(no_kv()),
+    };
+    let _ = tx.send(result);
+  });
+  rx
+}
+
+pub fn kv_set_string(db: &Db, key: String, value: String) -> oneshot::Receiver<Result<(), Error>> {
+  let (tx, rx) = oneshot::channel();
+  let conn = db.0.clone();
+  runtime().spawn(async move {
+    let result = match conn.kv() {
+      Some(kv) => kv.set_string(&key, &value).await,
+      None => Err(no_kv()),
+    };
+    let _ = tx.send(result);
+  });
+  rx
+}
+
+pub fn kv_delete_key(db: &Db, key: String) -> oneshot::Receiver<Result<(), Error>> {
+  let (tx, rx) = oneshot::channel();
+  let conn = db.0.clone();
+  runtime().spawn(async move {
+    let result = match conn.kv() {
+      Some(kv) => kv.delete_key(&key).await,
+      None => Err(no_kv()),
+    };
+    let _ = tx.send(result);
+  });
+  rx
+}
+
+pub fn kv_set_ttl(
+  db: &Db,
+  key: String,
+  ttl_ms: Option<f64>,
+) -> oneshot::Receiver<Result<(), Error>> {
+  let (tx, rx) = oneshot::channel();
+  let conn = db.0.clone();
+  runtime().spawn(async move {
+    let result = match conn.kv() {
+      Some(kv) => kv.set_ttl(&key, ttl_ms).await,
+      None => Err(no_kv()),
+    };
+    let _ = tx.send(result);
+  });
+  rx
+}
+
+/// Switching db is a reconnect (a SELECT reverts on the multiplexed socket):
+/// the core swaps the stored connection, we hand back a fresh Db.
+pub fn kv_select_db(
+  state: Arc<AppState>,
+  id: String,
+  db: u32,
+) -> oneshot::Receiver<Result<Db, Error>> {
+  let (tx, rx) = oneshot::channel();
+  runtime().spawn(async move {
+    let result = async {
+      state.select_kv_db(&id, db).await?;
+      let kind = state.profiles.lock().unwrap().get(&id)?.params.kind();
+      let connection = soquel_core::ops::active(&state, &id).await?;
+      Ok(Db(connection, kind))
+    }
+    .await;
+    let _ = tx.send(result);
+  });
+  rx
+}
+
 pub fn page_request(schema: &str, table: &str, offset: u32, limit: u32) -> TableRowsRequest {
   TableRowsRequest {
     schema: schema.to_string(),
@@ -689,5 +818,103 @@ mod tests {
     )
     .await
     .expect("Tunnel OK");
+  }
+
+  /// The key browser end to end against a live redis: seed via the console,
+  /// scan, read a value per type, isolate a db, ttl + delete. Skipped without
+  /// SOQUEL_TEST_REDIS.
+  #[tokio::test]
+  async fn integration_flow_redis_browse() {
+    use soquel_core::connectors::KeyValue;
+    use soquel_core::credentials::Credentials;
+    use soquel_core::profiles::RedisParams;
+
+    let Ok(coord) = std::env::var("SOQUEL_TEST_REDIS") else {
+      return;
+    };
+    let (host, port) = coord.split_once(':').expect("host:port");
+    let profile = |db: u32| ConnectionProfile {
+      id: format!("redis-flow-{db}"),
+      name: "redis flow".to_string(),
+      env: Env::Dev,
+      group: None,
+      agent_access: AgentAccess::None,
+      credential: CredentialSource::Prompt,
+      params: ConnectorParams::Redis(RedisParams {
+        host: host.to_string(),
+        port: port.parse().expect("port"),
+        db,
+        username: None,
+        tls: false,
+        tunnel_id: None,
+      }),
+    };
+    let db0 = connect_with(profile(0), Credentials::fixed(Some("soquel".to_string())))
+      .await
+      .expect("channel")
+      .expect("connects to the compose redis");
+
+    let prefix = format!("gpui_kv_{}", std::process::id());
+    let cmd = |db: &Db, line: String| kv_run_command(db, line);
+    for line in [
+      format!("DEL {prefix}:str {prefix}:list {prefix}:hash"),
+      format!("SET {prefix}:str hello"),
+      format!("RPUSH {prefix}:list a b c"),
+      format!("HSET {prefix}:hash field1 v1 field2 v2"),
+      format!("EXPIRE {prefix}:str 7200"),
+    ] {
+      cmd(&db0, line).await.expect("channel").expect("seed");
+    }
+
+    // The contains-search reaches all three seeded keys.
+    let page = kv_scan(&db0, format!("*{prefix}*"), None, 500)
+      .await
+      .expect("channel")
+      .expect("scan");
+    let names: Vec<&str> = page.keys.iter().map(|k| k.key.as_str()).collect();
+    assert!(names.contains(&format!("{prefix}:str").as_str()));
+    assert!(names.contains(&format!("{prefix}:hash").as_str()));
+
+    let str_detail = kv_key_detail(&db0, format!("{prefix}:str"))
+      .await
+      .expect("channel")
+      .expect("detail");
+    assert!(matches!(&str_detail.value, KeyValue::String { value } if value == "hello"));
+    assert!(str_detail.ttl_ms.is_some());
+
+    let hash = kv_key_detail(&db0, format!("{prefix}:hash"))
+      .await
+      .expect("channel")
+      .expect("detail");
+    let KeyValue::Hash { entries } = &hash.value else {
+      panic!("hash value");
+    };
+    assert_eq!(entries.len(), 2);
+
+    // ttl clear + delete roundtrip (db isolation + select are covered by the
+    // core suite, which owns the AppState the reconnect needs).
+    kv_set_ttl(&db0, format!("{prefix}:str"), None)
+      .await
+      .expect("channel")
+      .expect("persist");
+    let persisted = kv_key_detail(&db0, format!("{prefix}:str"))
+      .await
+      .expect("channel")
+      .expect("detail");
+    assert!(persisted.ttl_ms.is_none());
+
+    kv_delete_key(&db0, format!("{prefix}:str"))
+      .await
+      .expect("channel")
+      .expect("delete");
+    let gone = kv_key_detail(&db0, format!("{prefix}:str"))
+      .await
+      .expect("channel");
+    assert!(gone.is_err(), "the deleted key is gone");
+
+    // Cleanup.
+    for suffix in ["list", "hash"] {
+      let _ = cmd(&db0, format!("DEL {prefix}:{suffix}")).await;
+    }
   }
 }
