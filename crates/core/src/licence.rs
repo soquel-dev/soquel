@@ -167,6 +167,12 @@ pub fn read(path: &std::path::Path) -> LicenceStatus {
   status_of(&token, BUILT, PUBLIC_KEY).unwrap_or(LicenceStatus::Free)
 }
 
+/// Where the installed token lives, under the app data dir. One place so both
+/// frontends read and write the same file.
+pub fn path(data_dir: &std::path::Path) -> std::path::PathBuf {
+  data_dir.join("licence.txt")
+}
+
 /// Validated before it is written: a bad paste must not replace a working licence.
 pub fn install(path: &std::path::Path, token: &str) -> Result<LicenceStatus, Error> {
   install_with(path, token, BUILT, PUBLIC_KEY)
