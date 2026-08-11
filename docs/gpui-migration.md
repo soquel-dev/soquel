@@ -72,8 +72,11 @@ Four layers, from cheapest to heaviest. The first two exist today.
    macro and recurses (the crate also carries `#![recursion_limit = "256"]`).
 4. **Flow tests** (real test DBs): started with
    `integration_flow_browse_stage_apply` in the gpui crate (connect ->
-   browse sorted -> stage -> apply -> reread), wired into
-   `test-integration.sh` and gated by `SOQUEL_TEST_PG` like the core suites.
+   browse sorted -> stage -> apply -> reread), joined by
+   `integration_flow_tunnel_trust_and_connect` (TOFU refusal -> trust ->
+   query through the forward, against the compose sshd), wired into
+   `test-integration.sh` and gated by `SOQUEL_TEST_PG` / `SOQUEL_TEST_SSH`
+   like the core suites.
    Still to grow: input-simulation flows (`VisualTestContext`
    `simulate_keystrokes` through gpui-component widgets), import and licence
    dialogs.
@@ -103,11 +106,15 @@ deleted. Each panel lands with its layer-3 tests; each flow with layer 4.
       credential modes; command mode, agent access, other kinds, paste-url
       prefill (`parseConnectionUrl` port) and small-screen dialog height
       still to do)
-- [ ] Tunnel form + tunnel list
+- [x] Tunnel form + tunnel list (`tunnels.rs` ports `lib/tunnels.ts` with its
+      tests; the connection form's picker maps by index since names collide;
+      the revoke-credential-command row action waits for the approval round)
 - [x] Secret prompt dialog (SecretRequired -> unlock -> retry, with the
-      keep-for-session checkbox)
+      keep-for-session checkbox; title is subject-aware for tunnels)
 - [ ] Credential command approval dialog
-- [ ] Host key trust dialog + panel
+- [x] Host key trust dialog + panel (dialog only: gpui dialogs stack in
+      `Root.active_dialogs`, so the form-inline panel the Vue focus trap
+      forced has no reason to exist)
 - [ ] Import dialog (preview, duplicates, passphrase, `.soquel` open/drop)
 - [ ] Export dialog (secrets opt-in, encryption)
 

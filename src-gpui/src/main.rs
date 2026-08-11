@@ -11,10 +11,12 @@ mod filters;
 mod format;
 mod grid;
 mod history;
+mod host_key;
 mod icons;
 mod staged;
 mod tabs;
 mod theme;
+mod tunnels;
 mod workspace;
 
 use gpui::*;
