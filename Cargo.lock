@@ -8124,6 +8124,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "soquel-app"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "fern",
+ "futures",
+ "gpui",
+ "gpui-component",
+ "gpui-component-assets",
+ "gpui_platform",
+ "humantime",
+ "log",
+ "lsp-types",
+ "open",
+ "percent-encoding",
+ "rust-embed",
+ "serde_json",
+ "soquel-core",
+ "tempfile",
+ "tokio",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "soquel-core"
 version = "0.1.0"
 dependencies = [
@@ -8151,38 +8177,13 @@ dependencies = [
  "serde_json",
  "shell-words",
  "specta",
+ "tempfile",
  "thiserror 2.0.20",
  "time",
  "tokio",
  "tokio-postgres",
  "tokio-postgres-rustls",
  "tokio-util",
- "uuid",
-]
-
-[[package]]
-name = "soquel-gpui"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "fern",
- "futures",
- "gpui",
- "gpui-component",
- "gpui-component-assets",
- "gpui_platform",
- "humantime",
- "log",
- "lsp-types",
- "open",
- "percent-encoding",
- "rust-embed",
- "serde_json",
- "soquel-core",
- "tempfile",
- "tokio",
- "url",
  "uuid",
 ]
 

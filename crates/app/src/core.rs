@@ -109,7 +109,7 @@ pub fn init_logging() {
     })
     .level(log::LevelFilter::Warn)
     .level_for("soquel_core", log::LevelFilter::Info)
-    .level_for("soquel_gpui", log::LevelFilter::Info)
+    .level_for("soquel_app", log::LevelFilter::Info)
     .chain(file);
   // A bundle has no console; a debug run does.
   if cfg!(debug_assertions) {
@@ -1146,7 +1146,7 @@ mod tests {
         auth: soquel_core::tunnels::SshAuth::KeyFile {
           path: concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../scripts/test-ssh/id_ed25519"
+            "/../../scripts/test-ssh/id_ed25519"
           )
           .to_string(),
         },

@@ -10,12 +10,12 @@
     "node": "26.3.1"
   },
   "scripts": {
-    "dev": "cargo run --manifest-path src-gpui/Cargo.toml",
-    "dev:wsl": "SOQUEL_INSECURE_FILE_SECRETS=1 cargo run --manifest-path src-gpui/Cargo.toml",
-    "build": "cargo build --manifest-path src-gpui/Cargo.toml",
+    "dev": "cargo run -p soquel-app",
+    "dev:wsl": "SOQUEL_INSECURE_FILE_SECRETS=1 cargo run -p soquel-app",
+    "build": "cargo build -p soquel-app",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "test": "cargo test --manifest-path crates/core/Cargo.toml && cargo test --manifest-path src-gpui/Cargo.toml",
+    "test": "cargo test --workspace",
     "test:integration": "bash scripts/test-integration.sh",
     "db:test": "docker compose -f docker-compose.test.yml up -d --wait",
     "db:test:down": "docker compose -f docker-compose.test.yml down",
