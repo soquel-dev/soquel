@@ -2,19 +2,7 @@ shellEmulator: true
 
 trustPolicy: no-downgrade
 
-# babel pulls a pre-provenance semver@6 that trips the policy.
 trustPolicyExclude:
   - semver
-  - '@wdio/repl'
   - chokidar
   - undici-types
-
-packages:
-  - packages/*
-
-# edge/gecko driver downloads useless here: tauri-driver drives the webview.
-allowBuilds:
-  edgedriver: false
-  esbuild: true
-  geckodriver: false
-  vue-demi: true

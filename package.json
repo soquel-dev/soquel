@@ -10,19 +10,13 @@
     "node": "26.3.1"
   },
   "scripts": {
-    "dev:app": "pnpm --filter @soquel/app dev",
-    "dev": "tauri dev",
-    "dev:wsl": "SOQUEL_INSECURE_FILE_SECRETS=1 tauri dev",
-    "build": "pnpm -r build",
-    "build:desktop": "tauri build",
-    "tauri": "tauri",
-    "typecheck": "pnpm -r typecheck",
+    "dev": "cargo run --manifest-path src-gpui/Cargo.toml",
+    "dev:wsl": "SOQUEL_INSECURE_FILE_SECRETS=1 cargo run --manifest-path src-gpui/Cargo.toml",
+    "build": "cargo build --manifest-path src-gpui/Cargo.toml",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "test": "pnpm -r test",
+    "test": "cargo test --manifest-path crates/core/Cargo.toml && cargo test --manifest-path src-gpui/Cargo.toml",
     "test:integration": "bash scripts/test-integration.sh",
-    "test:e2e": "pnpm -r test:e2e",
-    "updates:stub": "node scripts/update-server.mjs",
     "db:test": "docker compose -f docker-compose.test.yml up -d --wait",
     "db:test:down": "docker compose -f docker-compose.test.yml down",
     "db:dev": "docker compose -f docker-compose.dev.yml up -d --wait",
@@ -31,13 +25,10 @@
     "db:dev:seed:mysql": "bash scripts/dev-seed/seed.sh mysql",
     "db:dev:seed:redis": "bash scripts/dev-seed/seed.sh redis",
     "db:dev:seed:mongo": "bash scripts/dev-seed/seed.sh mongo",
-    "db:dev:down": "docker compose -f docker-compose.dev.yml down",
-    "db:market": "docker compose -f docker-compose.dev.yml -f docker-compose.market.yml up -d --wait && SOQUEL_SEED_BASE_DATE='2026-08-01 09:30:00' SOQUEL_SEED_DATABASE=northwind bash scripts/dev-seed/seed.sh",
-    "dev:market": "bash scripts/market-app.sh"
+    "db:dev:down": "docker compose -f docker-compose.dev.yml down"
   },
   "devDependencies": {
     "@antfu/eslint-config": "^9.2.0",
-    "@tauri-apps/cli": "^2.11.4",
     "eslint": "^10.8.0",
     "typescript": "~6.0.3"
   }
