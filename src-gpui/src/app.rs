@@ -470,10 +470,20 @@ impl Render for App {
 #[cfg(test)]
 mod tests {
   use ::core::prelude::v1::test;
-  use gpui::TestAppContext;
+  use gpui::{Modifiers, TestAppContext};
   use gpui_component::WindowExt;
 
   use super::*;
+
+  fn approval_request(id: &str) -> McpApprovalRequest {
+    McpApprovalRequest {
+      id: id.to_string(),
+      connection_id: "c1".to_string(),
+      connection_name: "warehouse".to_string(),
+      operation: format!("DELETE FROM t WHERE id = {id}"),
+      payload: None,
+    }
+  }
 
   fn test_state() -> (tempfile::TempDir, Arc<AppState>) {
     let dir = tempfile::tempdir().unwrap();
@@ -482,6 +492,47 @@ mod tests {
       Box::new(soquel_core::secrets::InMemoryStore::default()),
     ));
     (dir, state)
+  }
+
+  #[gpui::test]
+  fn approvals_show_one_dialog_at_a_time_and_surface_the_next(cx: &mut TestAppContext) {
+    let (_dir, state) = test_state();
+    let (app, cx) = crate::test_support::shell_window(cx, {
+      let state = state.clone();
+      move |window, cx| App::new(state, window, cx)
+    });
+
+    // Two writes block at the same time.
+    cx.update(|_, cx| {
+      app.update(cx, |app, cx| {
+        app.enqueue_approval(approval_request("1"), cx);
+        app.enqueue_approval(approval_request("2"), cx);
+      });
+    });
+    crate::test_support::wait_until(cx, "the first approval dialog", |cx| {
+      cx.update(|window, cx| window.has_active_dialog(cx))
+    });
+    // Both are queued, but only one dialog is up.
+    cx.update(|_, cx| assert_eq!(app.read(cx).approval_queue.len(), 2));
+
+    // Answering the front drains it and the second surfaces on its own.
+    let bounds = cx
+      .debug_bounds("approval-allow")
+      .expect("run button painted");
+    cx.simulate_click(bounds.center(), Modifiers::none());
+    crate::test_support::wait_until(cx, "the second approval dialog", |cx| {
+      cx.update(|window, cx| window.has_active_dialog(cx))
+        && cx.update(|_, cx| app.read(cx).approval_queue.len() == 1)
+    });
+
+    // Answering the second empties the queue and closes the dialog.
+    let bounds = cx
+      .debug_bounds("approval-allow")
+      .expect("run button painted");
+    cx.simulate_click(bounds.center(), Modifiers::none());
+    cx.run_until_parked();
+    cx.update(|_, cx| assert!(app.read(cx).approval_queue.is_empty()));
+    assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
   }
 
   fn seed(state: &AppState, name: &str) -> String {
