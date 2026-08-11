@@ -25,6 +25,7 @@ pub mod error;
 pub mod export;
 pub mod known_hosts;
 pub mod licence;
+pub mod mcp;
 mod mongo;
 mod mysql;
 pub mod ops;

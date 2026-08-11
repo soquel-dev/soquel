@@ -4,10 +4,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# Connector suites live in the core crate; the mcp agent surface stays app-side,
-# and the gpui frontend runs its browse/stage/apply flow against the same postgres.
+# Connector suites and the mcp agent surface live in the core crate; the gpui
+# frontend runs its browse/stage/apply flow against the same postgres.
 core=crates/core/Cargo.toml
-app=src-tauri/Cargo.toml
 gpui=src-gpui/Cargo.toml
 
 echo "==> full suite (current versions)"
@@ -32,7 +31,7 @@ echo "==> mcp agent surface (needs pg + redis + mongo)"
 SOQUEL_TEST_PG=postgres://soquel:soquel@localhost:5455/soquel_test \
 SOQUEL_TEST_REDIS=localhost:5457 \
 SOQUEL_TEST_MONGO=localhost:5464 \
-  cargo test --manifest-path "$app" integration_mcp_
+  cargo test --manifest-path "$core" integration_mcp_
 
 echo "==> gpui flow (browse, stage, apply, tunnel, redis, mongo)"
 SOQUEL_TEST_PG=postgres://soquel:soquel@localhost:5455/soquel_test \
