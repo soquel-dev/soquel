@@ -3072,6 +3072,8 @@ mod tests {
 
   #[gpui::test]
   fn an_unapproved_command_opens_the_approval_dialog_and_approve_retries(cx: &mut TestAppContext) {
+    // The retry dials a real (dead) socket: tokio IO wakes cross-thread.
+    cx.executor().allow_parking();
     use gpui_component::WindowExt;
 
     let (_dir, state) = test_state();
@@ -3207,6 +3209,8 @@ mod tests {
 
   #[gpui::test]
   fn enter_submits_the_secret_prompt(cx: &mut TestAppContext) {
+    // The retry dials a real (dead) socket: tokio IO wakes cross-thread.
+    cx.executor().allow_parking();
     use gpui_component::WindowExt;
 
     let (_dir, state) = test_state();
@@ -3600,7 +3604,9 @@ mod tests {
     assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
   }
 
-  #[gpui::test]
+  // Iterations shuffle the task order per seed: preview then import must
+  // survive any interleaving of the two bridge tasks.
+  #[gpui::test(iterations = 10)]
   fn import_previews_then_imports_via_the_picker(cx: &mut TestAppContext) {
     use gpui_component::WindowExt;
 
@@ -3916,6 +3922,8 @@ mod tests {
 
   #[gpui::test]
   fn a_command_tunnel_asks_for_approval_before_the_dial(cx: &mut TestAppContext) {
+    // The retry dials a real (dead) socket: tokio IO wakes cross-thread.
+    cx.executor().allow_parking();
     use gpui_component::WindowExt;
 
     let (_dir, state) = test_state();

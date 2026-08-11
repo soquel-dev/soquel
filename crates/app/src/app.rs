@@ -575,7 +575,9 @@ mod tests {
     (dir, state)
   }
 
-  #[gpui::test]
+  // Iterations shuffle the task order per seed: the queue must drain in
+  // request order whatever the scheduler does.
+  #[gpui::test(iterations = 10)]
   fn approvals_show_one_dialog_at_a_time_and_surface_the_next(cx: &mut TestAppContext) {
     let (_dir, state) = test_state();
     let (app, cx) = crate::test_support::shell_window(cx, {

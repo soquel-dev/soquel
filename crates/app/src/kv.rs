@@ -1094,6 +1094,8 @@ mod tests {
   /// detail, the console runs. Skipped silently without SOQUEL_TEST_REDIS.
   #[gpui::test]
   fn integration_kv_workspace_scans_selects_and_runs(cx: &mut gpui::TestAppContext) {
+    // Real redis IO wakes from tokio's driver thread.
+    cx.executor().allow_parking();
     let Some(coord) = soquel_core::integration_env("SOQUEL_TEST_REDIS") else {
       return;
     };

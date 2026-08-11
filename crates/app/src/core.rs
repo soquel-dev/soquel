@@ -24,11 +24,15 @@ fn runtime() -> &'static tokio::runtime::Runtime {
 
 /// Runs a core future on the runtime. The returned task only observes
 /// completion: dropping it never aborts the work, so an in-flight write
-/// cannot be cut mid-protocol.
+/// cannot be cut mid-protocol. (In tests the future is polled inline, so a
+/// dropped task does cancel the work there.)
 fn bridge<T>(cx: &impl AppContext, fut: impl Future<Output = T> + Send + 'static) -> Task<T>
 where
   T: Send + 'static,
 {
+  if cfg!(test) {
+    return bridge_inline(cx, fut);
+  }
   let handle = runtime().spawn(fut);
   cx.background_spawn(async move { handle.await.expect("core task panicked") })
 }
@@ -42,6 +46,9 @@ fn bridge_abortable<T>(
 where
   T: Send + 'static,
 {
+  if cfg!(test) {
+    return bridge_inline(cx, fut);
+  }
   let handle = runtime().spawn(fut);
   let abort = AbortOnDrop(handle.abort_handle());
   cx.background_spawn(async move {
@@ -49,6 +56,23 @@ where
     drop(abort);
     result.expect("core task panicked")
   })
+}
+
+/// Test mode: poll the core future on gpui's own executor, the tokio handle
+/// entered per poll so timers and IO types still find their runtime. Unit-test
+/// operations (files, mutexes, the in-memory keychain) then resolve on the
+/// deterministic scheduler's thread, keeping the non-determinism detector and
+/// the fake clock armed; only real database IO wakes cross-thread, and those
+/// tests opt into `allow_parking` themselves.
+fn bridge_inline<T>(cx: &impl AppContext, fut: impl Future<Output = T> + Send + 'static) -> Task<T>
+where
+  T: Send + 'static,
+{
+  let mut fut = Box::pin(fut);
+  cx.background_spawn(std::future::poll_fn(move |poll_cx| {
+    let _guard = runtime().enter();
+    fut.as_mut().poll(poll_cx)
+  }))
 }
 
 struct AbortOnDrop(tokio::task::AbortHandle);

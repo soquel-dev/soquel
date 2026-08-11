@@ -25,9 +25,6 @@ pub fn shell_window<V: Render + 'static>(
   build: impl FnOnce(&mut Window, &mut Context<V>) -> V,
 ) -> (Entity<V>, &mut VisualTestContext) {
   cx.update(gpui_component::init);
-  // The core's tokio runtime wakes gpui tasks from its own threads; without
-  // this the TestScheduler flags the cross-thread wake as non-determinism.
-  cx.executor().allow_parking();
   // The dialog slide/fade animations read the real clock and keep the window
   // dirty forever; reduce_motion renders them settled.
   cx.update(|cx| cx.set_reduce_motion(true));
@@ -44,8 +41,9 @@ pub fn shell_window<V: Render + 'static>(
   (inner.unwrap(), cx)
 }
 
-/// Bridges the core's private tokio runtime, which `run_until_parked` cannot
-/// see: poll the predicate against real time, bounded.
+/// Settle-and-check. Deterministic tests satisfy the predicate on the first
+/// pass; the real-time polling only runs for integration tests, whose database
+/// wakes `run_until_parked` cannot see.
 #[track_caller]
 pub fn wait_until(
   cx: &mut VisualTestContext,
