@@ -28,8 +28,8 @@ use crate::host_key::{self, HostKeyPrompt};
 use crate::icons::SoquelIcon;
 use crate::transfer::{self, EntryKind};
 use crate::tunnels::{
-  CREDENTIAL_MODES, CredentialMode, TunnelsView, command_preview, credential_mode_hint,
-  credential_mode_label,
+  CredentialMode, TunnelsView, available_credential_modes, command_preview, credential_mode_hint,
+  credential_mode_label, default_credential_mode,
 };
 
 #[allow(clippy::large_enum_variant)]
@@ -366,6 +366,8 @@ pub struct ConnectionsView {
   /// The engine select's source of truth for the previous kind, so a port on the
   /// old default follows the switch (see `port_for_kind_change`).
   form_kind: ConnectorKind,
+  /// Probed once at load; false hides keychain from the credential picker.
+  keychain_available: bool,
   form_engine: Entity<SelectState<Vec<String>>>,
   form_env: Entity<SelectState<Vec<String>>>,
   form_agent_access: Entity<SelectState<Vec<String>>>,
@@ -498,9 +500,11 @@ impl ConnectionsView {
         cx,
       )
     });
+    // A keyring-less session drops keychain from the picker (probed once at load).
+    let keychain_available = state.secrets_problem.is_none();
     let form_credential = cx.new(|cx| {
       SelectState::new(
-        CREDENTIAL_MODES
+        available_credential_modes(keychain_available)
           .iter()
           .map(|m| credential_mode_label(*m).to_string())
           .collect::<Vec<_>>(),
@@ -540,6 +544,7 @@ impl ConnectionsView {
       form_url,
       form_tls: false,
       form_kind: ConnectorKind::Postgres,
+      keychain_available,
       form_engine,
       form_env,
       form_agent_access,
@@ -920,6 +925,14 @@ impl ConnectionsView {
                           .label("Password")
                           .child(Select::new(&view.form_credential)),
                       )
+                      // Amber, not destructive: one mode is gone, nothing is broken.
+                      .when_some(view.state.secrets_problem.clone(), |form, problem| {
+                        form.child(
+                          field()
+                            .label("")
+                            .child(div().text_xs().text_color(cx.theme().yellow).child(problem)),
+                        )
+                      })
                       .when(mode != CredentialMode::Command, |form| {
                         form
                           .child(
@@ -1002,7 +1015,11 @@ impl ConnectionsView {
     let mut env_ix = 0;
     let mut agent_ix = 0;
     let mut ssl_ix = 1;
-    let mut cred_ix = 0;
+    // A new profile opens on keychain, or prompt when the keyring is unavailable.
+    let mut cred_ix = available_credential_modes(self.keychain_available)
+      .iter()
+      .position(|m| *m == default_credential_mode(self.keychain_available))
+      .unwrap_or(0);
     let mut command = String::new();
     let mut tunnel_id: Option<String> = None;
 
@@ -1020,7 +1037,9 @@ impl ConnectionsView {
         CredentialSource::Command { command, .. } => (CredentialMode::Command, command.clone()),
       };
       command = cmd;
-      cred_ix = CREDENTIAL_MODES
+      // A stored keychain profile on a keyring-less machine falls back to the
+      // first available mode rather than a missing entry.
+      cred_ix = available_credential_modes(self.keychain_available)
         .iter()
         .position(|m| *m == mode)
         .unwrap_or(0);
@@ -1098,7 +1117,10 @@ impl ConnectionsView {
       .read(cx)
       .selected_index(cx)
       .map_or(0, |ix| ix.row);
-    CREDENTIAL_MODES.get(ix).copied().unwrap_or_default()
+    available_credential_modes(self.keychain_available)
+      .get(ix)
+      .copied()
+      .unwrap_or(CredentialMode::Prompt)
   }
 
   /// The kind the engine select points at; MariaDB reads as mysql here (the
@@ -2698,6 +2720,30 @@ mod tests {
     });
   }
 
+  #[gpui::test]
+  fn no_keyring_hides_keychain_and_defaults_to_prompt(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let cx = cx.add_empty_window();
+    let dir = tempfile::tempdir().unwrap();
+    let mut app_state = soquel_core::AppState::for_tests(
+      dir.path(),
+      Box::new(soquel_core::secrets::InMemoryStore::default()),
+    );
+    // The keyring probe failed at load.
+    app_state.secrets_problem = Some("keyring unavailable".to_string());
+    let state = std::sync::Arc::new(app_state);
+    let view = cx.update(|window, cx| cx.new(|cx| ConnectionsView::new(state, window, cx)));
+
+    cx.update(|window, cx| {
+      view.update(cx, |view, cx| {
+        assert!(!view.keychain_available);
+        view.prefill_form(None, window, cx);
+        // A new profile must not open on a mode that cannot store anything.
+        assert_eq!(view.selected_mode(cx), CredentialMode::Prompt);
+      });
+    });
+  }
+
   fn profile_with(params: ConnectorParams) -> ConnectionProfile {
     ConnectionProfile {
       id: "c".to_string(),
@@ -3042,7 +3088,7 @@ mod tests {
         view
           .form_user
           .update(cx, |i, cx| i.set_value("u", window, cx));
-        let command_ix = CREDENTIAL_MODES
+        let command_ix = available_credential_modes(true)
           .iter()
           .position(|m| *m == CredentialMode::Command)
           .unwrap();

@@ -300,11 +300,12 @@ multi-kind surface of `lib/connections.ts`, which is the one deletion blocker
 
 **Order (one PR, staged commits):**
 
-1. **Port the blockers.** The multi-kind connection form (see the Connections
-   checklist) is the real work. Also verify `secrets_status`: `AppState`'s
-   `secrets_problem` is populated by the keyring probe but gpui never reads it -
-   confirm the form disables keychain mode and defaults a new profile to
-   `prompt` when the probe failed, and bridge the getter if that path is missing.
+1. **Port the blockers.** DONE. The multi-kind connection form landed (see the
+   Connections checklist). `secrets_status` is wired: both the connection and
+   tunnel forms read `AppState.secrets_problem` directly (gpui holds the
+   `Arc<AppState>`, no bridge), drop keychain from the credential picker when the
+   keyring probe failed (`available_credential_modes`), default a new profile to
+   `prompt` (`default_credential_mode`), and show the amber problem line.
 2. **Delete** `src-tauri` and `packages/app` (with the wdio e2e, `bindings.ts`,
    `tauri.conf.json`, `capabilities/`, tauri icons). Rewrite the root
    `package.json` (`dev` = `cargo run -p soquel-app`, drop the `pnpm -r` webview
