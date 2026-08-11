@@ -8,10 +8,11 @@ use gpui::*;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::form::{field, v_form};
 use gpui_component::input::{Input, InputState};
+use gpui_component::notification::Notification;
 use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::{ActiveTheme, IndexPath, Sizable, StyledExt, WindowExt, h_flex, v_flex};
 use soquel_core::AppState;
-use soquel_core::error::Error;
+use soquel_core::error::{Error, SecretSubject};
 use soquel_core::profiles::CredentialSource;
 use soquel_core::tunnels::{SshAuth, TunnelInput, TunnelProfile};
 
@@ -88,7 +89,7 @@ pub fn credential_mode_label(mode: CredentialMode) -> &'static str {
   }
 }
 
-fn credential_mode_hint(mode: CredentialMode) -> Option<&'static str> {
+pub(crate) fn credential_mode_hint(mode: CredentialMode) -> Option<&'static str> {
   match mode {
     CredentialMode::Keychain => Some("Stored in the OS keychain and reused on every connection."),
     CredentialMode::Prompt => Some("Nothing is stored: soquel asks when you connect."),
@@ -542,7 +543,7 @@ impl TunnelsView {
                         .label("Command")
                         .child(Input::new(&view.form_command)),
                     )
-                    .child(field().child(command_preview(&command, cx)))
+                    .child(field().child(command_preview(&command, TUNNEL_COMMAND_HINT, cx)))
                 })
                 .when(!status.is_empty(), |form| {
                   form.child(field().child(div().text_sm().text_color(status_color).child(status)))
@@ -669,6 +670,19 @@ impl TunnelsView {
     });
   }
 
+  fn revoke_command(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+    match core::revoke_credential_command(&self.state, SecretSubject::Tunnel, id) {
+      Ok(()) => window.push_notification(
+        Notification::info("The command will ask before running again"),
+        cx,
+      ),
+      Err(error) => {
+        self.status = format!("error: {error}").into();
+        cx.notify();
+      }
+    }
+  }
+
   fn delete(&mut self, id: String, cx: &mut Context<Self>) {
     let rx = core::delete_tunnel(self.state.clone(), id);
     self._task = cx.spawn(async move |this, cx| {
@@ -683,12 +697,15 @@ impl TunnelsView {
   }
 }
 
-fn command_preview(command: &str, cx: &App) -> Div {
+pub(crate) const TUNNEL_COMMAND_HINT: &str =
+  "No shell: {host} {port} {user} are substituted, pipes and $(...) are not supported.";
+
+pub(crate) fn command_preview(command: &str, hint: &'static str, cx: &App) -> Div {
   let parsed = (!command.is_empty()).then(|| soquel_core::credentials::parse_command(command));
   let hint = div()
     .text_xs()
     .text_color(cx.theme().muted_foreground)
-    .child("No shell: {host} {port} {user} are substituted, pipes and $(...) are not supported.");
+    .child(hint);
   match parsed {
     Some(Ok(spec)) => v_flex()
       .gap_1()
@@ -771,6 +788,9 @@ impl Render for TunnelsView {
       .children(self.tunnels.clone().into_iter().map(|tunnel| {
         let edit_tunnel = tunnel.clone();
         let delete_id = tunnel.id.clone();
+        let revoke_id = tunnel.id.clone();
+        let selector_id = tunnel.id.clone();
+        let has_command = matches!(tunnel.credential, CredentialSource::Command { .. });
         h_flex()
           .id(SharedString::from(format!("tunnel-{}", tunnel.id)))
           .px_3()
@@ -823,6 +843,18 @@ impl Render for TunnelsView {
                 this.open_form(Some(edit_tunnel.clone()), cx);
               })),
           )
+          .when(has_command, |row| {
+            row.child(
+              Button::new(SharedString::from(format!("revoke-tunnel-{}", tunnel.id)))
+                .ghost()
+                .xsmall()
+                .label("Revoke command")
+                .debug_selector(move || format!("revoke-tunnel-{selector_id}"))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                  this.revoke_command(revoke_id.clone(), window, cx);
+                })),
+            )
+          })
           .child(
             Button::new(SharedString::from(format!("delete-tunnel-{}", tunnel.id)))
               .ghost()
@@ -1035,6 +1067,69 @@ mod tests {
   #[test]
   fn never_carries_the_stored_secret_back_into_the_form() {
     assert_eq!(form_values(&stored()).secret, "");
+  }
+
+  #[gpui::test]
+  fn revoke_shows_only_for_command_tunnels_and_revokes(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let state = std::sync::Arc::new(soquel_core::AppState::for_tests(
+      dir.path(),
+      Box::new(soquel_core::secrets::InMemoryStore::default()),
+    ));
+    let line = "vault-ssh {host}";
+    let base = TunnelInput {
+      name: "bastion".to_string(),
+      host: "bastion.internal".to_string(),
+      port: 22,
+      user: "deploy".to_string(),
+      auth: SshAuth::Password,
+      credential: CredentialSource::Command {
+        command: line.to_string(),
+        refresh_after_secs: None,
+      },
+      secret: None,
+    };
+    let with_command = soquel_core::ops::create_tunnel(&state, &base).unwrap();
+    let plain = soquel_core::ops::create_tunnel(
+      &state,
+      &TunnelInput {
+        credential: CredentialSource::Prompt,
+        ..base
+      },
+    )
+    .unwrap();
+
+    let (_view, cx) = crate::test_support::shell_window(cx, {
+      let state = state.clone();
+      move |window, cx| TunnelsView::new(state, window, cx)
+    });
+    cx.run_until_parked();
+
+    assert!(
+      cx.debug_bounds(crate::test_support::selector(format!(
+        "revoke-tunnel-{}",
+        plain.id
+      )))
+      .is_none(),
+      "no command, no revoke button"
+    );
+    let bounds = cx
+      .debug_bounds(crate::test_support::selector(format!(
+        "revoke-tunnel-{}",
+        with_command.id
+      )))
+      .expect("a command tunnel carries the revoke button");
+    cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+    cx.run_until_parked();
+
+    let key = soquel_core::secrets::SecretKey::Tunnel(with_command.id.clone());
+    assert!(
+      !state
+        .command_approvals
+        .lock()
+        .unwrap()
+        .is_approved(&key, line)
+    );
   }
 
   #[gpui::test]

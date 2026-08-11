@@ -2,6 +2,7 @@
 mod actions;
 mod app;
 mod cell_editing;
+mod command_approval;
 mod completion;
 mod connections;
 mod core;
@@ -15,6 +16,8 @@ mod host_key;
 mod icons;
 mod staged;
 mod tabs;
+#[cfg(test)]
+mod test_support;
 mod theme;
 mod tunnels;
 mod workspace;

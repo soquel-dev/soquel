@@ -6,6 +6,7 @@ use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::checkbox::Checkbox;
 use gpui_component::form::{field, v_form};
 use gpui_component::input::{Input, InputState};
+use gpui_component::notification::Notification;
 use gpui_component::select::{Select, SelectState};
 use gpui_component::{ActiveTheme, IndexPath, Sizable, StyledExt, WindowExt, h_flex, v_flex};
 use soquel_core::AppState;
@@ -15,9 +16,13 @@ use soquel_core::profiles::{
   SqlServerParams, SslMode,
 };
 
+use crate::command_approval::{self, CommandApprovalPrompt};
 use crate::core::{self, Db};
 use crate::host_key::{self, HostKeyPrompt};
-use crate::tunnels::TunnelsView;
+use crate::tunnels::{
+  CREDENTIAL_MODES, CredentialMode, TunnelsView, command_preview, credential_mode_hint,
+  credential_mode_label,
+};
 
 pub enum ConnectionsEvent {
   Connected { db: Db, profile: ConnectionProfile },
@@ -48,8 +53,8 @@ fn ssl_label(mode: SslMode) -> &'static str {
   }
 }
 
-/// The form only speaks postgres for now; the other kinds arrive with their UI.
-const CREDENTIAL_MODES: [&str; 2] = ["Saved in the keychain", "Ask every time"];
+const CONNECTION_COMMAND_HINT: &str =
+  "No shell: {host} {port} {user} {database} are substituted, pipes and $(...) are not supported.";
 
 fn dsn(params: &ConnectorParams) -> String {
   match params {
@@ -100,6 +105,7 @@ pub struct ConnectionsView {
   form_database: Entity<InputState>,
   form_user: Entity<InputState>,
   form_password: Entity<InputState>,
+  form_command: Entity<InputState>,
   form_env: Entity<SelectState<Vec<String>>>,
   form_ssl: Entity<SelectState<Vec<String>>>,
   form_credential: Entity<SelectState<Vec<String>>>,
@@ -127,6 +133,7 @@ impl ConnectionsView {
     let form_port = text(cx, "5432");
     let form_database = text(cx, "database");
     let form_user = text(cx, "user");
+    let form_command = text(cx, "");
     let form_password = cx.new(|cx| {
       InputState::new(window, cx)
         .placeholder("password")
@@ -163,7 +170,7 @@ impl ConnectionsView {
       SelectState::new(
         CREDENTIAL_MODES
           .iter()
-          .map(|m| m.to_string())
+          .map(|m| credential_mode_label(*m).to_string())
           .collect::<Vec<_>>(),
         Some(IndexPath::default()),
         window,
@@ -193,6 +200,7 @@ impl ConnectionsView {
       form_database,
       form_user,
       form_password,
+      form_command,
       form_env,
       form_ssl,
       form_credential,
@@ -264,6 +272,36 @@ impl ConnectionsView {
               },
             );
           }
+          // The subject can be the connection's own command or its tunnel's;
+          // either way the retry is the same connect.
+          Ok(Err(Error::CommandApprovalRequired {
+            subject,
+            target_id,
+            target_name,
+            program,
+            args,
+            ..
+          })) => {
+            command_approval::open_command_approval_dialog(
+              cx.entity(),
+              this.state.clone(),
+              CommandApprovalPrompt {
+                subject,
+                target_id,
+                target_name,
+                program,
+                args,
+              },
+              cx,
+              move |view: &mut Self, result, cx| match result {
+                Ok(()) => view.connect(id.clone(), cx),
+                Err(error) => {
+                  view.status = format!("error: {error}").into();
+                  cx.notify();
+                }
+              },
+            );
+          }
           Ok(Err(error)) => {
             this.status = format!("error: {error}").into();
           }
@@ -299,7 +337,6 @@ impl ConnectionsView {
         let this = this.clone();
         window.open_dialog(cx, move |dialog, _, cx| {
           let this = this.clone();
-          let input_for_footer = input.clone();
           let (subject, target_id, target_name, connect_id) = (
             subject,
             target_id.clone(),
@@ -307,10 +344,36 @@ impl ConnectionsView {
             connect_id.clone(),
           );
           let remember = this.read(cx).prompt_remember;
+          // Shared by the Connect button and Enter (the dialog's ConfirmDialog).
+          let submit = {
+            let this = this.clone();
+            let input = input.clone();
+            move |_: &mut Window, cx: &mut App| {
+              let secret = input.read(cx).value().to_string();
+              let (target_id, connect_id) = (target_id.clone(), connect_id.clone());
+              this.update(cx, |this, cx| {
+                core::unlock_secret(
+                  &this.state,
+                  subject,
+                  target_id,
+                  secret,
+                  this.prompt_remember,
+                );
+                this.connect(connect_id, cx);
+              });
+            }
+          };
           dialog
             .title(match subject {
               SecretSubject::Tunnel => format!("Credential for the tunnel {target_name}"),
               _ => format!("Password for {target_name}"),
+            })
+            .on_ok({
+              let submit = submit.clone();
+              move |_, window, cx| {
+                submit(window, cx);
+                true
+              }
             })
             .child(
               v_flex().gap_3().child(Input::new(&input)).child(
@@ -342,21 +405,10 @@ impl ConnectionsView {
                   Button::new("prompt-connect")
                     .primary()
                     .label("Connect")
+                    .debug_selector(|| "prompt-connect".into())
                     .on_click(move |_, window, cx| {
-                      let secret = input_for_footer.read(cx).value().to_string();
                       window.close_dialog(cx);
-                      let (subject, target_id, connect_id) =
-                        (subject, target_id.clone(), connect_id.clone());
-                      this.update(cx, |this, cx| {
-                        core::unlock_secret(
-                          &this.state,
-                          subject,
-                          target_id,
-                          secret,
-                          this.prompt_remember,
-                        );
-                        this.connect(connect_id, cx);
-                      });
+                      submit(window, cx);
                     }),
                 ),
             )
@@ -376,87 +428,7 @@ impl ConnectionsView {
       let _ =
         cx.update_window(window_handle, |_, window, cx| {
           this.update(cx, |view, cx| {
-            let (name, group, host, port, database, user, env_ix, ssl_ix, cred_ix, tunnel_id) =
-              match &editing {
-                Some(profile) => {
-                  let (host, port, database, user, ssl, tunnel_id) = match &profile.params {
-                    ConnectorParams::Postgres(p) => (
-                      p.host.clone(),
-                      p.port.to_string(),
-                      p.database.clone(),
-                      p.user.clone(),
-                      p.ssl_mode,
-                      p.tunnel_id.clone(),
-                    ),
-                    _ => (
-                      String::new(),
-                      String::new(),
-                      String::new(),
-                      String::new(),
-                      SslMode::Prefer,
-                      None,
-                    ),
-                  };
-                  (
-                    profile.name.clone(),
-                    profile.group.clone().unwrap_or_default(),
-                    host,
-                    port,
-                    database,
-                    user,
-                    ENVS.iter().position(|e| *e == profile.env).unwrap_or(0),
-                    SSL_MODES.iter().position(|m| *m == ssl).unwrap_or(1),
-                    match profile.credential {
-                      CredentialSource::Prompt => 1,
-                      _ => 0,
-                    },
-                    tunnel_id,
-                  )
-                }
-                None => (
-                  String::new(),
-                  String::new(),
-                  String::new(),
-                  "5432".to_string(),
-                  String::new(),
-                  String::new(),
-                  0,
-                  1,
-                  0,
-                  None,
-                ),
-              };
-            view.refresh_tunnel_picker(tunnel_id.as_deref(), window, cx);
-            view
-              .form_name
-              .update(cx, |i, cx| i.set_value(name, window, cx));
-            view
-              .form_group
-              .update(cx, |i, cx| i.set_value(group, window, cx));
-            view
-              .form_host
-              .update(cx, |i, cx| i.set_value(host, window, cx));
-            view
-              .form_port
-              .update(cx, |i, cx| i.set_value(port, window, cx));
-            view
-              .form_database
-              .update(cx, |i, cx| i.set_value(database, window, cx));
-            view
-              .form_user
-              .update(cx, |i, cx| i.set_value(user, window, cx));
-            view
-              .form_password
-              .update(cx, |i, cx| i.set_value("", window, cx));
-            view.form_env.update(cx, |s, cx| {
-              s.set_selected_index(Some(IndexPath::new(env_ix)), window, cx)
-            });
-            view.form_ssl.update(cx, |s, cx| {
-              s.set_selected_index(Some(IndexPath::new(ssl_ix)), window, cx)
-            });
-            view.form_credential.update(cx, |s, cx| {
-              s.set_selected_index(Some(IndexPath::new(cred_ix)), window, cx)
-            });
+            view.prefill_form(editing.as_ref(), window, cx);
           });
 
           let this = this.clone();
@@ -468,6 +440,8 @@ impl ConnectionsView {
               "New connection"
             };
             let status = view.status.clone();
+            let mode = view.selected_mode(cx);
+            let command = view.form_command.read(cx).value().trim().to_string();
             let this_test = this.clone();
             let this_save = this.clone();
             dialog
@@ -498,7 +472,41 @@ impl ConnectionsView {
                       .label("Password")
                       .child(Select::new(&view.form_credential)),
                   )
-                  .child(field().label("").child(Input::new(&view.form_password)))
+                  .when(mode != CredentialMode::Command, |form| {
+                    form
+                      .child(
+                        field()
+                          .label(if mode == CredentialMode::Prompt {
+                            "(for Test only)"
+                          } else {
+                            ""
+                          })
+                          .child(Input::new(&view.form_password)),
+                      )
+                      .when_some(credential_mode_hint(mode), |form, hint| {
+                        form.child(
+                          field().label("").child(
+                            div()
+                              .text_xs()
+                              .text_color(cx.theme().muted_foreground)
+                              .child(hint),
+                          ),
+                        )
+                      })
+                  })
+                  .when(mode == CredentialMode::Command, |form| {
+                    form
+                      .child(
+                        field()
+                          .label("Command")
+                          .child(Input::new(&view.form_command)),
+                      )
+                      .child(field().label("").child(command_preview(
+                        &command,
+                        CONNECTION_COMMAND_HINT,
+                        cx,
+                      )))
+                  })
                   .when(!status.is_empty(), |this| {
                     this.child(
                       field().label("").child(
@@ -534,6 +542,114 @@ impl ConnectionsView {
           });
         });
     });
+  }
+
+  fn prefill_form(
+    &mut self,
+    editing: Option<&ConnectionProfile>,
+    window: &mut Window,
+    cx: &mut Context<Self>,
+  ) {
+    let (name, group, host, port, database, user, env_ix, ssl_ix, cred_ix, command, tunnel_id) =
+      match editing {
+        Some(profile) => {
+          let (host, port, database, user, ssl, tunnel_id) = match &profile.params {
+            ConnectorParams::Postgres(p) => (
+              p.host.clone(),
+              p.port.to_string(),
+              p.database.clone(),
+              p.user.clone(),
+              p.ssl_mode,
+              p.tunnel_id.clone(),
+            ),
+            _ => (
+              String::new(),
+              String::new(),
+              String::new(),
+              String::new(),
+              SslMode::Prefer,
+              None,
+            ),
+          };
+          let (mode, command) = match &profile.credential {
+            CredentialSource::Keychain => (CredentialMode::Keychain, String::new()),
+            CredentialSource::Prompt => (CredentialMode::Prompt, String::new()),
+            CredentialSource::Command { command, .. } => (CredentialMode::Command, command.clone()),
+          };
+          (
+            profile.name.clone(),
+            profile.group.clone().unwrap_or_default(),
+            host,
+            port,
+            database,
+            user,
+            ENVS.iter().position(|e| *e == profile.env).unwrap_or(0),
+            SSL_MODES.iter().position(|m| *m == ssl).unwrap_or(1),
+            CREDENTIAL_MODES
+              .iter()
+              .position(|m| *m == mode)
+              .unwrap_or(0),
+            command,
+            tunnel_id,
+          )
+        }
+        None => (
+          String::new(),
+          String::new(),
+          String::new(),
+          "5432".to_string(),
+          String::new(),
+          String::new(),
+          0,
+          1,
+          0,
+          String::new(),
+          None,
+        ),
+      };
+    self.refresh_tunnel_picker(tunnel_id.as_deref(), window, cx);
+    self
+      .form_name
+      .update(cx, |i, cx| i.set_value(name, window, cx));
+    self
+      .form_group
+      .update(cx, |i, cx| i.set_value(group, window, cx));
+    self
+      .form_host
+      .update(cx, |i, cx| i.set_value(host, window, cx));
+    self
+      .form_port
+      .update(cx, |i, cx| i.set_value(port, window, cx));
+    self
+      .form_database
+      .update(cx, |i, cx| i.set_value(database, window, cx));
+    self
+      .form_user
+      .update(cx, |i, cx| i.set_value(user, window, cx));
+    self
+      .form_password
+      .update(cx, |i, cx| i.set_value("", window, cx));
+    self
+      .form_command
+      .update(cx, |i, cx| i.set_value(command, window, cx));
+    self.form_env.update(cx, |s, cx| {
+      s.set_selected_index(Some(IndexPath::new(env_ix)), window, cx)
+    });
+    self.form_ssl.update(cx, |s, cx| {
+      s.set_selected_index(Some(IndexPath::new(ssl_ix)), window, cx)
+    });
+    self.form_credential.update(cx, |s, cx| {
+      s.set_selected_index(Some(IndexPath::new(cred_ix)), window, cx)
+    });
+  }
+
+  fn selected_mode(&self, cx: &App) -> CredentialMode {
+    let ix = self
+      .form_credential
+      .read(cx)
+      .selected_index(cx)
+      .map_or(0, |ix| ix.row);
+    CREDENTIAL_MODES.get(ix).copied().unwrap_or_default()
   }
 
   /// Ids and labels rebuilt together: the picker maps by index, since tunnel
@@ -595,14 +711,19 @@ impl ConnectionsView {
       .and_then(|label| SSL_MODES.iter().find(|m| ssl_label(**m) == label))
       .copied()
       .unwrap_or(SslMode::Prefer);
-    let credential = match self
-      .form_credential
-      .read(cx)
-      .selected_value()
-      .map(String::as_str)
-    {
-      Some("Ask every time") => CredentialSource::Prompt,
-      _ => CredentialSource::Keychain,
+    let credential = match self.selected_mode(cx) {
+      CredentialMode::Keychain => CredentialSource::Keychain,
+      CredentialMode::Prompt => CredentialSource::Prompt,
+      CredentialMode::Command => {
+        let command = self.form_command.read(cx).value().trim().to_string();
+        if command.is_empty() {
+          return Err("Command is required".to_string());
+        }
+        CredentialSource::Command {
+          command,
+          refresh_after_secs: None,
+        }
+      }
     };
     let password = self.form_password.read(cx).value().to_string();
     let tunnel_ix = self
@@ -708,6 +829,25 @@ impl ConnectionsView {
     });
   }
 
+  fn revoke_command(
+    &mut self,
+    subject: SecretSubject,
+    id: String,
+    window: &mut Window,
+    cx: &mut Context<Self>,
+  ) {
+    match core::revoke_credential_command(&self.state, subject, id) {
+      Ok(()) => window.push_notification(
+        Notification::info("The command will ask before running again"),
+        cx,
+      ),
+      Err(error) => {
+        self.status = format!("error: {error}").into();
+        cx.notify();
+      }
+    }
+  }
+
   fn delete(&mut self, id: String, cx: &mut Context<Self>) {
     let rx = core::delete_connection(self.state.clone(), id);
     self._task = cx.spawn(async move |this, cx| {
@@ -811,6 +951,9 @@ impl Render for ConnectionsView {
               let id = profile.id.clone();
               let edit_profile = profile.clone();
               let delete_id = profile.id.clone();
+              let revoke_id = profile.id.clone();
+              let selector_id = profile.id.clone();
+              let has_command = matches!(profile.credential, CredentialSource::Command { .. });
               let is_connecting = connecting.as_deref() == Some(profile.id.as_str());
               rows.push(
                 h_flex()
@@ -858,15 +1001,36 @@ impl Render for ConnectionsView {
                       .xsmall()
                       .label("Edit")
                       .on_click(cx.listener(move |this, _, _, cx| {
+                        // The row's own click connects: this click is ours.
+                        cx.stop_propagation();
                         this.open_form(Some(edit_profile.clone()), cx);
                       })),
                   )
+                  .when(has_command, |row| {
+                    row.child(
+                      Button::new(SharedString::from(format!("revoke-conn-{}", profile.id)))
+                        .ghost()
+                        .xsmall()
+                        .label("Revoke command")
+                        .debug_selector(move || format!("revoke-conn-{selector_id}"))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                          cx.stop_propagation();
+                          this.revoke_command(
+                            SecretSubject::Connection,
+                            revoke_id.clone(),
+                            window,
+                            cx,
+                          );
+                        })),
+                    )
+                  })
                   .child(
                     Button::new(SharedString::from(format!("delete-{}", profile.id)))
                       .ghost()
                       .xsmall()
                       .label("Delete")
                       .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
                         this.delete(delete_id.clone(), cx);
                       })),
                   )
@@ -989,6 +1153,290 @@ mod tests {
         assert_eq!(params.port, 5433);
         // No group typed = no group stored, not an empty string.
         assert_eq!(input.group, None);
+      });
+    });
+  }
+
+  fn command_input(command: &str) -> ConnectionInput {
+    ConnectionInput {
+      name: "imported iam".to_string(),
+      env: Env::Dev,
+      group: None,
+      agent_access: AgentAccess::None,
+      credential: CredentialSource::Command {
+        command: command.to_string(),
+        refresh_after_secs: None,
+      },
+      params: ConnectorParams::Postgres(SqlServerParams {
+        // Nothing listens here: the retry after approval fails fast.
+        host: "127.0.0.1".to_string(),
+        port: 1,
+        database: "app".to_string(),
+        user: "u".to_string(),
+        ssl_mode: SslMode::Prefer,
+        ssl_root_cert: None,
+        tunnel_id: None,
+      }),
+      password: None,
+    }
+  }
+
+  fn test_state() -> (tempfile::TempDir, std::sync::Arc<soquel_core::AppState>) {
+    let dir = tempfile::tempdir().unwrap();
+    let state = std::sync::Arc::new(soquel_core::AppState::for_tests(
+      dir.path(),
+      Box::new(soquel_core::secrets::InMemoryStore::default()),
+    ));
+    (dir, state)
+  }
+
+  #[gpui::test]
+  fn an_unapproved_command_opens_the_approval_dialog_and_approve_retries(cx: &mut TestAppContext) {
+    use gpui_component::WindowExt;
+
+    let (_dir, state) = test_state();
+    let line = "echo swordfish";
+    let profile = soquel_core::ops::create_connection(&state, &command_input(line)).unwrap();
+    // Imported shape: the command sits in the store with no approval.
+    core::revoke_credential_command(&state, SecretSubject::Connection, profile.id.clone()).unwrap();
+
+    let (view, cx) = crate::test_support::shell_window(cx, {
+      let state = state.clone();
+      move |window, cx| ConnectionsView::new(state, window, cx)
+    });
+    let id = profile.id.clone();
+    cx.update(|_, cx| view.update(cx, |view, cx| view.connect(id, cx)));
+
+    crate::test_support::wait_until(cx, "the approval dialog", |cx| {
+      cx.update(|window, cx| window.has_active_dialog(cx))
+    });
+    let bounds = cx
+      .debug_bounds("approve-command")
+      .expect("the approve button is painted inside the dialog");
+    cx.simulate_click(bounds.center(), Modifiers::none());
+
+    let key = soquel_core::secrets::SecretKey::Connection(profile.id.clone());
+    crate::test_support::wait_until(cx, "the approval to land", |_| {
+      state
+        .command_approvals
+        .lock()
+        .unwrap()
+        .is_approved(&key, line)
+    });
+    assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+    // The retry ran: the connect fails on the closed port, not on approval.
+    crate::test_support::wait_until(cx, "the retried connect to fail", |cx| {
+      cx.update(|_, cx| {
+        let status = view.read(cx).status.clone();
+        status.starts_with("error") && !status.contains("approved")
+      })
+    });
+  }
+
+  #[gpui::test]
+  fn escape_leaves_the_command_unapproved(cx: &mut TestAppContext) {
+    use gpui_component::WindowExt;
+
+    let (_dir, state) = test_state();
+    let line = "echo swordfish";
+    let profile = soquel_core::ops::create_connection(&state, &command_input(line)).unwrap();
+    core::revoke_credential_command(&state, SecretSubject::Connection, profile.id.clone()).unwrap();
+
+    let (view, cx) = crate::test_support::shell_window(cx, {
+      let state = state.clone();
+      move |window, cx| ConnectionsView::new(state, window, cx)
+    });
+    let id = profile.id.clone();
+    cx.update(|_, cx| view.update(cx, |view, cx| view.connect(id, cx)));
+    crate::test_support::wait_until(cx, "the approval dialog", |cx| {
+      cx.update(|window, cx| window.has_active_dialog(cx))
+    });
+
+    // Enter approves nothing and the dialog stays up.
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+    let key = soquel_core::secrets::SecretKey::Connection(profile.id.clone());
+    assert!(
+      !state
+        .command_approvals
+        .lock()
+        .unwrap()
+        .is_approved(&key, line)
+    );
+  }
+
+  #[gpui::test]
+  fn revoke_shows_only_for_command_profiles_and_revokes(cx: &mut TestAppContext) {
+    let (_dir, state) = test_state();
+    let line = "echo swordfish";
+    let with_command = soquel_core::ops::create_connection(&state, &command_input(line)).unwrap();
+    let plain = soquel_core::ops::create_connection(&state, &{
+      let mut input = command_input(line);
+      input.credential = CredentialSource::Keychain;
+      input
+    })
+    .unwrap();
+
+    let (_view, cx) = crate::test_support::shell_window(cx, {
+      let state = state.clone();
+      move |window, cx| ConnectionsView::new(state, window, cx)
+    });
+    cx.run_until_parked();
+
+    assert!(
+      cx.debug_bounds(crate::test_support::selector(format!(
+        "revoke-conn-{}",
+        plain.id
+      )))
+      .is_none(),
+      "no command, no revoke button"
+    );
+    let bounds = cx
+      .debug_bounds(crate::test_support::selector(format!(
+        "revoke-conn-{}",
+        with_command.id
+      )))
+      .expect("a command profile carries the revoke button");
+    cx.simulate_click(bounds.center(), Modifiers::none());
+    cx.run_until_parked();
+
+    let key = soquel_core::secrets::SecretKey::Connection(with_command.id.clone());
+    assert!(
+      !state
+        .command_approvals
+        .lock()
+        .unwrap()
+        .is_approved(&key, line)
+    );
+  }
+
+  #[gpui::test]
+  fn enter_submits_the_secret_prompt(cx: &mut TestAppContext) {
+    use gpui_component::WindowExt;
+
+    let (_dir, state) = test_state();
+    let profile = soquel_core::ops::create_connection(&state, &{
+      let mut input = command_input("unused");
+      input.credential = CredentialSource::Prompt;
+      input
+    })
+    .unwrap();
+
+    let (view, cx) = crate::test_support::shell_window(cx, {
+      let state = state.clone();
+      move |window, cx| ConnectionsView::new(state, window, cx)
+    });
+    let id = profile.id.clone();
+    cx.update(|_, cx| view.update(cx, |view, cx| view.connect(id, cx)));
+    crate::test_support::wait_until(cx, "the secret prompt", |cx| {
+      cx.update(|window, cx| window.has_active_dialog(cx))
+    });
+
+    // The prompt focuses its input on open: type, then Enter submits.
+    cx.simulate_input("hunter2");
+    cx.simulate_keystrokes("enter");
+
+    crate::test_support::wait_until(cx, "the retried connect to fail on the port", |cx| {
+      cx.update(|_, cx| view.read(cx).status.starts_with("error"))
+    });
+    // The retry got past SecretRequired: the failure is the closed port.
+    cx.update(|_, cx| {
+      let status = view.read(cx).status.clone();
+      assert!(!status.contains("password"), "unexpected: {status}");
+    });
+  }
+
+  #[gpui::test]
+  fn form_input_maps_the_command_mode(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let cx = cx.add_empty_window();
+    let state = std::sync::Arc::new(soquel_core::AppState::for_tests(
+      tempfile::tempdir().unwrap().path(),
+      Box::new(soquel_core::secrets::InMemoryStore::default()),
+    ));
+    let view = cx.update(|window, cx| cx.new(|cx| ConnectionsView::new(state, window, cx)));
+    cx.update(|window, cx| {
+      view.update(cx, |view, cx| {
+        view
+          .form_name
+          .update(cx, |i, cx| i.set_value("db1", window, cx));
+        view
+          .form_host
+          .update(cx, |i, cx| i.set_value("h", window, cx));
+        view
+          .form_port
+          .update(cx, |i, cx| i.set_value("5432", window, cx));
+        view
+          .form_database
+          .update(cx, |i, cx| i.set_value("app", window, cx));
+        view
+          .form_user
+          .update(cx, |i, cx| i.set_value("u", window, cx));
+        let command_ix = CREDENTIAL_MODES
+          .iter()
+          .position(|m| *m == CredentialMode::Command)
+          .unwrap();
+        view.form_credential.update(cx, |s, cx| {
+          s.set_selected_index(Some(IndexPath::new(command_ix)), window, cx)
+        });
+
+        assert_eq!(view.form_input(cx).unwrap_err(), "Command is required");
+
+        view
+          .form_command
+          .update(cx, |i, cx| i.set_value(" vault-db {host} ", window, cx));
+        let input = view.form_input(cx).unwrap();
+        assert_eq!(
+          input.credential,
+          CredentialSource::Command {
+            command: "vault-db {host}".to_string(),
+            refresh_after_secs: None
+          }
+        );
+      });
+    });
+  }
+
+  #[gpui::test]
+  fn prefill_selects_command_and_keeps_the_line(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let cx = cx.add_empty_window();
+    let state = std::sync::Arc::new(soquel_core::AppState::for_tests(
+      tempfile::tempdir().unwrap().path(),
+      Box::new(soquel_core::secrets::InMemoryStore::default()),
+    ));
+    let stored = soquel_core::ops::create_connection(
+      &state,
+      &ConnectionInput {
+        name: "iam".to_string(),
+        env: Env::Dev,
+        group: None,
+        agent_access: AgentAccess::None,
+        credential: CredentialSource::Command {
+          command: "vault-db {host}".to_string(),
+          refresh_after_secs: None,
+        },
+        params: profile("seed", None).params,
+        password: None,
+      },
+    )
+    .unwrap();
+
+    let view = cx.update(|window, cx| cx.new(|cx| ConnectionsView::new(state.clone(), window, cx)));
+    cx.update(|window, cx| {
+      view.update(cx, |view, cx| {
+        view.prefill_form(Some(&stored), window, cx);
+        // The stored mode survives the round-trip instead of silently
+        // rewriting to Keychain (and revoking the approval with it).
+        assert_eq!(view.selected_mode(cx), CredentialMode::Command);
+        assert_eq!(view.form_command.read(cx).value(), "vault-db {host}");
+        let input = view.form_input(cx).unwrap();
+        assert_eq!(input.credential, stored.credential);
       });
     });
   }

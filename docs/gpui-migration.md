@@ -77,9 +77,11 @@ Four layers, from cheapest to heaviest. The first two exist today.
    query through the forward, against the compose sshd), wired into
    `test-integration.sh` and gated by `SOQUEL_TEST_PG` / `SOQUEL_TEST_SSH`
    like the core suites.
-   Still to grow: input-simulation flows (`VisualTestContext`
-   `simulate_keystrokes` through gpui-component widgets), import and licence
-   dialogs.
+   Input-simulation started with the approval round: `test_support.rs` roots
+   the test window on `Root` + a `Shell` that renders the dialog layer,
+   buttons carry `debug_selector` tags for `debug_bounds` + `simulate_click`,
+   and `wait_until` polls across the core's private tokio runtime. Still to
+   grow: import and licence dialogs.
 
 ## Parity checklist
 
@@ -102,16 +104,18 @@ deleted. Each panel lands with its layer-3 tests; each flow with layer 4.
 - [x] Connections page: list, groups, env badges, connect/edit/delete (the
       startup screen; connects through core::ops against the same data dir as
       the tauri dev app)
-- [x] Connection form (postgres fields, test connection, keychain/prompt
-      credential modes; command mode, agent access, other kinds, paste-url
-      prefill (`parseConnectionUrl` port) and small-screen dialog height
-      still to do)
+- [x] Connection form (postgres fields, test connection, keychain/prompt/
+      command credential modes with the argv preview; agent access, other
+      kinds, paste-url prefill (`parseConnectionUrl` port) and small-screen
+      dialog height still to do)
 - [x] Tunnel form + tunnel list (`tunnels.rs` ports `lib/tunnels.ts` with its
-      tests; the connection form's picker maps by index since names collide;
-      the revoke-credential-command row action waits for the approval round)
+      tests; the connection form's picker maps by index since names collide)
 - [x] Secret prompt dialog (SecretRequired -> unlock -> retry, with the
-      keep-for-session checkbox; title is subject-aware for tunnels)
-- [ ] Credential command approval dialog
+      keep-for-session checkbox; title is subject-aware for tunnels; Enter
+      submits)
+- [x] Credential command approval dialog (resolved argv chips, approve ->
+      retry; "Revoke command" on command-mode rows, both kinds; Enter is a
+      deliberate no-op on approval and host-key dialogs, Escape cancels)
 - [x] Host key trust dialog + panel (dialog only: gpui dialogs stack in
       `Root.active_dialogs`, so the form-inline panel the Vue focus trap
       forced has no reason to exist)
