@@ -184,6 +184,22 @@ pub fn trust_host_key(state: &AppState, host: &str, port: u16, key: &str) -> Res
   soquel_core::ops::trust_host_key(state, host, port, key)
 }
 
+pub fn approve_credential_command(
+  state: &AppState,
+  subject: SecretSubject,
+  id: String,
+) -> Result<(), Error> {
+  soquel_core::ops::approve_credential_command(state, subject, id)
+}
+
+pub fn revoke_credential_command(
+  state: &AppState,
+  subject: SecretSubject,
+  id: String,
+) -> Result<(), Error> {
+  soquel_core::ops::revoke_credential_command(state, subject, id)
+}
+
 pub fn default_ssh_keys() -> Vec<String> {
   soquel_core::ssh::default_key_paths()
 }
