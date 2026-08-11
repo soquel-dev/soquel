@@ -347,6 +347,52 @@ pub fn licence_activate(
   rx
 }
 
+/// Logs land under the data dir, whether or not SOQUEL_DATA_DIR is set: one
+/// place the diagnostics path names and the folder opens.
+fn log_dir(state: &AppState) -> std::path::PathBuf {
+  state.data_dir.join("logs")
+}
+
+const LOG_FILE_NAME: &str = if cfg!(debug_assertions) {
+  "soquel-dev"
+} else {
+  "soquel"
+};
+
+/// The pasteable support block, built in the core. Reads state locks, so off the
+/// UI thread; carries no names, hosts or paths beyond the log's own.
+pub fn diagnostics(state: Arc<AppState>) -> oneshot::Receiver<String> {
+  let (tx, rx) = oneshot::channel();
+  let log_path = log_dir(&state)
+    .join(LOG_FILE_NAME)
+    .with_extension("log")
+    .display()
+    .to_string();
+  let build = if cfg!(debug_assertions) {
+    "debug"
+  } else {
+    "release"
+  };
+  runtime().spawn(async move {
+    let block =
+      soquel_core::diagnostics::block(&state, env!("CARGO_PKG_VERSION"), build, &log_path).await;
+    let _ = tx.send(block);
+  });
+  rx
+}
+
+/// Opens the folder, not the file: someone about to attach a log wants the
+/// folder. Detached, so a session with no file manager reports success while
+/// doing nothing - the path stays on screen as the fallback.
+pub fn open_log_folder(state: &AppState) -> Result<String, Error> {
+  let dir = log_dir(state);
+  let _ = std::fs::create_dir_all(&dir);
+  open::that_detached(&dir).map_err(|err| Error::Unsupported {
+    message: format!("could not open the log folder: {err}"),
+  })?;
+  Ok(dir.display().to_string())
+}
+
 /// Off the UI thread: exporting reads the keychain.
 pub fn export_connections(
   state: Arc<AppState>,

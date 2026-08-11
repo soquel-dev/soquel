@@ -154,6 +154,28 @@ impl App {
     });
   }
 
+  fn open_diagnostics(&mut self, cx: &mut Context<Self>) {
+    let state = self.state.clone();
+    cx.defer(move |cx| {
+      let Some(window_handle) = cx.active_window() else {
+        return;
+      };
+      let _ = cx.update_window(window_handle, |_, window, cx| {
+        let view = cx.new(|cx| crate::diagnostics::DiagnosticsView::new(state.clone(), cx));
+        window.open_dialog(cx, move |dialog, _, _| {
+          dialog
+            .title(
+              div()
+                .font_family("IBM Plex Mono")
+                .child("Diagnostics and logs"),
+            )
+            .w(px(520.))
+            .child(view.clone())
+        });
+      });
+    });
+  }
+
   fn open_licence(&mut self, cx: &mut Context<Self>) {
     let state = self.state.clone();
     cx.defer(move |cx| {
@@ -305,6 +327,13 @@ impl App {
       hint: None,
       keywords: "licence license unlock buy activate tabs".to_string(),
       run: Rc::new(move |_, cx| licence_app.update(cx, |app, cx| app.open_licence(cx))),
+    });
+    let diagnostics_app = cx.entity();
+    items.push(PaletteItem {
+      label: "Diagnostics and logs".into(),
+      hint: None,
+      keywords: "diagnostics logs support bug report".to_string(),
+      run: Rc::new(move |_, cx| diagnostics_app.update(cx, |app, cx| app.open_diagnostics(cx))),
     });
 
     match &self.screen {

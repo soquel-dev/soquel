@@ -217,7 +217,13 @@ deleted. Each panel lands with its layer-3 tests; each flow with layer 4.
       `installed_outcome` + the exhaustive `activation_message` map. A successful
       install writes the file, so the open workspace's cap lifts on next open.
       `soquel_core::licence::path` is now shared by both frontends
-- [ ] Diagnostics dialog: block preview, copy, open log folder
+- [x] Diagnostics dialog (`diagnostics.rs`, `DiagnosticsView`, from the palette):
+      the pasteable block (built in `core::diagnostics`, no names or hosts - the
+      `render`/`block` lifted out of `src-tauri`, tests moved too), Copy, Copy
+      path (pulled from the block's `log:` line), and a best-effort Open log
+      folder via the `open` crate (detached, creates the dir first). Logs land
+      under `<data dir>/logs`; the log path shows even though gpui logging itself
+      is still to wire (below)
 - [ ] Update panel: check, progress, install/restart
 - [ ] Single instance + `.soquel` file association
 
