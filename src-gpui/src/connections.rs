@@ -815,6 +815,7 @@ impl ConnectionsView {
             let this_test = this.clone();
             let this_save = this.clone();
             let this_tls = this.clone();
+            let this_browse = this.clone();
             let hint = |text: SharedString, cx: &App| {
               field().label("").child(
                 div()
@@ -844,10 +845,23 @@ impl ConnectionsView {
                       .child(Select::new(&view.form_agent_access)),
                   )
                   .when(kind == ConnectorKind::Sqlite, |form| {
+                    let this_browse = this_browse.clone();
                     form.child(
-                      field()
-                        .label("Database file")
-                        .child(Input::new(&view.form_path)),
+                      field().label("Database file").child(
+                        h_flex()
+                          .w_full()
+                          .gap_2()
+                          .child(div().flex_1().child(Input::new(&view.form_path)))
+                          .child(
+                            Button::new("browse-sqlite")
+                              .ghost()
+                              .label("Browse")
+                              .debug_selector(|| "browse-sqlite".into())
+                              .on_click(move |_, _, cx| {
+                                this_browse.update(cx, |this, cx| this.browse_sqlite_path(cx));
+                              }),
+                          ),
+                      ),
                     )
                   })
                   .when(is_server, |form| {
@@ -1155,8 +1169,12 @@ impl ConnectionsView {
       return;
     }
     let Some(parsed) = parse_connection_url(&raw) else {
+      self.status =
+        "Not a connection URL. Use postgres://, mysql://, redis:// or mongodb://.".into();
+      cx.notify();
       return;
     };
+    self.status = SharedString::default();
     let engine_ix = ENGINE_CHOICES
       .iter()
       .position(|choice| choice.id == engine_choice_for_kind(parsed.kind))
@@ -1194,6 +1212,36 @@ impl ConnectionsView {
       .form_url
       .update(cx, |i, cx| i.set_value("", window, cx));
     cx.notify();
+  }
+
+  /// Native picker for the sqlite file; typing the path still works, and under
+  /// WSLg (no portal) the pick just no-ops.
+  fn browse_sqlite_path(&mut self, cx: &mut Context<Self>) {
+    let picked = cx.prompt_for_paths(PathPromptOptions {
+      files: true,
+      directories: false,
+      multiple: false,
+      prompt: None,
+    });
+    self._task = cx.spawn(async move |this, cx| {
+      let Ok(Ok(Some(paths))) = picked.await else {
+        return;
+      };
+      let Some(path) = paths.into_iter().next() else {
+        return;
+      };
+      let value = path.to_string_lossy().into_owned();
+      let Some(handle) = cx.update(|cx| cx.active_window()) else {
+        return;
+      };
+      let _ = cx.update_window(handle, move |_, window, cx| {
+        let _ = this.update(cx, |this, cx| {
+          this
+            .form_path
+            .update(cx, |i, cx| i.set_value(value, window, cx));
+        });
+      });
+    });
   }
 
   /// Ids and labels rebuilt together: the picker maps by index, since tunnel
@@ -2864,7 +2912,42 @@ mod tests {
         assert!(p.tls);
         // The URL field clears itself after applying.
         assert_eq!(view.form_url.read(cx).value(), "");
+
+        // A URL we do not understand says so instead of silently doing nothing.
+        view
+          .form_url
+          .update(cx, |i, cx| i.set_value("ftp://nope", window, cx));
+        view.apply_url(window, cx);
+        assert!(
+          view.status.contains("Not a connection URL"),
+          "got: {}",
+          view.status
+        );
       });
+    });
+  }
+
+  #[gpui::test]
+  fn browse_fills_the_sqlite_path(cx: &mut TestAppContext) {
+    let (_dir, state) = test_state();
+    let (view, cx) = crate::test_support::shell_window(cx, {
+      let state = state.clone();
+      move |window, cx| ConnectionsView::new(state, window, cx)
+    });
+
+    cx.update(|_, cx| view.update(cx, |view, cx| view.browse_sqlite_path(cx)));
+    cx.run_until_parked();
+    assert!(cx.did_prompt_for_paths());
+    let file = std::path::PathBuf::from("/data/app.db");
+    cx.simulate_path_prompt_response({
+      let file = file.clone();
+      move |options| {
+        assert!(options.files && !options.directories && !options.multiple);
+        Some(vec![file.clone()])
+      }
+    });
+    crate::test_support::wait_until(cx, "the picked path", |cx| {
+      cx.update(|_, cx| view.read(cx).form_path.read(cx).value() == "/data/app.db")
     });
   }
 
