@@ -5582,6 +5582,7 @@ version = "0.1.0"
 dependencies = [
  "argon2 0.5.3",
  "async-trait",
+ "axum",
  "base64 0.22.1",
  "chacha20poly1305",
  "deadpool",
@@ -5593,6 +5594,7 @@ dependencies = [
  "mysql_async",
  "redis",
  "reqwest",
+ "rmcp",
  "rusqlite",
  "russh",
  "rustls",

@@ -132,7 +132,7 @@ pub fn run() {
         Err(_) => app.path().app_data_dir()?,
       };
       let secrets = soquel_core::secrets::store_from_env(&data_dir)?;
-      app.manage(AppState::load(&data_dir, secrets)?);
+      app.manage(std::sync::Arc::new(AppState::load(&data_dir, secrets)?));
       mcp::autostart(app.handle());
       Ok(())
     })
