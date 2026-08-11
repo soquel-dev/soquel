@@ -868,7 +868,7 @@ pub async fn activate_licence(
 }
 
 fn licence_path(state: &AppState) -> std::path::PathBuf {
-  state.data_dir.join("licence.txt")
+  soquel_core::licence::path(&state.data_dir)
 }
 
 /// The compile target, not a user agent string: the webview needs it for the
