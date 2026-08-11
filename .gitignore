@@ -13,10 +13,7 @@ dist
 .astro/
 
 # Rust
-src-tauri/target/
-src-tauri/gen/schemas/
-src-gpui/target/
-crates/core/target/
+/target/
 
 # Editor directories and files
 .vscode/*

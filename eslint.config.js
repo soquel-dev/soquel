@@ -7,6 +7,7 @@ export default antfu({
   ignores: [
     '**/dist/**',
     '**/node_modules/**',
+    '**/target/**',
     // A mongosh script: its own globals (db, ObjectId), not Node.
     'scripts/dev-seed/mongo.js',
     // Own workspace, own lockfile, own lint and CI job.

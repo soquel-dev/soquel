@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 # Connector suites and the mcp agent surface live in the core crate; the gpui
 # frontend runs its browse/stage/apply flow against the same postgres.
 core=crates/core/Cargo.toml
-gpui=src-gpui/Cargo.toml
+gpui=crates/app/Cargo.toml
 
 echo "==> full suite (current versions)"
 SOQUEL_TEST_PG=postgres://soquel:soquel@localhost:5455/soquel_test \

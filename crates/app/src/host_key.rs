@@ -134,7 +134,7 @@ mod tests {
     ));
     let key = std::fs::read_to_string(concat!(
       env!("CARGO_MANIFEST_DIR"),
-      "/../scripts/test-ssh/id_ed25519.pub"
+      "/../../scripts/test-ssh/id_ed25519.pub"
     ))
     .unwrap()
     .trim()

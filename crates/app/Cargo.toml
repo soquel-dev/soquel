@@ -1,13 +1,10 @@
 [package]
-name = "soquel-gpui"
+name = "soquel-app"
 version = "0.1.0"
-description = "Soquel gpui frontend"
+description = "Soquel: the gpui desktop app"
 license = "FSL-1.1-MIT"
 authors = ["Joris Gallot"]
 edition = "2024"
-
-# Detached from any parent workspace: src-tauri keeps its own target dir.
-[workspace]
 
 # The core's Error is deliberately large (rich variants for the IPC boundary);
 # the lint only fires on foreign error types, so core itself stays clean.
@@ -31,7 +28,7 @@ serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
 percent-encoding = "2"
 rust-embed = "8"
-soquel-core = { path = "../crates/core" }
+soquel-core = { path = "../core" }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 url = "2"
 
@@ -39,6 +36,3 @@ url = "2"
 gpui = { git = "https://github.com/zed-industries/zed", features = ["test-support"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 tempfile = "3"
-
-[profile.dev]
-debug = "limited"

@@ -10,9 +10,6 @@ rust-version = "1.77.2"
 [lib]
 name = "soquel_core"
 
-# Detached: dependents compile it inside their own target dirs.
-[workspace]
-
 [build-dependencies]
 time = { version = "0.3", features = ["formatting"] }
 
