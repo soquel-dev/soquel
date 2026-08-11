@@ -34,6 +34,9 @@ use gpui::*;
 use gpui_component::{Root, TitleBar};
 
 fn main() {
+  // Before anything logs: the keyring probe in init_state is the first line worth
+  // capturing.
+  crate::core::init_logging();
   // Without the asset source, every Icon (sort chevrons, titlebar, chips) is invisible.
   gpui_platform::application()
     .with_assets(crate::icons::Assets)
