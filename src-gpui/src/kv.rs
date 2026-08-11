@@ -1055,4 +1055,118 @@ mod tests {
     assert_eq!(format_ttl(7_200_000.0), "2h");
     assert_eq!(format_ttl(172_800_000.0), "2d");
   }
+
+  /// The view against a live redis: it scans on open, a click loads the
+  /// detail, the console runs. Skipped silently without SOQUEL_TEST_REDIS.
+  #[gpui::test]
+  fn integration_kv_workspace_scans_selects_and_runs(cx: &mut gpui::TestAppContext) {
+    let Ok(coord) = std::env::var("SOQUEL_TEST_REDIS") else {
+      return;
+    };
+    let (host, port) = coord.split_once(':').expect("host:port");
+    let profile = ConnectionProfile {
+      id: "kv-view".to_string(),
+      name: "redis view".to_string(),
+      env: soquel_core::profiles::Env::Dev,
+      group: None,
+      agent_access: soquel_core::profiles::AgentAccess::None,
+      credential: soquel_core::profiles::CredentialSource::Prompt,
+      params: soquel_core::profiles::ConnectorParams::Redis(soquel_core::profiles::RedisParams {
+        host: host.to_string(),
+        port: port.parse().expect("port"),
+        db: 0,
+        username: None,
+        tls: false,
+        tunnel_id: None,
+      }),
+    };
+    let db = futures::executor::block_on(crate::core::connect_with(
+      profile.clone(),
+      soquel_core::credentials::Credentials::fixed(Some("soquel".to_string())),
+    ))
+    .expect("channel")
+    .expect("connects to the compose redis");
+
+    // Seed one key this test owns, and a couple more to browse.
+    let prefix = format!("gpui_view_{}", std::process::id());
+    for line in [
+      format!("HSET {prefix}:h field1 v1 field2 v2"),
+      format!("SET {prefix}:s hello"),
+    ] {
+      futures::executor::block_on(crate::core::kv_run_command(&db, line))
+        .expect("channel")
+        .expect("seed");
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let state = std::sync::Arc::new(soquel_core::AppState::for_tests(
+      dir.path(),
+      Box::new(soquel_core::secrets::InMemoryStore::default()),
+    ));
+    let (view, cx) = crate::test_support::shell_window(cx, {
+      let state = state.clone();
+      move |window, cx| KvWorkspace::new(state, db, profile, window, cx)
+    });
+
+    // Filter to this test's keys, then the scan (from `new`) settles.
+    cx.update(|window, cx| {
+      view.update(cx, |view, cx| {
+        view
+          .search
+          .update(cx, |input, cx| input.set_value(prefix.clone(), window, cx));
+        view.scan(true, cx);
+      });
+    });
+    let hash_key = format!("{prefix}:h");
+    crate::test_support::wait_until(cx, "the seeded keys to scan in", |cx| {
+      cx.update(|_, cx| view.read(cx).keys.iter().any(|k| k.key == hash_key))
+    });
+
+    // A click loads the hash detail with its two fields.
+    cx.update(|window, cx| {
+      view.update(cx, |view, cx| view.select_key(hash_key.clone(), window, cx));
+    });
+    crate::test_support::wait_until(cx, "the hash detail", |cx| {
+      cx.update(|_, cx| view.read(cx).detail.is_some())
+    });
+    cx.update(|_, cx| {
+      let detail = view.read(cx).detail.clone().unwrap();
+      assert_eq!(detail.key, hash_key);
+      let KeyValue::Hash { entries } = &detail.value else {
+        panic!("hash value");
+      };
+      assert_eq!(entries.len(), 2);
+    });
+
+    // The console runs a command and logs its reply.
+    cx.update(|window, cx| {
+      view.update(cx, |view, cx| {
+        view
+          .console_input
+          .update(cx, |input, cx| input.set_value("PING", window, cx));
+        view.run_console(window, cx);
+      });
+    });
+    crate::test_support::wait_until(cx, "the console reply", |cx| {
+      cx.update(|_, cx| {
+        view
+          .read(cx)
+          .console_log
+          .last()
+          .is_some_and(|entry| entry.ok && entry.lines.iter().any(|l| l == "PONG"))
+      })
+    });
+
+    // Cleanup.
+    for suffix in ["h", "s"] {
+      let _ = futures::executor::block_on(crate::core::kv_run_command(
+        &db_handle(&view, cx),
+        format!("DEL {prefix}:{suffix}"),
+      ));
+    }
+  }
+
+  fn db_handle(view: &Entity<KvWorkspace>, cx: &mut gpui::VisualTestContext) -> Db {
+    cx.update(|_, cx| view.read(cx).db.clone())
+  }
 }

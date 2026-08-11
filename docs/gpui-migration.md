@@ -165,7 +165,15 @@ deleted. Each panel lands with its layer-3 tests; each flow with layer 4.
 
 ### Other engines
 
-- [ ] Redis: key list, key detail, db select, console
+- [x] Redis: key list, key detail, db select, console (`kv.rs` is a whole
+      `KvWorkspace` mounted by App when the connection has the `KvBrowse`
+      capability - the first branch on kind, leaving the SQL `Workspace`
+      untouched; ports `lib/kv.ts` (contains-search glob, ttl format, type
+      badges) with its tests; scan/scan-more, per-type value render, string
+      edit/ttl/delete, db reconnect-swap, redis console. Detail render is
+      covered by `integration_flow_redis_browse` + the visual pass, not a
+      gpui render test - faking a `Connection` for a headless view isn't worth
+      it)
 - [ ] Mongo: collection list, doc list/detail, indexes, db select, console
 
 ### App surfaces
