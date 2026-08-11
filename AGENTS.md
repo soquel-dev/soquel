@@ -8,7 +8,7 @@ Guidance for agents in this repo. The shared stack profile is imported above, bu
 
 Soquel is a desktop database client in the TablePlus mould: a **gpui** app (gpui + gpui-component, the Zed UI stack) over a Rust core. The core owns everything heavy and sensitive (DB drivers, SSH tunnels, connection pools, result streaming, credentials, licence, the MCP server); the gpui frontend is a thin in-process client. It targets Postgres, MySQL/MariaDB, SQLite, Redis and MongoDB behind a capability-based connector trait.
 
-It was a Tauri 2 + Vue webview app until the frontend was migrated to gpui; the tauri shell and the webview are gone (`docs/gpui-migration.md` is the record). No IPC boundary survives: the app calls the core directly.
+It was a Tauri 2 + Vue webview app until the frontend was migrated to gpui; no IPC boundary survives, so the app calls the core directly.
 
 Two architecture rules that must hold:
 
