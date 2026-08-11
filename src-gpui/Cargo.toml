@@ -17,7 +17,10 @@ result_large_err = "allow"
 [dependencies]
 anyhow = "1"
 async-trait = "0.1"
+fern = "0.7"
 futures = "0.3"
+humantime = "2"
+log = "0.4"
 gpui = { git = "https://github.com/zed-industries/zed" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
 gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "55968d167bd6959551c3417c3622899c33ecda20", features = ["tree-sitter-sql"] }

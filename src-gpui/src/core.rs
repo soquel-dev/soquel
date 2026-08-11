@@ -53,19 +53,70 @@ pub fn resolve_data_dir(
   if debug { root.join("dev") } else { root }
 }
 
-pub fn init_state() -> Result<Arc<AppState>, Error> {
+fn data_dir_from_env() -> std::path::PathBuf {
   let override_dir = std::env::var("SOQUEL_DATA_DIR").ok();
   let xdg = std::env::var_os("XDG_DATA_HOME").map(std::path::PathBuf::from);
   let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-  let data_dir = resolve_data_dir(
+  resolve_data_dir(
     override_dir.as_deref(),
     xdg.as_deref(),
     home.as_deref(),
     cfg!(debug_assertions),
-  );
+  )
+}
+
+pub fn init_state() -> Result<Arc<AppState>, Error> {
+  let data_dir = data_dir_from_env();
   std::fs::create_dir_all(&data_dir)?;
   let secrets = soquel_core::secrets::store_from_env(&data_dir)?;
   Ok(Arc::new(AppState::load(&data_dir, secrets)?))
+}
+
+/// The plugin defaults to 40 kB, which holds about one session.
+const MAX_LOG_SIZE: u64 = 2 * 1024 * 1024;
+
+/// No size rotation, so cap growth across sessions: start fresh once when the
+/// file has grown past the ceiling.
+fn over_size_cap(len: u64) -> bool {
+  len > MAX_LOG_SIZE
+}
+
+/// A file logger to `<data dir>/logs/soquel[-dev].log`, mirroring the tauri
+/// build's levels: Warn everywhere, Info for our own crates, so our lines are
+/// not buried under russh, hyper and rustls. Call before `init_state` so the
+/// keyring probe is captured. Failures are non-fatal: the app runs without logs.
+pub fn init_logging() {
+  let dir = data_dir_from_env().join("logs");
+  if std::fs::create_dir_all(&dir).is_err() {
+    return;
+  }
+  let path = dir.join(LOG_FILE_NAME).with_extension("log");
+  if std::fs::metadata(&path).is_ok_and(|meta| over_size_cap(meta.len())) {
+    let _ = std::fs::remove_file(&path);
+  }
+  let Ok(file) = fern::log_file(&path) else {
+    return;
+  };
+  let mut dispatch = fern::Dispatch::new()
+    .format(|out, message, record| {
+      out.finish(format_args!(
+        "{} {} {} {}",
+        humantime::format_rfc3339_seconds(std::time::SystemTime::now()),
+        record.level(),
+        record.target(),
+        message
+      ))
+    })
+    .level(log::LevelFilter::Warn)
+    .level_for("soquel_core", log::LevelFilter::Info)
+    .level_for("soquel_gpui", log::LevelFilter::Info)
+    .chain(file);
+  // A bundle has no console; a debug run does.
+  if cfg!(debug_assertions) {
+    dispatch = dispatch.chain(std::io::stdout());
+  }
+  // An already-set logger is not an error worth failing the app over.
+  let _ = dispatch.apply();
 }
 
 pub fn list_connections(state: &AppState) -> Vec<ConnectionProfile> {
@@ -926,6 +977,13 @@ mod tests {
 
   use super::*;
   use crate::staged::StagedChanges;
+
+  #[test]
+  fn the_log_resets_only_past_the_ceiling() {
+    assert!(!over_size_cap(0));
+    assert!(!over_size_cap(MAX_LOG_SIZE));
+    assert!(over_size_cap(MAX_LOG_SIZE + 1));
+  }
 
   /// postgres://user:pass@host:port/db, the shape test-integration.sh exports.
   fn parse_pg_url(url: &str) -> Option<(String, u16, String, String, String)> {

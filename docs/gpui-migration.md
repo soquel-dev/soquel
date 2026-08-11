@@ -222,8 +222,8 @@ deleted. Each panel lands with its layer-3 tests; each flow with layer 4.
       `render`/`block` lifted out of `src-tauri`, tests moved too), Copy, Copy
       path (pulled from the block's `log:` line), and a best-effort Open log
       folder via the `open` crate (detached, creates the dir first). Logs land
-      under `<data dir>/logs`; the log path shows even though gpui logging itself
-      is still to wire (below)
+      under `<data dir>/logs` and the path is real now that logging is wired
+      (below)
 - [ ] Update panel: check, progress, install/restart
 - [ ] Single instance + `.soquel` file association
 
@@ -233,9 +233,14 @@ deleted. Each panel lands with its layer-3 tests; each flow with layer 4.
       (candidate: cargo-packager; **verify the existing updater signing key
       and manifest format carry over**, the key is not rotatable and a format
       break orphans every installed client)
+- [x] Logging: `core::init_logging` (fern) to `<data dir>/logs/soquel[-dev].log`,
+      called before `init_state` so the keyring probe is captured; Warn floor,
+      Info for `soquel_core`/`soquel_gpui` (our lines stay above russh/hyper/
+      rustls), Stdout in debug, a startup size cap in place of the plugin's
+      rotation. The opener rides the `open` crate (diagnostics, above)
 - [ ] File dialogs (gpui's own `prompt_for_paths`/`prompt_for_new_path` cover
       import/export - no filters, extension appended by hand; rfd likely
-      unneeded), opener, logging (fern/tracing to the same log files)
+      unneeded)
 - [ ] Data dir + keychain service names unchanged (installed apps must not
       lose their connections or secrets on the switch)
 - [x] MCP autostart parity (App reads the persisted toggle at launch and
