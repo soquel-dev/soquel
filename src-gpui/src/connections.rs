@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui::prelude::FluentBuilder;
@@ -7,18 +8,25 @@ use gpui_component::checkbox::Checkbox;
 use gpui_component::form::{field, v_form};
 use gpui_component::input::{Input, InputState};
 use gpui_component::notification::Notification;
+use gpui_component::radio::{Radio, RadioGroup};
 use gpui_component::select::{Select, SelectState};
-use gpui_component::{ActiveTheme, IndexPath, Sizable, StyledExt, WindowExt, h_flex, v_flex};
+use gpui_component::switch::Switch;
+use gpui_component::{
+  ActiveTheme, Disableable, IndexPath, Sizable, StyledExt, WindowExt, h_flex, v_flex,
+};
 use soquel_core::AppState;
 use soquel_core::error::{Error, SecretSubject};
 use soquel_core::profiles::{
   AgentAccess, ConnectionInput, ConnectionProfile, ConnectorParams, CredentialSource, Env,
   SqlServerParams, SslMode,
 };
+use soquel_core::transfer::{DuplicateStrategy, ImportPreview};
 
 use crate::command_approval::{self, CommandApprovalPrompt};
 use crate::core::{self, Db};
 use crate::host_key::{self, HostKeyPrompt};
+use crate::icons::SoquelIcon;
+use crate::transfer::{self, EntryKind};
 use crate::tunnels::{
   CREDENTIAL_MODES, CredentialMode, TunnelsView, command_preview, credential_mode_hint,
   credential_mode_label,
@@ -115,6 +123,20 @@ pub struct ConnectionsView {
   tunnels_section: Entity<TunnelsView>,
   prompt_password: Entity<InputState>,
   prompt_remember: bool,
+  export_include_secrets: bool,
+  export_passphrase: Entity<InputState>,
+  export_confirm: Entity<InputState>,
+  export_busy: bool,
+  export_error: Option<SharedString>,
+  import_path: Option<PathBuf>,
+  import_preview: Option<ImportPreview>,
+  import_passphrase: Entity<InputState>,
+  import_with_secrets: bool,
+  import_strategy: usize,
+  /// Sticky: a rejected passphrase keeps the field on screen to retry in.
+  import_locked: bool,
+  import_busy: bool,
+  import_error: Option<SharedString>,
   _task: Task<()>,
 }
 
@@ -142,6 +164,13 @@ impl ConnectionsView {
     let prompt_password = cx.new(|cx| {
       InputState::new(window, cx)
         .placeholder("password")
+        .masked(true)
+    });
+    let export_passphrase = cx.new(|cx| InputState::new(window, cx).masked(true));
+    let export_confirm = cx.new(|cx| InputState::new(window, cx).masked(true));
+    let import_passphrase = cx.new(|cx| {
+      InputState::new(window, cx)
+        .placeholder("Passphrase")
         .masked(true)
     });
     let form_env = cx.new(|cx| {
@@ -209,6 +238,19 @@ impl ConnectionsView {
       tunnels_section,
       prompt_password,
       prompt_remember: false,
+      export_include_secrets: false,
+      export_passphrase,
+      export_confirm,
+      export_busy: false,
+      export_error: None,
+      import_path: None,
+      import_preview: None,
+      import_passphrase,
+      import_with_secrets: false,
+      import_strategy: 0,
+      import_locked: false,
+      import_busy: false,
+      import_error: None,
       _task: Task::ready(()),
     }
   }
@@ -848,6 +890,341 @@ impl ConnectionsView {
     }
   }
 
+  fn open_export_dialog(&mut self, cx: &mut Context<Self>) {
+    self.export_include_secrets = false;
+    self.export_busy = false;
+    self.export_error = None;
+    let this = cx.entity();
+    cx.defer(move |cx| {
+      let Some(window_handle) = cx.active_window() else {
+        return;
+      };
+      let _ = cx.update_window(window_handle, |_, window, cx| {
+        this.update(cx, |view, cx| {
+          view
+            .export_passphrase
+            .update(cx, |i, cx| i.set_value("", window, cx));
+          view
+            .export_confirm
+            .update(cx, |i, cx| i.set_value("", window, cx));
+        });
+        let this = this.clone();
+        window.open_dialog(cx, move |dialog, _, cx| {
+          let view = this.read(cx);
+          let include = view.export_include_secrets;
+          let busy = view.export_busy;
+          let error = view.export_error.clone();
+          let this_toggle = this.clone();
+          let this_run = this.clone();
+          dialog
+            .title("Export connections")
+            .w(px(460.))
+            .on_ok(|_, _, _| false)
+            .child(
+              v_flex()
+                .gap_3()
+                .child(div().text_sm().child(
+                  "Every connection, group and SSH tunnel in one file. Host keys stay on \
+                   this machine: you confirm them again on the first connect.",
+                ))
+                .child(
+                  v_flex()
+                    .gap_2()
+                    .p_3()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .rounded(cx.theme().radius)
+                    .child(
+                      h_flex()
+                        .justify_between()
+                        .items_center()
+                        .child(div().text_sm().child("Include passwords"))
+                        .child(Switch::new("export-secrets").checked(include).on_click(
+                          move |checked, _, cx| {
+                            let checked = *checked;
+                            this_toggle.update(cx, |view, cx| {
+                              view.export_include_secrets = checked;
+                              cx.notify();
+                            });
+                          },
+                        )),
+                    )
+                    .child(
+                      div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(if include {
+                          "The file is encrypted with your passphrase. Lose it and the file \
+                           is unreadable."
+                        } else {
+                          "Off: the file is plain text and safe to share, passwords get \
+                           re-entered on the other side."
+                        }),
+                    ),
+                )
+                .when(include, |form| {
+                  form.child(
+                    v_form()
+                      .child(
+                        field()
+                          .label("Passphrase")
+                          .child(Input::new(&view.export_passphrase)),
+                      )
+                      .child(
+                        field()
+                          .label("Confirm passphrase")
+                          .child(Input::new(&view.export_confirm)),
+                      ),
+                  )
+                })
+                .when_some(error, |form, error| {
+                  form.child(
+                    div()
+                      .text_xs()
+                      .font_family("IBM Plex Mono")
+                      .text_color(cx.theme().danger)
+                      .child(error),
+                  )
+                }),
+            )
+            .footer(
+              h_flex()
+                .gap_2()
+                .justify_end()
+                .child(
+                  Button::new("export-cancel")
+                    .label("Cancel")
+                    .on_click(|_, window, cx| window.close_dialog(cx)),
+                )
+                .child(
+                  Button::new("run-export")
+                    .primary()
+                    .label(if busy {
+                      "Exporting…"
+                    } else {
+                      "Choose a file…"
+                    })
+                    .disabled(busy)
+                    .debug_selector(|| "run-export".into())
+                    .on_click(move |_, _, cx| {
+                      this_run.update(cx, |this, cx| this.run_export(cx));
+                    }),
+                ),
+            )
+        });
+      });
+    });
+  }
+
+  fn run_export(&mut self, cx: &mut Context<Self>) {
+    if self.export_busy {
+      return;
+    }
+    let include = self.export_include_secrets;
+    let passphrase = self.export_passphrase.read(cx).value().to_string();
+    if include {
+      let confirmation = self.export_confirm.read(cx).value().to_string();
+      if let Some(issue) = transfer::passphrase_issue(&passphrase, &confirmation) {
+        self.export_error = Some(issue.into());
+        cx.notify();
+        return;
+      }
+    }
+    self.export_error = None;
+    cx.notify();
+    let home = std::env::var_os("HOME")
+      .or_else(|| std::env::var_os("USERPROFILE"))
+      .map(PathBuf::from)
+      .unwrap_or_default();
+    // The picker opens only once the passphrase would survive the round-trip.
+    let picked = cx.prompt_for_new_path(&home, Some(transfer::DEFAULT_EXPORT_NAME));
+    let state = self.state.clone();
+    self._task = cx.spawn(async move |this, cx| {
+      let path = match picked.await {
+        Ok(Ok(Some(path))) => transfer::ensure_soquel_extension(path),
+        Ok(Ok(None)) => return,
+        Ok(Err(error)) => {
+          let _ = this.update(cx, |this, cx| {
+            this.export_error = Some(format!("{error}").into());
+            cx.notify();
+          });
+          return;
+        }
+        Err(_) => return,
+      };
+      let _ = this.update(cx, |this, cx| {
+        this.export_busy = true;
+        cx.notify();
+      });
+      let rx = core::export_connections(state, path, include, include.then_some(passphrase));
+      let result = rx.await;
+      let mut done = None;
+      let _ = this.update(cx, |this, cx| {
+        this.export_busy = false;
+        match result {
+          Ok(Ok(summary)) => done = Some(transfer::export_summary_message(&summary)),
+          Ok(Err(error)) => this.export_error = Some(format!("{error}").into()),
+          Err(_) => {}
+        }
+        cx.notify();
+      });
+      if let Some(message) = done
+        && let Some(handle) = cx.update(|cx| cx.active_window())
+      {
+        let _ = cx.update_window(handle, |_, window, cx| {
+          window.close_dialog(cx);
+          window.push_notification(Notification::success(message), cx);
+        });
+      }
+    });
+  }
+
+  fn import_via_picker(&mut self, cx: &mut Context<Self>) {
+    let picked = cx.prompt_for_paths(PathPromptOptions {
+      files: true,
+      directories: false,
+      multiple: false,
+      prompt: None,
+    });
+    self._task = cx.spawn(async move |this, cx| {
+      match picked.await {
+        Ok(Ok(Some(paths))) => {
+          if let Some(path) = paths.into_iter().next() {
+            let _ = this.update(cx, |this, cx| this.open_import_dialog(path, cx));
+          }
+        }
+        Ok(Ok(None)) => {}
+        // No portal (WSLg): the drop path still works.
+        Ok(Err(error)) => {
+          let _ = this.update(cx, |this, cx| {
+            this.status = format!("error: {error}; drop the file on the window instead").into();
+            cx.notify();
+          });
+        }
+        Err(_) => {}
+      }
+    });
+  }
+
+  fn open_import_dialog(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+    self.import_path = Some(path);
+    self.import_preview = None;
+    self.import_with_secrets = false;
+    self.import_strategy = 0;
+    self.import_locked = false;
+    self.import_busy = false;
+    self.import_error = None;
+    let this = cx.entity();
+    cx.defer(move |cx| {
+      let Some(window_handle) = cx.active_window() else {
+        return;
+      };
+      let _ = cx.update_window(window_handle, |_, window, cx| {
+        this.update(cx, |view, cx| {
+          view
+            .import_passphrase
+            .update(cx, |i, cx| i.set_value("", window, cx));
+          view.load_import_preview(cx);
+        });
+        let this = this.clone();
+        window.open_dialog(cx, move |dialog, _, cx| import_dialog(dialog, &this, cx));
+      });
+    });
+  }
+
+  fn load_import_preview(&mut self, cx: &mut Context<Self>) {
+    let Some(path) = self.import_path.clone() else {
+      return;
+    };
+    self.import_busy = true;
+    self.import_error = None;
+    cx.notify();
+    let passphrase = {
+      let typed = self.import_passphrase.read(cx).value().to_string();
+      (!typed.is_empty()).then_some(typed)
+    };
+    let rx = core::preview_import(self.state.clone(), path, passphrase);
+    self._task = cx.spawn(async move |this, cx| {
+      let result = rx.await;
+      let _ = this.update(cx, |this, cx| {
+        this.import_busy = false;
+        match result {
+          Ok(Ok(preview)) => {
+            this.import_locked = preview.needs_passphrase;
+            this.import_preview = Some(preview);
+          }
+          // The lock stays as it was: a rejected passphrase keeps its field.
+          Ok(Err(error)) => {
+            this.import_preview = None;
+            this.import_error = Some(format!("{error}").into());
+          }
+          Err(_) => {}
+        }
+        cx.notify();
+      });
+    });
+  }
+
+  fn run_import(&mut self, cx: &mut Context<Self>) {
+    if self.import_busy || self.import_locked {
+      return;
+    }
+    let Some(path) = self.import_path.clone() else {
+      return;
+    };
+    let Some(preview) = &self.import_preview else {
+      return;
+    };
+    if transfer::import_plan(preview).problems > 0 {
+      return;
+    }
+    self.import_busy = true;
+    self.import_error = None;
+    cx.notify();
+    let passphrase = {
+      let typed = self.import_passphrase.read(cx).value().to_string();
+      (!typed.is_empty()).then_some(typed)
+    };
+    let strategy = transfer::DUPLICATE_STRATEGIES
+      .get(self.import_strategy)
+      .copied()
+      .unwrap_or(DuplicateStrategy::Skip);
+    let rx = core::import_connections(
+      self.state.clone(),
+      path,
+      passphrase,
+      self.import_with_secrets,
+      strategy,
+    );
+    self._task = cx.spawn(async move |this, cx| {
+      let result = rx.await;
+      let mut done = None;
+      let _ = this.update(cx, |this, cx| {
+        this.import_busy = false;
+        match result {
+          Ok(Ok(outcome)) => {
+            done = Some(transfer::import_outcome_message(&outcome));
+            this.refresh(cx);
+            this
+              .tunnels_section
+              .update(cx, |tunnels, cx| tunnels.refresh(cx));
+          }
+          Ok(Err(error)) => this.import_error = Some(format!("{error}").into()),
+          Err(_) => {}
+        }
+        cx.notify();
+      });
+      if let Some(message) = done
+        && let Some(handle) = cx.update(|cx| cx.active_window())
+      {
+        let _ = cx.update_window(handle, |_, window, cx| {
+          window.close_dialog(cx);
+          window.push_notification(Notification::success(message), cx);
+        });
+      }
+    });
+  }
+
   fn delete(&mut self, id: String, cx: &mut Context<Self>) {
     let rx = core::delete_connection(self.state.clone(), id);
     self._task = cx.spawn(async move |this, cx| {
@@ -877,6 +1254,328 @@ impl ConnectionsView {
   }
 }
 
+fn outline_badge(text: String, color: Hsla, cx: &App) -> Div {
+  div()
+    .px_1p5()
+    .rounded(cx.theme().radius)
+    .border_1()
+    .border_color(color.opacity(0.3))
+    .text_color(color)
+    .text_xs()
+    .font_family("IBM Plex Mono")
+    .child(text)
+}
+
+/// The import dialog body, re-read from the view every frame like the forms.
+fn import_dialog(
+  dialog: gpui_component::dialog::Dialog,
+  this: &Entity<ConnectionsView>,
+  cx: &App,
+) -> gpui_component::dialog::Dialog {
+  let view = this.read(cx);
+  let path_text = view
+    .import_path
+    .as_ref()
+    .map(|p| p.to_string_lossy().to_string())
+    .unwrap_or_default();
+  let plan = view.import_preview.as_ref().map(transfer::import_plan);
+  let has_plan = plan.is_some();
+  let blocked = plan.as_ref().is_some_and(|p| p.problems > 0);
+  let locked = view.import_locked;
+  let busy = view.import_busy;
+  let error = view.import_error.clone();
+  let counts = view
+    .import_preview
+    .as_ref()
+    .map(|p| (p.connections.len(), p.tunnels.len(), p.encrypted));
+  let with_secrets = view.import_with_secrets;
+  let strategy_ix = view.import_strategy;
+  let unlockable = !busy && !view.import_passphrase.read(cx).value().is_empty();
+  let this_unlock = this.clone();
+  let this_secrets = this.clone();
+  let this_strategy = this.clone();
+  let this_run = this.clone();
+  let this_ok = this.clone();
+  dialog
+    .title("Import connections")
+    .w(px(520.))
+    // Enter unlocks while locked; it never runs the import.
+    .on_ok(move |_, _, cx| {
+      this_ok.update(cx, |view, cx| {
+        if view.import_locked && !view.import_busy {
+          view.load_import_preview(cx);
+        }
+      });
+      false
+    })
+    .child(
+      v_flex()
+        .gap_3()
+        .child(
+          div()
+            .text_xs()
+            .font_family("IBM Plex Mono")
+            .text_color(cx.theme().muted_foreground)
+            .truncate()
+            .child(path_text),
+        )
+        .when(locked, |body| {
+          body.child(
+            v_flex()
+              .gap_2()
+              .child(
+                h_flex()
+                  .gap_2()
+                  .items_center()
+                  .child(
+                    div()
+                      .text_color(cx.theme().muted_foreground)
+                      .child(SoquelIcon::Lock),
+                  )
+                  .child(div().text_sm().child("This file is encrypted")),
+              )
+              .child(
+                h_flex()
+                  .gap_2()
+                  .child(div().flex_1().child(Input::new(&view.import_passphrase)))
+                  .child(
+                    Button::new("import-unlock")
+                      .outline()
+                      .label("Unlock")
+                      .disabled(!unlockable)
+                      .debug_selector(|| "import-unlock".into())
+                      .on_click(move |_, _, cx| {
+                        this_unlock.update(cx, |view, cx| view.load_import_preview(cx));
+                      }),
+                  ),
+              ),
+          )
+        })
+        .when_some(plan.filter(|_| !locked), |body, plan| {
+          let (connections, tunnels, encrypted) = counts.unwrap_or_default();
+          let entries = plan.entries.len();
+          body
+            .child(
+              h_flex()
+                .flex_wrap()
+                .gap_2()
+                .items_center()
+                .child(
+                  div()
+                    .text_sm()
+                    .font_family("IBM Plex Mono")
+                    .child(format!("{connections} connections, {tunnels} tunnels")),
+                )
+                .when(encrypted, |row| {
+                  row.child(outline_badge(
+                    "encrypted".to_string(),
+                    cx.theme().muted_foreground,
+                    cx,
+                  ))
+                })
+                .when(plan.secrets > 0, |row| {
+                  row.child(outline_badge(
+                    format!("{} passwords", plan.secrets),
+                    cx.theme().muted_foreground,
+                    cx,
+                  ))
+                })
+                .when(plan.commands > 0, |row| {
+                  row.child(outline_badge(
+                    format!("{} run a command", plan.commands),
+                    cx.theme().yellow,
+                    cx,
+                  ))
+                }),
+            )
+            .child(
+              v_flex()
+                .id("import-entries")
+                .max_h(px(224.))
+                .overflow_y_scroll()
+                .border_1()
+                .border_color(cx.theme().border)
+                .rounded(cx.theme().radius)
+                .children(plan.entries.iter().enumerate().map(|(ix, entry)| {
+                  h_flex()
+                    .px_3()
+                    .py_2()
+                    .gap_2()
+                    .items_center()
+                    .when(ix + 1 < entries, |row| {
+                      row.border_b_1().border_color(cx.theme().border)
+                    })
+                    .child(
+                      div()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(match entry.kind {
+                          EntryKind::Connection => SoquelIcon::Database,
+                          EntryKind::Tunnel => SoquelIcon::Cable,
+                        }),
+                    )
+                    .child(
+                      v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .child(div().text_sm().truncate().child(entry.entry.name.clone()))
+                        .child(
+                          div()
+                            .text_xs()
+                            .font_family("IBM Plex Mono")
+                            .text_color(cx.theme().muted_foreground)
+                            .truncate()
+                            .child(entry.entry.target.clone()),
+                        ),
+                    )
+                    .when_some(entry.entry.problem.clone(), |row, problem| {
+                      row.child(outline_badge(problem, cx.theme().danger, cx))
+                    })
+                    .when(
+                      entry.entry.problem.is_none() && entry.entry.has_command,
+                      |row| row.child(outline_badge("command".to_string(), cx.theme().yellow, cx)),
+                    )
+                    .when(
+                      entry.entry.problem.is_none()
+                        && !entry.entry.has_command
+                        && entry.entry.duplicate,
+                      |row| {
+                        row.child(outline_badge(
+                          "exists".to_string(),
+                          cx.theme().muted_foreground,
+                          cx,
+                        ))
+                      },
+                    )
+                })),
+            )
+            .when(plan.secrets > 0, |body| {
+              body.child(
+                v_flex()
+                  .gap_2()
+                  .p_3()
+                  .border_1()
+                  .border_color(cx.theme().border)
+                  .rounded(cx.theme().radius)
+                  .child(
+                    h_flex()
+                      .justify_between()
+                      .items_center()
+                      .child(div().text_sm().child("Bring the passwords"))
+                      .child(
+                        Switch::new("import-secrets")
+                          .checked(with_secrets)
+                          .on_click({
+                            let this = this_secrets.clone();
+                            move |checked, _, cx| {
+                              let checked = *checked;
+                              this.update(cx, |view, cx| {
+                                view.import_with_secrets = checked;
+                                cx.notify();
+                              });
+                            }
+                          }),
+                      ),
+                  )
+                  .child(
+                    div()
+                      .text_xs()
+                      .text_color(cx.theme().muted_foreground)
+                      .child(if with_secrets {
+                        format!("{} passwords land in the keychain.", plan.secrets)
+                      } else {
+                        "Off: the connections arrive without them, ready to re-enter.".to_string()
+                      }),
+                  ),
+              )
+            })
+            .when(plan.duplicates > 0 && !blocked, |body| {
+              body.child(
+                v_flex()
+                  .gap_2()
+                  .child(
+                    div()
+                      .text_sm()
+                      .child(format!("{} already here", plan.duplicates)),
+                  )
+                  .child(
+                    RadioGroup::vertical("import-strategy")
+                      .selected_index(Some(strategy_ix))
+                      .on_click({
+                        let this = this_strategy.clone();
+                        move |ix, _, cx| {
+                          let ix = *ix;
+                          this.update(cx, |view, cx| {
+                            view.import_strategy = ix;
+                            cx.notify();
+                          });
+                        }
+                      })
+                      .children(transfer::DUPLICATE_STRATEGIES.iter().enumerate().map(
+                        |(ix, strategy)| {
+                          Radio::new(("strategy", ix))
+                            .label(transfer::strategy_label(*strategy))
+                            .child(
+                              div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(transfer::strategy_hint(*strategy)),
+                            )
+                        },
+                      )),
+                  ),
+              )
+            })
+            .child(if blocked {
+              div().text_xs().text_color(cx.theme().danger).child(
+                "Nothing is imported while an entry is invalid: fix the file, or remove \
+                 those entries.",
+              )
+            } else {
+              div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(format!(
+                  "Imported connections stay hidden from agents whatever the file says.{}",
+                  if plan.commands > 0 {
+                    " A credential command runs nothing until you read it and approve it."
+                  } else {
+                    ""
+                  }
+                ))
+            })
+        })
+        .when_some(error, |body, error| {
+          body.child(
+            div()
+              .text_xs()
+              .font_family("IBM Plex Mono")
+              .text_color(cx.theme().danger)
+              .child(error),
+          )
+        }),
+    )
+    .footer(
+      h_flex()
+        .gap_2()
+        .justify_end()
+        .child(
+          Button::new("import-cancel")
+            .label("Cancel")
+            .on_click(|_, window, cx| window.close_dialog(cx)),
+        )
+        .child(
+          Button::new("run-import")
+            .primary()
+            .label(if busy { "Working…" } else { "Import" })
+            .disabled(busy || blocked || !has_plan || locked)
+            .debug_selector(|| "run-import".into())
+            .on_click(move |_, _, cx| {
+              this_run.update(cx, |this, cx| this.run_import(cx));
+            }),
+        ),
+    )
+}
+
 impl Render for ConnectionsView {
   fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
     let mut sorted = self.profiles.clone();
@@ -888,6 +1587,24 @@ impl Render for ConnectionsView {
     v_flex()
       .size_full()
       .bg(cx.theme().background)
+      // A .soquel handed to the app from outside lands here: no file
+      // association or single instance yet, the drop is the outside door.
+      .drag_over::<ExternalPaths>(|style, _, _, cx| style.bg(cx.theme().accent))
+      .on_drop::<ExternalPaths>(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+        let Some(path) = paths.paths().first().cloned() else {
+          return;
+        };
+        let known = path
+          .extension()
+          .and_then(|e| e.to_str())
+          .is_some_and(|e| e == "soquel" || e == "json");
+        if known {
+          this.open_import_dialog(path, cx);
+        } else {
+          this.status = "error: drop a .soquel export".into();
+          cx.notify();
+        }
+      }))
       .child(
         h_flex()
           .px_4()
@@ -898,11 +1615,32 @@ impl Render for ConnectionsView {
           .border_color(cx.theme().border)
           .child(div().font_semibold().child("Connections"))
           .child(
-            Button::new("new-connection")
-              .primary()
-              .small()
-              .label("New connection")
-              .on_click(cx.listener(|this, _, _, cx| this.open_form(None, cx))),
+            h_flex()
+              .gap_2()
+              .child(
+                Button::new("open-import")
+                  .ghost()
+                  .small()
+                  .label("Import…")
+                  .debug_selector(|| "open-import".into())
+                  .on_click(cx.listener(|this, _, _, cx| this.import_via_picker(cx))),
+              )
+              .child(
+                Button::new("open-export")
+                  .ghost()
+                  .small()
+                  .label("Export…")
+                  .disabled(self.profiles.is_empty())
+                  .debug_selector(|| "open-export".into())
+                  .on_click(cx.listener(|this, _, _, cx| this.open_export_dialog(cx))),
+              )
+              .child(
+                Button::new("new-connection")
+                  .primary()
+                  .small()
+                  .label("New connection")
+                  .on_click(cx.listener(|this, _, _, cx| this.open_form(None, cx))),
+              ),
           ),
       )
       .when(!self.status.is_empty(), |this| {
@@ -928,9 +1666,17 @@ impl Render for ConnectionsView {
               v_flex()
                 .items_center()
                 .py_12()
+                .gap_2()
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
-                .child("No connections yet. Add your first database."),
+                .child("No connections yet. Add your first database.")
+                .child(
+                  Button::new("empty-import")
+                    .ghost()
+                    .small()
+                    .label("Import a file")
+                    .on_click(cx.listener(|this, _, _, cx| this.import_via_picker(cx))),
+                ),
             )
           })
           .children(groups.into_iter().flat_map(|(group, profiles)| {
@@ -950,6 +1696,7 @@ impl Render for ConnectionsView {
             for profile in profiles {
               let id = profile.id.clone();
               let edit_profile = profile.clone();
+              let edit_selector_id = profile.id.clone();
               let delete_id = profile.id.clone();
               let revoke_id = profile.id.clone();
               let selector_id = profile.id.clone();
@@ -1000,6 +1747,7 @@ impl Render for ConnectionsView {
                       .ghost()
                       .xsmall()
                       .label("Edit")
+                      .debug_selector(move || format!("edit-{edit_selector_id}"))
                       .on_click(cx.listener(move |this, _, _, cx| {
                         // The row's own click connects: this click is ours.
                         cx.stop_propagation();
@@ -1498,6 +2246,618 @@ mod tests {
         };
         assert_eq!(params.tunnel_id, None);
       });
+    });
+  }
+
+  fn plain_input(name: &str, host: &str) -> ConnectionInput {
+    ConnectionInput {
+      name: name.to_string(),
+      env: Env::Dev,
+      group: None,
+      agent_access: AgentAccess::None,
+      credential: CredentialSource::Keychain,
+      params: ConnectorParams::Postgres(SqlServerParams {
+        host: host.to_string(),
+        port: 5432,
+        database: "app".to_string(),
+        user: "u".to_string(),
+        ssl_mode: SslMode::Prefer,
+        ssl_root_cert: None,
+        tunnel_id: None,
+      }),
+      password: None,
+    }
+  }
+
+  /// A second machine's stores, exported to a file the tests import.
+  fn export_fixture(
+    build: impl FnOnce(&soquel_core::AppState),
+    include_secrets: bool,
+    passphrase: Option<&str>,
+  ) -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let source = soquel_core::AppState::for_tests(
+      dir.path().join("source").as_path(),
+      Box::new(soquel_core::secrets::InMemoryStore::default()),
+    );
+    build(&source);
+    let path = dir.path().join("fixture.soquel");
+    soquel_core::transfer::export(&source, &path, include_secrets, passphrase).unwrap();
+    (dir, path)
+  }
+
+  #[gpui::test]
+  fn export_picks_a_file_and_writes_it(cx: &mut TestAppContext) {
+    use gpui_component::WindowExt;
+
+    let (dir, state) = test_state();
+    soquel_core::ops::create_connection(&state, &plain_input("pg", "db.internal")).unwrap();
+    let (view, cx) = crate::test_support::shell_window(cx, {
+      let state = state.clone();
+      move |window, cx| ConnectionsView::new(state, window, cx)
+    });
+    cx.run_until_parked();
+
+    let bounds = cx.debug_bounds("open-export").expect("export button");
+    cx.simulate_click(bounds.center(), Modifiers::none());
+    crate::test_support::wait_until(cx, "the export dialog", |cx| {
+      cx.update(|window, cx| window.has_active_dialog(cx))
+    });
+    let bounds = cx.debug_bounds("run-export").expect("run button");
+    cx.simulate_click(bounds.center(), Modifiers::none());
+
+    // A bare name typed into the picker still lands as .soquel.
+    let out = dir.path().join("out");
+    cx.simulate_new_path_selection(|_| Some(out.clone()));
+    let written = dir.path().join("out.soquel");
+    crate::test_support::wait_until(cx, "the export to land", |cx| {
+      written.exists() && !cx.update(|window, cx| window.has_active_dialog(cx))
+    });
+
+    let (fresh_dir, fresh) = test_state();
+    let preview = soquel_core::transfer::preview_file(&fresh, &written, None).unwrap();
+    assert!(!preview.encrypted);
+    assert_eq!(preview.connections.len(), 1);
+    assert_eq!(preview.connections[0].name, "pg");
+    drop(fresh_dir);
+    drop(view);
+  }
+
+  #[gpui::test]
+  fn export_validates_the_passphrase_before_the_picker(cx: &mut TestAppContext) {
+    use gpui_component::WindowExt;
+
+    let (_dir, state) = test_state();
+    soquel_core::ops::create_connection(&state, &plain_input("pg", "db.internal")).unwrap();
+    let (view, cx) = crate::test_support::shell_window(cx, {
+      let state = state.clone();
+      move |window, cx| ConnectionsView::new(state, window, cx)
+    });
+    cx.update(|_, cx| view.update(cx, |view, cx| view.open_export_dialog(cx)));
+    crate::test_support::wait_until(cx, "the export dialog", |cx| {
+      cx.update(|window, cx| window.has_active_dialog(cx))
+    });
+
+    cx.update(|window, cx| {
+      view.update(cx, |view, cx| {
+        view.export_include_secrets = true;
+        view
+          .export_passphrase
+          .update(cx, |i, cx| i.set_value("short", window, cx));
+        view
+          .export_confirm
+          .update(cx, |i, cx| i.set_value("short", window, cx));
+        cx.notify();
+      });
+    });
+    // Re-fetch bounds each time: the error line shifts the button down.
+    let click_run = |cx: &mut gpui::VisualTestContext| {
+      let bounds = cx.debug_bounds("run-export").expect("run button");
+      cx.simulate_click(bounds.center(), Modifiers::none());
+      cx.run_until_parked();
+    };
+    click_run(cx);
+    cx.update(|_, cx| {
+      assert_eq!(
+        view.read(cx).export_error.as_deref(),
+        Some("Use at least 8 characters.")
+      );
+    });
+    assert!(!cx.did_prompt_for_new_path(), "no picker before validation");
+
+    cx.update(|window, cx| {
+      view.update(cx, |view, cx| {
+        view
+          .export_passphrase
+          .update(cx, |i, cx| i.set_value("long enough", window, cx));
+        view
+          .export_confirm
+          .update(cx, |i, cx| i.set_value("long enuff", window, cx));
+      });
+    });
+    click_run(cx);
+    cx.update(|_, cx| {
+      assert_eq!(
+        view.read(cx).export_error.as_deref(),
+        Some("The two passphrases do not match.")
+      );
+    });
+    assert!(!cx.did_prompt_for_new_path());
+
+    cx.update(|window, cx| {
+      view.update(cx, |view, cx| {
+        view
+          .export_confirm
+          .update(cx, |i, cx| i.set_value("long enough", window, cx));
+      });
+    });
+    click_run(cx);
+    assert!(cx.did_prompt_for_new_path(), "a sound passphrase opens it");
+    // Cancelling the picker leaves the dialog up.
+    cx.simulate_new_path_selection(|_| None);
+    cx.run_until_parked();
+    assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+  }
+
+  #[gpui::test]
+  fn export_with_secrets_writes_an_encrypted_file(cx: &mut TestAppContext) {
+    let (dir, state) = test_state();
+    soquel_core::ops::create_connection(
+      &state,
+      &ConnectionInput {
+        password: Some("s3cret".to_string()),
+        ..plain_input("pg", "db.internal")
+      },
+    )
+    .unwrap();
+    let (view, cx) = crate::test_support::shell_window(cx, {
+      let state = state.clone();
+      move |window, cx| ConnectionsView::new(state, window, cx)
+    });
+    cx.update(|_, cx| view.update(cx, |view, cx| view.open_export_dialog(cx)));
+    // Let the deferred reset run before setting the fields it clears.
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+      view.update(cx, |view, cx| {
+        view.export_include_secrets = true;
+        view
+          .export_passphrase
+          .update(cx, |i, cx| i.set_value("correct horse", window, cx));
+        view
+          .export_confirm
+          .update(cx, |i, cx| i.set_value("correct horse", window, cx));
+      });
+    });
+    cx.update(|_, cx| view.update(cx, |view, cx| view.run_export(cx)));
+    cx.run_until_parked();
+    let out = dir.path().join("sealed.soquel");
+    cx.simulate_new_path_selection(|_| Some(out.clone()));
+    crate::test_support::wait_until(cx, "the sealed export", |_| out.exists());
+
+    let (fresh_dir, fresh) = test_state();
+    let announced = soquel_core::transfer::preview_file(&fresh, &out, None).unwrap();
+    assert!(announced.needs_passphrase);
+    let opened = soquel_core::transfer::preview_file(&fresh, &out, Some("correct horse")).unwrap();
+    assert!(opened.connections[0].has_secret);
+    drop(fresh_dir);
+  }
+
+  #[gpui::test]
+  fn export_is_dead_with_no_connections(cx: &mut TestAppContext) {
+    use gpui_component::WindowExt;
+
+    let (_dir, state) = test_state();
+    let (_view, cx) = crate::test_support::shell_window(cx, {
+      let state = state.clone();
+      move |window, cx| ConnectionsView::new(state, window, cx)
+    });
+    cx.run_until_parked();
+    let bounds = cx.debug_bounds("open-export").expect("export button");
+    cx.simulate_click(bounds.center(), Modifiers::none());
+    cx.run_until_parked();
+    assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+  }
+
+  #[gpui::test]
+  fn import_previews_then_imports_via_the_picker(cx: &mut TestAppContext) {
+    use gpui_component::WindowExt;
+
+    let (_fixture_dir, file) = export_fixture(
+      |source| {
+        let tunnel = soquel_core::ops::create_tunnel(
+          source,
+          &soquel_core::tunnels::TunnelInput {
+            name: "bastion".to_string(),
+            host: "bastion.internal".to_string(),
+            port: 22,
+            user: "deploy".to_string(),
+            auth: soquel_core::tunnels::SshAuth::Agent,
+            credential: CredentialSource::Keychain,
+            secret: None,
+          },
+        )
+        .unwrap();
+        soquel_core::ops::create_connection(source, &plain_input("already here", "db.internal"))
+          .unwrap();
+        let mut riding = plain_input("new one", "10.0.0.2");
+        riding.params.set_tunnel_id(Some(tunnel.id));
+        soquel_core::ops::create_connection(source, &riding).unwrap();
+      },
+      false,
+      None,
+    );
+
+    let (_dir, state) = test_state();
+    soquel_core::ops::create_connection(&state, &plain_input("already here", "db.internal"))
+      .unwrap();
+    let (view, cx) = crate::test_support::shell_window(cx, {
+      let state = state.clone();
+      move |window, cx| ConnectionsView::new(state, window, cx)
+    });
+    cx.run_until_parked();
+
+    let bounds = cx.debug_bounds("open-import").expect("import button");
+    cx.simulate_click(bounds.center(), Modifiers::none());
+    cx.run_until_parked();
+    assert!(cx.did_prompt_for_paths());
+    cx.simulate_path_prompt_response(|options| {
+      assert!(options.files && !options.directories && !options.multiple);
+      Some(vec![file.clone()])
+    });
+    crate::test_support::wait_until(cx, "the import preview", |cx| {
+      cx.update(|window, cx| window.has_active_dialog(cx))
+        && cx.update(|_, cx| view.read(cx).import_preview.is_some())
+    });
+    cx.update(|_, cx| {
+      let plan = transfer::import_plan(view.read(cx).import_preview.as_ref().unwrap());
+      assert_eq!(plan.duplicates, 1);
+      assert_eq!(plan.problems, 0);
+    });
+
+    let bounds = cx.debug_bounds("run-import").expect("run button");
+    cx.simulate_click(bounds.center(), Modifiers::none());
+    crate::test_support::wait_until(cx, "the import to land", |cx| {
+      !cx.update(|window, cx| window.has_active_dialog(cx))
+    });
+    // Skip left the duplicate alone; the new connection and its tunnel landed.
+    cx.update(|_, cx| assert_eq!(view.read(cx).profiles.len(), 2));
+    assert_eq!(state.tunnels.lock().unwrap().list().len(), 1);
+  }
+
+  #[gpui::test]
+  fn a_wrong_passphrase_stays_sticky(cx: &mut TestAppContext) {
+    use gpui_component::WindowExt;
+
+    let (_fixture_dir, file) = export_fixture(
+      |source| {
+        soquel_core::ops::create_connection(
+          source,
+          &ConnectionInput {
+            password: Some("s3cret".to_string()),
+            ..plain_input("sealed pg", "db.internal")
+          },
+        )
+        .unwrap();
+      },
+      true,
+      Some("correct horse"),
+    );
+
+    let (_dir, state) = test_state();
+    let (view, cx) = crate::test_support::shell_window(cx, {
+      let state = state.clone();
+      move |window, cx| ConnectionsView::new(state, window, cx)
+    });
+    cx.update(|_, cx| {
+      view.update(cx, |view, cx| view.open_import_dialog(file.clone(), cx));
+    });
+    crate::test_support::wait_until(cx, "the locked preview", |cx| {
+      cx.update(|_, cx| view.read(cx).import_locked)
+    });
+
+    cx.update(|window, cx| {
+      view.update(cx, |view, cx| {
+        view
+          .import_passphrase
+          .update(cx, |i, cx| i.set_value("wrong horse", window, cx));
+        cx.notify();
+      });
+    });
+    let unlock = cx.debug_bounds("import-unlock").expect("unlock button");
+    cx.simulate_click(unlock.center(), Modifiers::none());
+    crate::test_support::wait_until(cx, "the refusal", |cx| {
+      cx.update(|_, cx| view.read(cx).import_error.is_some())
+    });
+    cx.update(|_, cx| {
+      let view = view.read(cx);
+      assert!(view.import_locked, "the field stays for the retry");
+      assert!(view.import_preview.is_none());
+      assert!(
+        view
+          .import_error
+          .as_ref()
+          .unwrap()
+          .contains("wrong passphrase")
+      );
+    });
+    assert!(
+      cx.debug_bounds("import-unlock").is_some(),
+      "the passphrase step is still painted"
+    );
+
+    cx.update(|window, cx| {
+      view.update(cx, |view, cx| {
+        view
+          .import_passphrase
+          .update(cx, |i, cx| i.set_value("correct horse", window, cx));
+      });
+    });
+    let unlock = cx.debug_bounds("import-unlock").expect("unlock button");
+    cx.simulate_click(unlock.center(), Modifiers::none());
+    crate::test_support::wait_until(cx, "the unlocked preview", |cx| {
+      cx.update(|_, cx| {
+        let view = view.read(cx);
+        !view.import_locked && view.import_preview.is_some()
+      })
+    });
+
+    cx.update(|_, cx| {
+      view.update(cx, |view, cx| {
+        view.import_with_secrets = true;
+        view.run_import(cx);
+      });
+    });
+    crate::test_support::wait_until(cx, "the sealed import", |cx| {
+      !cx.update(|window, cx| window.has_active_dialog(cx))
+    });
+    let landed = state
+      .profiles
+      .lock()
+      .unwrap()
+      .list()
+      .into_iter()
+      .find(|p| p.name == "sealed pg")
+      .expect("the sealed connection landed");
+    assert_eq!(
+      state
+        .secrets
+        .get(&soquel_core::secrets::SecretKey::Connection(landed.id))
+        .unwrap()
+        .as_deref(),
+      Some("s3cret")
+    );
+  }
+
+  #[gpui::test]
+  fn a_problem_entry_blocks_the_import(cx: &mut TestAppContext) {
+    use gpui_component::WindowExt;
+
+    let (_fixture_dir, file) = export_fixture(
+      |source| {
+        soquel_core::ops::create_connection(source, &plain_input("fine", "db.internal")).unwrap();
+        soquel_core::ops::create_connection(source, &plain_input("no host", "SENTINEL")).unwrap();
+      },
+      false,
+      None,
+    );
+    let text = std::fs::read_to_string(&file).unwrap();
+    std::fs::write(&file, text.replace("SENTINEL", "")).unwrap();
+
+    let (_dir, state) = test_state();
+    let (view, cx) = crate::test_support::shell_window(cx, {
+      let state = state.clone();
+      move |window, cx| ConnectionsView::new(state, window, cx)
+    });
+    cx.update(|_, cx| {
+      view.update(cx, |view, cx| view.open_import_dialog(file.clone(), cx));
+    });
+    crate::test_support::wait_until(cx, "the blocked preview", |cx| {
+      cx.update(|_, cx| view.read(cx).import_preview.is_some())
+    });
+    cx.update(|_, cx| {
+      let plan = transfer::import_plan(view.read(cx).import_preview.as_ref().unwrap());
+      assert_eq!(plan.problems, 1);
+    });
+
+    let bounds = cx.debug_bounds("run-import").expect("run button");
+    cx.simulate_click(bounds.center(), Modifiers::none());
+    cx.run_until_parked();
+    assert!(
+      cx.update(|window, cx| window.has_active_dialog(cx)),
+      "a blocked import goes nowhere"
+    );
+    assert!(state.profiles.lock().unwrap().list().is_empty());
+  }
+
+  #[gpui::test]
+  fn dropping_a_file_opens_the_import_dialog(cx: &mut TestAppContext) {
+    use gpui_component::WindowExt;
+
+    let (fixture_dir, file) = export_fixture(
+      |source| {
+        soquel_core::ops::create_connection(source, &plain_input("dropped", "db.internal"))
+          .unwrap();
+      },
+      false,
+      None,
+    );
+
+    let (_dir, state) = test_state();
+    let (view, cx) = crate::test_support::shell_window(cx, {
+      let state = state.clone();
+      move |window, cx| ConnectionsView::new(state, window, cx)
+    });
+    cx.run_until_parked();
+    let position = cx.update(|window, _| {
+      let size = window.viewport_size();
+      gpui::point(size.width / 2., size.height / 2.)
+    });
+
+    // The wrong kind of file only reaches the status line.
+    let stray = fixture_dir.path().join("notes.txt");
+    std::fs::write(&stray, "not an export").unwrap();
+    cx.simulate_event(FileDropEvent::Entered {
+      position,
+      paths: ExternalPaths(vec![stray].into()),
+    });
+    cx.simulate_event(FileDropEvent::Submit { position });
+    cx.simulate_event(FileDropEvent::Exited);
+    cx.run_until_parked();
+    assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+    cx.update(|_, cx| {
+      assert!(view.read(cx).status.contains(".soquel"));
+    });
+
+    cx.simulate_event(FileDropEvent::Entered {
+      position,
+      paths: ExternalPaths(vec![file.clone()].into()),
+    });
+    cx.simulate_event(FileDropEvent::Submit { position });
+    cx.simulate_event(FileDropEvent::Exited);
+    crate::test_support::wait_until(cx, "the dropped preview", |cx| {
+      cx.update(|window, cx| window.has_active_dialog(cx))
+    });
+    cx.update(|_, cx| {
+      assert_eq!(view.read(cx).import_path.as_ref(), Some(&file));
+    });
+  }
+
+  #[gpui::test]
+  fn replace_overwrites_the_duplicate(cx: &mut TestAppContext) {
+    use gpui_component::WindowExt;
+
+    // Same name + target (host:port/database) so it dedupes; the user field
+    // is the visible difference Replace should carry over.
+    let (_fixture_dir, file) = export_fixture(
+      |source| {
+        let mut input = plain_input("pg", "db.internal");
+        let ConnectorParams::Postgres(params) = &mut input.params else {
+          unreachable!()
+        };
+        params.user = "from_file".to_string();
+        soquel_core::ops::create_connection(source, &input).unwrap();
+      },
+      false,
+      None,
+    );
+
+    let (_dir, state) = test_state();
+    soquel_core::ops::create_connection(&state, &plain_input("pg", "db.internal")).unwrap();
+    let (view, cx) = crate::test_support::shell_window(cx, {
+      let state = state.clone();
+      move |window, cx| ConnectionsView::new(state, window, cx)
+    });
+    cx.update(|_, cx| {
+      view.update(cx, |view, cx| view.open_import_dialog(file.clone(), cx));
+    });
+    crate::test_support::wait_until(cx, "the preview", |cx| {
+      cx.update(|_, cx| view.read(cx).import_preview.is_some())
+    });
+
+    // Radio has no debug_selector: the index is pinned by the transfer units.
+    cx.update(|_, cx| {
+      view.update(cx, |view, cx| {
+        view.import_strategy = 1;
+        view.run_import(cx);
+      });
+    });
+    crate::test_support::wait_until(cx, "the replace to land", |cx| {
+      !cx.update(|window, cx| window.has_active_dialog(cx))
+    });
+    let profiles = state.profiles.lock().unwrap().list();
+    assert_eq!(profiles.len(), 1);
+    let ConnectorParams::Postgres(params) = &profiles[0].params else {
+      panic!("postgres profile");
+    };
+    assert_eq!(params.user, "from_file", "the file version won");
+  }
+
+  #[gpui::test]
+  fn a_command_tunnel_asks_for_approval_before_the_dial(cx: &mut TestAppContext) {
+    use gpui_component::WindowExt;
+
+    let (_dir, state) = test_state();
+    let line = "echo swordfish";
+    let tunnel = soquel_core::ops::create_tunnel(
+      &state,
+      &soquel_core::tunnels::TunnelInput {
+        name: "vault bastion".to_string(),
+        host: "127.0.0.1".to_string(),
+        port: 1,
+        user: "deploy".to_string(),
+        auth: soquel_core::tunnels::SshAuth::Password,
+        credential: CredentialSource::Command {
+          command: line.to_string(),
+          refresh_after_secs: None,
+        },
+        secret: None,
+      },
+    )
+    .unwrap();
+    core::revoke_credential_command(&state, SecretSubject::Tunnel, tunnel.id.clone()).unwrap();
+    let mut riding = plain_input("through it", "127.0.0.1");
+    riding.params.set_tunnel_id(Some(tunnel.id.clone()));
+    riding.password = Some("pw".to_string());
+    let profile = soquel_core::ops::create_connection(&state, &riding).unwrap();
+
+    let (view, cx) = crate::test_support::shell_window(cx, {
+      let state = state.clone();
+      move |window, cx| ConnectionsView::new(state, window, cx)
+    });
+    let id = profile.id.clone();
+    cx.update(|_, cx| view.update(cx, |view, cx| view.connect(id, cx)));
+    crate::test_support::wait_until(cx, "the tunnel approval dialog", |cx| {
+      cx.update(|window, cx| window.has_active_dialog(cx))
+    });
+
+    let bounds = cx.debug_bounds("approve-command").expect("approve button");
+    cx.simulate_click(bounds.center(), Modifiers::none());
+    let key = soquel_core::secrets::SecretKey::Tunnel(tunnel.id.clone());
+    crate::test_support::wait_until(cx, "the tunnel approval to land", |_| {
+      state
+        .command_approvals
+        .lock()
+        .unwrap()
+        .is_approved(&key, line)
+    });
+    // The retry got past the approval and died on the closed ssh port.
+    crate::test_support::wait_until(cx, "the retried connect to fail", |cx| {
+      cx.update(|_, cx| {
+        let status = view.read(cx).status.clone();
+        status.starts_with("error") && !status.contains("approved")
+      })
+    });
+  }
+
+  #[gpui::test]
+  fn edit_does_not_connect(cx: &mut TestAppContext) {
+    use gpui_component::WindowExt;
+
+    let (_dir, state) = test_state();
+    let profile =
+      soquel_core::ops::create_connection(&state, &plain_input("pg", "127.0.0.1")).unwrap();
+    let (view, cx) = crate::test_support::shell_window(cx, {
+      let state = state.clone();
+      move |window, cx| ConnectionsView::new(state, window, cx)
+    });
+    cx.run_until_parked();
+
+    let bounds = cx
+      .debug_bounds(crate::test_support::selector(format!(
+        "edit-{}",
+        profile.id
+      )))
+      .expect("edit button");
+    cx.simulate_click(bounds.center(), Modifiers::none());
+    crate::test_support::wait_until(cx, "the edit form", |cx| {
+      cx.update(|window, cx| window.has_active_dialog(cx))
+    });
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+      let view = view.read(cx);
+      assert!(view.connecting.is_none(), "edit must not connect");
+      assert!(view.status.is_empty());
     });
   }
 }
