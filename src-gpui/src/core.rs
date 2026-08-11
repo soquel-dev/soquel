@@ -3,7 +3,9 @@ use std::sync::{Arc, OnceLock};
 use futures::channel::oneshot;
 use soquel_core::AppState;
 use soquel_core::connectors::{
-  Connection, KeyDetail, KeyScanPage, KvDatabases, QueryResult, SchemaSnapshot, TableRowsRequest,
+  Connection, DocCollection, DocCount, DocDatabase, DocDetail, DocFindRequest, DocPage,
+  DocQueryResult, IndexInfo, KeyDetail, KeyScanPage, KvDatabases, QueryResult, SchemaSnapshot,
+  TableRowsRequest,
 };
 use soquel_core::error::{Error, SecretSubject};
 use soquel_core::profiles::{ConnectionInput, ConnectionProfile, ConnectorKind};
@@ -553,6 +555,170 @@ pub fn kv_select_db(
   rx
 }
 
+fn no_doc() -> Error {
+  Error::Unsupported {
+    message: "connection does not browse documents".to_string(),
+  }
+}
+
+pub fn doc_databases(db: &Db) -> oneshot::Receiver<Result<Vec<DocDatabase>, Error>> {
+  let (tx, rx) = oneshot::channel();
+  let conn = db.0.clone();
+  runtime().spawn(async move {
+    let result = match conn.doc() {
+      Some(doc) => doc.databases().await,
+      None => Err(no_doc()),
+    };
+    let _ = tx.send(result);
+  });
+  rx
+}
+
+pub fn doc_collections(
+  db: &Db,
+  database: String,
+) -> oneshot::Receiver<Result<Vec<DocCollection>, Error>> {
+  let (tx, rx) = oneshot::channel();
+  let conn = db.0.clone();
+  runtime().spawn(async move {
+    let result = match conn.doc() {
+      Some(doc) => doc.collections(&database).await,
+      None => Err(no_doc()),
+    };
+    let _ = tx.send(result);
+  });
+  rx
+}
+
+pub fn doc_find(db: &Db, request: DocFindRequest) -> oneshot::Receiver<Result<DocPage, Error>> {
+  let (tx, rx) = oneshot::channel();
+  let conn = db.0.clone();
+  runtime().spawn(async move {
+    let result = match conn.doc() {
+      Some(doc) => doc.find_docs(&request).await,
+      None => Err(no_doc()),
+    };
+    let _ = tx.send(result);
+  });
+  rx
+}
+
+pub fn doc_detail(
+  db: &Db,
+  database: String,
+  collection: String,
+  id: String,
+) -> oneshot::Receiver<Result<DocDetail, Error>> {
+  let (tx, rx) = oneshot::channel();
+  let conn = db.0.clone();
+  runtime().spawn(async move {
+    let result = match conn.doc() {
+      Some(doc) => doc.doc_detail(&database, &collection, &id).await,
+      None => Err(no_doc()),
+    };
+    let _ = tx.send(result);
+  });
+  rx
+}
+
+pub fn doc_indexes(
+  db: &Db,
+  database: String,
+  collection: String,
+) -> oneshot::Receiver<Result<Vec<IndexInfo>, Error>> {
+  let (tx, rx) = oneshot::channel();
+  let conn = db.0.clone();
+  runtime().spawn(async move {
+    let result = match conn.doc() {
+      Some(doc) => doc.indexes(&database, &collection).await,
+      None => Err(no_doc()),
+    };
+    let _ = tx.send(result);
+  });
+  rx
+}
+
+pub fn doc_count(
+  db: &Db,
+  database: String,
+  collection: String,
+  filter: Option<String>,
+) -> oneshot::Receiver<Result<DocCount, Error>> {
+  let (tx, rx) = oneshot::channel();
+  let conn = db.0.clone();
+  runtime().spawn(async move {
+    let result = match conn.doc() {
+      Some(doc) => {
+        doc
+          .count_docs(&database, &collection, filter.as_deref())
+          .await
+      }
+      None => Err(no_doc()),
+    };
+    let _ = tx.send(result);
+  });
+  rx
+}
+
+pub fn doc_run_query(
+  db: &Db,
+  database: String,
+  collection: String,
+  source: String,
+) -> oneshot::Receiver<Result<DocQueryResult, Error>> {
+  let (tx, rx) = oneshot::channel();
+  let conn = db.0.clone();
+  runtime().spawn(async move {
+    let result = match conn.doc() {
+      Some(doc) => doc.run_query(&database, &collection, &source).await,
+      None => Err(no_doc()),
+    };
+    let _ = tx.send(result);
+  });
+  rx
+}
+
+pub fn doc_replace(
+  db: &Db,
+  database: String,
+  collection: String,
+  id: String,
+  doc_json: String,
+) -> oneshot::Receiver<Result<(), Error>> {
+  let (tx, rx) = oneshot::channel();
+  let conn = db.0.clone();
+  runtime().spawn(async move {
+    let result = match conn.doc() {
+      Some(doc) => {
+        doc
+          .replace_doc(&database, &collection, &id, &doc_json)
+          .await
+      }
+      None => Err(no_doc()),
+    };
+    let _ = tx.send(result);
+  });
+  rx
+}
+
+pub fn doc_delete(
+  db: &Db,
+  database: String,
+  collection: String,
+  id: String,
+) -> oneshot::Receiver<Result<(), Error>> {
+  let (tx, rx) = oneshot::channel();
+  let conn = db.0.clone();
+  runtime().spawn(async move {
+    let result = match conn.doc() {
+      Some(doc) => doc.delete_doc(&database, &collection, &id).await,
+      None => Err(no_doc()),
+    };
+    let _ = tx.send(result);
+  });
+  rx
+}
+
 pub fn page_request(schema: &str, table: &str, offset: u32, limit: u32) -> TableRowsRequest {
   TableRowsRequest {
     schema: schema.to_string(),
@@ -916,5 +1082,146 @@ mod tests {
     for suffix in ["list", "hash"] {
       let _ = cmd(&db0, format!("DEL {prefix}:{suffix}")).await;
     }
+  }
+
+  /// The document browser end to end against a live mongo, reading the
+  /// compose-seeded `soquel_e2e`. Skipped without SOQUEL_TEST_MONGO.
+  #[tokio::test]
+  async fn integration_flow_mongo_browse() {
+    use soquel_core::connectors::DocFindRequest;
+    use soquel_core::credentials::Credentials;
+    use soquel_core::profiles::MongoParams;
+
+    let Ok(coord) = std::env::var("SOQUEL_TEST_MONGO") else {
+      return;
+    };
+    let (host, port) = coord.split_once(':').expect("host:port");
+    let profile = ConnectionProfile {
+      id: "mongo-flow".to_string(),
+      name: "mongo flow".to_string(),
+      env: Env::Dev,
+      group: None,
+      agent_access: AgentAccess::None,
+      credential: CredentialSource::Prompt,
+      params: ConnectorParams::Mongo(MongoParams {
+        host: host.to_string(),
+        port: port.parse().expect("port"),
+        database: Some("soquel_e2e".to_string()),
+        username: Some("soquel".to_string()),
+        auth_source: Some("admin".to_string()),
+        tls: false,
+        tunnel_id: None,
+      }),
+    };
+    let db = connect_with(profile, Credentials::fixed(Some("soquel".to_string())))
+      .await
+      .expect("channel")
+      .expect("connects to the compose mongo");
+
+    let e2e = "soquel_e2e".to_string();
+    let databases = doc_databases(&db)
+      .await
+      .expect("channel")
+      .expect("databases");
+    assert!(databases.iter().any(|d| d.name == e2e));
+
+    let collections = doc_collections(&db, e2e.clone())
+      .await
+      .expect("channel")
+      .expect("collections");
+    assert!(collections.iter().any(|c| c.name == "users"));
+
+    // The seed puts 100 of 200 users on the "pro" plan.
+    let filter = Some("{\"plan\":\"pro\"}".to_string());
+    let count = doc_count(&db, e2e.clone(), "users".to_string(), filter.clone())
+      .await
+      .expect("channel")
+      .expect("count");
+    assert!(count.exact && count.count == 100.0);
+
+    let page = doc_find(
+      &db,
+      DocFindRequest {
+        db: e2e.clone(),
+        collection: "users".to_string(),
+        filter: filter.clone(),
+        sort: None,
+        limit: 100,
+        cursor: None,
+      },
+    )
+    .await
+    .expect("channel")
+    .expect("find");
+    assert_eq!(page.docs.len(), 100);
+    let id = page.docs[0].id.clone().expect("a user has an _id");
+    let detail = doc_detail(&db, e2e.clone(), "users".to_string(), id)
+      .await
+      .expect("channel")
+      .expect("detail");
+    assert!(detail.relaxed.contains("email"));
+
+    let indexes = doc_indexes(&db, e2e.clone(), "users".to_string())
+      .await
+      .expect("channel")
+      .expect("indexes");
+    assert!(indexes.iter().any(|i| i.name == "email_1" && i.unique));
+
+    // Aggregate groups the two plans; $out is refused (a write stage).
+    let grouped = doc_run_query(
+      &db,
+      e2e.clone(),
+      "users".to_string(),
+      "[{\"$group\":{\"_id\":\"$plan\",\"n\":{\"$sum\":1}}}]".to_string(),
+    )
+    .await
+    .expect("channel")
+    .expect("aggregate");
+    assert_eq!(grouped.docs.len(), 2);
+    let blocked = doc_run_query(
+      &db,
+      e2e.clone(),
+      "users".to_string(),
+      "[{\"$out\":\"evil\"}]".to_string(),
+    )
+    .await
+    .expect("channel");
+    assert!(blocked.is_err(), "$out is a write stage");
+
+    // Replace + delete a disposable doc (the seed keeps 50, reseeds on restart).
+    let disposable = doc_find(
+      &db,
+      DocFindRequest {
+        db: e2e.clone(),
+        collection: "disposable".to_string(),
+        filter: None,
+        sort: None,
+        limit: 1,
+        cursor: None,
+      },
+    )
+    .await
+    .expect("channel")
+    .expect("disposable");
+    let entry = &disposable.docs[0];
+    let doc_id = entry.id.clone().expect("string _id");
+    doc_replace(
+      &db,
+      e2e.clone(),
+      "disposable".to_string(),
+      doc_id.clone(),
+      format!("{{\"_id\": {doc_id}, \"note\": \"replaced by gpui\"}}"),
+    )
+    .await
+    .expect("channel")
+    .expect("replace");
+    doc_delete(&db, e2e.clone(), "disposable".to_string(), doc_id.clone())
+      .await
+      .expect("channel")
+      .expect("delete");
+    let gone = doc_detail(&db, e2e, "disposable".to_string(), doc_id)
+      .await
+      .expect("channel");
+    assert!(gone.is_err(), "the deleted doc is gone");
   }
 }

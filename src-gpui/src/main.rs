@@ -7,6 +7,7 @@ mod command_palette;
 mod completion;
 mod connections;
 mod core;
+mod doc;
 mod explain;
 mod export;
 mod filters;
