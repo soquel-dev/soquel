@@ -1,6 +1,5 @@
 # soquel
 
-Guidance for agents in this repo. The shared stack profile is imported above, but soquel is a **Rust desktop app, not a web SaaS**: only its pnpm/eslint conventions and the `landing/` site follow the profile. Everything below overrides it.
 
 ## What this is
 
