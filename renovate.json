@@ -23,6 +23,18 @@
       "matchManagers": ["docker-compose"],
       "matchUpdateTypes": ["major", "minor"],
       "enabled": false
+    },
+    {
+      "description": "gpui + gpui-component are git-pinned and move together, tested by hand; renovate must not bump them",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["gpui", "gpui_platform", "gpui-component", "gpui-component-assets"],
+      "enabled": false
+    },
+    {
+      "description": "No cargo lock maintenance: it would drift the git-pinned gpui/zed revs the manifest does not constrain",
+      "matchManagers": ["cargo"],
+      "matchUpdateTypes": ["lockFileMaintenance"],
+      "enabled": false
     }
   ]
 }
