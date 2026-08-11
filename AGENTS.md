@@ -47,7 +47,7 @@ Run from the repo root. Shortcuts are a `Justfile` (`just`), not npm; Rust is pl
 
 ```bash
 just dev               # cargo run -p soquel-app
-just dev-wsl           # same with file-backed plaintext secrets, for a host with no OS keychain; dev only
+just dev-insecure      # same with file-backed plaintext secrets, for a host with no OS keychain; dev only
 just build             # cargo build -p soquel-app
 just test              # cargo test --workspace (unit; integration_* skip without their env vars)
 just --list            # every recipe
