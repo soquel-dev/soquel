@@ -337,13 +337,18 @@ multi-kind surface of `lib/connections.ts`, which is the one deletion blocker
    wired into the gpui leg of `test-integration.sh`. The browse -> stage -> apply
    -> reread path now has a real-DB flow test on every SQL engine.
 
-Still stale after this PR: **`AGENTS.md`** describes the tauri command layer and
-the detached workspaces - it needs a rewrite for the gpui-only, root-workspace
-world (follow-up docs commit).
+Tooling and docs followed: the entire root node stack (eslint, tsconfig,
+`package.json`, pnpm workspace + lockfile) gave way to a `Justfile`, `AGENTS.md`
+and the `README` were rewritten for the gpui-only repo, the main-branch ruleset's
+required checks were repointed at the new jobs, and renovate was told to leave
+the git-pinned gpui deps alone.
 
 **Deferred past this PR** (greenfield, not deletion blockers, nothing ships
-yet): the updater (+ the non-rotatable signing-key reuse-or-mint decision) and
-the packaging pipeline; optionally `.soquel` association + single-instance.
+yet): the updater (+ the non-rotatable signing-key reuse-or-mint decision), the
+packaging pipeline, and the **release workflow** (the tauri `tauri-action` one
+was deleted; its draft-only, refuse-non-main, require-CI-green, signing-key
+preflight policy lives in git history as the template for the gpui one);
+optionally `.soquel` association + single-instance.
 
 **Design differences kept, not ported:** `stream_table_rows`/`RowsChunk` (the
 gpui grid pages via `fetch_rows`, no streaming); the server-side sql-session
