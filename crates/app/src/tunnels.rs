@@ -463,186 +463,55 @@ impl TunnelsView {
           return dialog;
         };
         let view = strong.read(cx);
-        {
-          let title = if view.editing.is_some() {
-            "Edit tunnel"
-          } else {
-            "New SSH tunnel"
-          };
-          let method = view.selected_method(cx);
-          let mode = view.selected_mode(cx);
-          let needs = needs_secret(method);
-          let status = view.status.clone();
-          let status_color = if status.starts_with("error") {
-            cx.theme().danger
-          } else if status == "Tunnel OK" {
-            cx.theme().success
-          } else {
-            cx.theme().muted_foreground
-          };
-          let command = view.form_command.read(cx).value().trim().to_string();
-          let key_chips: Vec<String> = if view.default_keys.len() > 1 {
-            view.default_keys.clone()
-          } else {
-            Vec::new()
-          };
-          let this_chip = this.clone();
-          let this_test = this.clone();
-          let this_save = this.clone();
-          dialog
-            .title(title)
-            .w(px(460.))
-            .child(
-              // Conditional rows use .when(): the pinned rev stores
-              // field().visible() but never reads it at render.
-              v_form()
-                .child(field().label("Name").child(Input::new(&view.form_name)))
-                .child(field().label("Host").child(Input::new(&view.form_host)))
-                .child(field().label("Port").child(Input::new(&view.form_port)))
-                .child(field().label("User").child(Input::new(&view.form_user)))
-                .child(
-                  field()
-                    .label("Authentication")
-                    .child(Select::new(&view.form_auth)),
-                )
-                .when_some(auth_hint(method), |form, hint| {
-                  form.child(
-                    field().child(
-                      div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(hint),
-                    ),
+        let title = if view.editing.is_some() {
+          "Edit tunnel"
+        } else {
+          "New SSH tunnel"
+        };
+        let save_label = if view.editing.is_some() {
+          "Save changes"
+        } else {
+          "Create tunnel"
+        };
+        let this_test = this.clone();
+        let this_save = this.clone();
+        dialog
+          .title(title)
+          .w(px(460.))
+          .child(TunnelForm {
+            view: strong.clone(),
+          })
+          .footer(
+            h_flex()
+              .gap_2()
+              .justify_between()
+              .child(
+                Button::new("tunnel-test")
+                  .outline()
+                  .label("Test connection")
+                  .on_click(move |_, _, cx| {
+                    this_test.update(cx, |this, cx| this.run_test(cx)).ok();
+                  }),
+              )
+              .child(
+                h_flex()
+                  .gap_2()
+                  .child(
+                    Button::new("tunnel-cancel")
+                      .label("Cancel")
+                      .on_click(|_, window, cx| window.close_dialog(cx)),
                   )
-                })
-                .when(method == AuthMethod::KeyFile, |form| {
-                  form
-                    .child(
-                      field()
-                        .label("Key file")
-                        .child(Input::new(&view.form_key_path)),
-                    )
-                    .when(!key_chips.is_empty(), |form| {
-                      form.child(field().child(h_flex().flex_wrap().gap_1().children(
-                        key_chips.into_iter().enumerate().map(|(ix, key)| {
-                          let this_chip = this_chip.clone();
-                          let value = key.clone();
-                          Button::new(("key-chip", ix))
-                            .ghost()
-                            .xsmall()
-                            .label(key)
-                            .on_click(move |_, window, cx| {
-                              let value = value.clone();
-                              this_chip
-                                .update(cx, |view, cx| {
-                                  view
-                                    .form_key_path
-                                    .update(cx, |i, cx| i.set_value(value, window, cx));
-                                })
-                                .ok();
-                            })
-                        }),
-                      )))
-                    })
-                    .when(view.default_keys.is_empty(), |form| {
-                      form.child(
-                        field().child(
-                          div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(
-                              "No key found in ~/.ssh. Generate one with ssh-keygen -t ed25519, \
-                               or pick another authentication method.",
-                            ),
-                        ),
-                      )
-                    })
-                })
-                .when(needs, |form| {
-                  form.child(
-                    field()
-                      .label(format!("{} from", secret_label(method)))
-                      .child(Select::new(&view.form_credential)),
-                  )
-                })
-                .when_some(
-                  needs.then(|| view.state.secrets_problem.clone()).flatten(),
-                  |form, problem| {
-                    // Amber, not destructive: one mode is gone, nothing is broken.
-                    form.child(
-                      field()
-                        .label("")
-                        .child(div().text_xs().text_color(cx.theme().yellow).child(problem)),
-                    )
-                  },
-                )
-                .when(needs && mode != CredentialMode::Command, |form| {
-                  form
-                    .child(
-                      field()
-                        .label(secret_label(method))
-                        .child(Input::new(&view.form_secret)),
-                    )
-                    .when_some(credential_mode_hint(mode), |form, hint| {
-                      form.child(
-                        field().child(
-                          div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(hint),
-                        ),
-                      )
-                    })
-                })
-                .when(needs && mode == CredentialMode::Command, |form| {
-                  form
-                    .child(
-                      field()
-                        .label("Command")
-                        .child(Input::new(&view.form_command)),
-                    )
-                    .child(field().child(command_preview(&command, TUNNEL_COMMAND_HINT, cx)))
-                })
-                .when(!status.is_empty(), |form| {
-                  form.child(field().child(div().text_sm().text_color(status_color).child(status)))
-                }),
-            )
-            .footer(
-              h_flex()
-                .gap_2()
-                .justify_between()
-                .child(
-                  Button::new("tunnel-test")
-                    .outline()
-                    .label("Test connection")
-                    .on_click(move |_, _, cx| {
-                      this_test.update(cx, |this, cx| this.run_test(cx)).ok();
-                    }),
-                )
-                .child(
-                  h_flex()
-                    .gap_2()
-                    .child(
-                      Button::new("tunnel-cancel")
-                        .label("Cancel")
-                        .on_click(|_, window, cx| window.close_dialog(cx)),
-                    )
-                    .child(
-                      Button::new("tunnel-save")
-                        .primary()
-                        .label(if view.editing.is_some() {
-                          "Save changes"
-                        } else {
-                          "Create tunnel"
-                        })
-                        .on_click(move |_, window, cx| {
-                          this_save.update(cx, |this, cx| this.save_form(cx)).ok();
-                          window.close_dialog(cx);
-                        }),
-                    ),
-                ),
-            )
-        }
+                  .child(
+                    Button::new("tunnel-save")
+                      .primary()
+                      .label(save_label)
+                      .on_click(move |_, window, cx| {
+                        this_save.update(cx, |this, cx| this.save_form(cx)).ok();
+                        window.close_dialog(cx);
+                      }),
+                  ),
+              ),
+          )
       });
     });
   }
@@ -801,6 +670,150 @@ pub(crate) fn command_preview(command: &str, hint: &'static str, cx: &App) -> Di
       )
       .child(hint),
     None => v_flex().child(hint),
+  }
+}
+
+/// The form body; the dialog builder keeps only the chrome around it.
+#[derive(IntoElement)]
+struct TunnelForm {
+  view: Entity<TunnelsView>,
+}
+
+impl RenderOnce for TunnelForm {
+  fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+    let this = self.view.downgrade();
+    let view = self.view.read(cx);
+    let method = view.selected_method(cx);
+    let mode = view.selected_mode(cx);
+    let needs = needs_secret(method);
+    let status = view.status.clone();
+    let status_color = if status.starts_with("error") {
+      cx.theme().danger
+    } else if status == "Tunnel OK" {
+      cx.theme().success
+    } else {
+      cx.theme().muted_foreground
+    };
+    let command = view.form_command.read(cx).value().trim().to_string();
+    let key_chips: Vec<String> = if view.default_keys.len() > 1 {
+      view.default_keys.clone()
+    } else {
+      Vec::new()
+    };
+    let this_chip = this.clone();
+    // Conditional rows use .when(): the pinned rev stores
+    // field().visible() but never reads it at render.
+    v_form()
+      .child(field().label("Name").child(Input::new(&view.form_name)))
+      .child(field().label("Host").child(Input::new(&view.form_host)))
+      .child(field().label("Port").child(Input::new(&view.form_port)))
+      .child(field().label("User").child(Input::new(&view.form_user)))
+      .child(
+        field()
+          .label("Authentication")
+          .child(Select::new(&view.form_auth)),
+      )
+      .when_some(auth_hint(method), |form, hint| {
+        form.child(
+          field().child(
+            div()
+              .text_xs()
+              .text_color(cx.theme().muted_foreground)
+              .child(hint),
+          ),
+        )
+      })
+      .when(method == AuthMethod::KeyFile, |form| {
+        form
+          .child(
+            field()
+              .label("Key file")
+              .child(Input::new(&view.form_key_path)),
+          )
+          .when(!key_chips.is_empty(), |form| {
+            form.child(field().child(h_flex().flex_wrap().gap_1().children(
+              key_chips.into_iter().enumerate().map(|(ix, key)| {
+                let this_chip = this_chip.clone();
+                let value = key.clone();
+                Button::new(("key-chip", ix))
+                  .ghost()
+                  .xsmall()
+                  .label(key)
+                  .on_click(move |_, window, cx| {
+                    let value = value.clone();
+                    this_chip
+                      .update(cx, |view, cx| {
+                        view
+                          .form_key_path
+                          .update(cx, |i, cx| i.set_value(value, window, cx));
+                      })
+                      .ok();
+                  })
+              }),
+            )))
+          })
+          .when(view.default_keys.is_empty(), |form| {
+            form.child(
+              field().child(
+                div()
+                  .text_xs()
+                  .text_color(cx.theme().muted_foreground)
+                  .child(
+                    "No key found in ~/.ssh. Generate one with ssh-keygen -t ed25519, \
+                               or pick another authentication method.",
+                  ),
+              ),
+            )
+          })
+      })
+      .when(needs, |form| {
+        form.child(
+          field()
+            .label(format!("{} from", secret_label(method)))
+            .child(Select::new(&view.form_credential)),
+        )
+      })
+      .when_some(
+        needs.then(|| view.state.secrets_problem.clone()).flatten(),
+        |form, problem| {
+          // Amber, not destructive: one mode is gone, nothing is broken.
+          form.child(
+            field()
+              .label("")
+              .child(div().text_xs().text_color(cx.theme().yellow).child(problem)),
+          )
+        },
+      )
+      .when(needs && mode != CredentialMode::Command, |form| {
+        form
+          .child(
+            field()
+              .label(secret_label(method))
+              .child(Input::new(&view.form_secret)),
+          )
+          .when_some(credential_mode_hint(mode), |form, hint| {
+            form.child(
+              field().child(
+                div()
+                  .text_xs()
+                  .text_color(cx.theme().muted_foreground)
+                  .child(hint),
+              ),
+            )
+          })
+      })
+      .when(needs && mode == CredentialMode::Command, |form| {
+        form
+          .child(
+            field()
+              .label("Command")
+              .child(Input::new(&view.form_command)),
+          )
+          .child(field().child(command_preview(&command, TUNNEL_COMMAND_HINT, cx)))
+      })
+      .when(!status.is_empty(), |form| {
+        form.child(field().child(div().text_sm().text_color(status_color).child(status)))
+      })
   }
 }
 

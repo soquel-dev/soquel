@@ -807,224 +807,43 @@ impl ConnectionsView {
           return dialog;
         };
         let view = strong.read(cx);
-        {
-          let title = if view.editing.is_some() {
-            "Edit connection"
-          } else {
-            "New connection"
-          };
-          let status = view.status.clone();
-          let mode = view.selected_mode(cx);
-          let kind = view.selected_kind(cx);
-          let is_server = kind != ConnectorKind::Sqlite;
-          let is_sql = matches!(kind, ConnectorKind::Postgres | ConnectorKind::Mysql);
-          let ssl_mode = view
-            .form_ssl
-            .read(cx)
-            .selected_value()
-            .and_then(|label| SSL_MODES.iter().find(|m| ssl_label(**m) == label))
-            .copied()
-            .unwrap_or(SslMode::Prefer);
-          let tls = view.form_tls;
-          let command = view.form_command.read(cx).value().trim().to_string();
-          let this_test = this.clone();
-          let this_save = this.clone();
-          let this_tls = this.clone();
-          let this_browse = this.clone();
-          let hint = |text: SharedString, cx: &App| {
-            field().label("").child(
-              div()
-                .text_xs()
-                .text_color(cx.theme().muted_foreground)
-                .child(text),
-            )
-          };
-          dialog
-            .title(title)
-            .w(px(520.))
-            .child(
-              v_form()
-                .label_width(px(96.))
-                .child(field().label("Name").child(Input::new(&view.form_name)))
-                .child(field().label("Group").child(Input::new(&view.form_group)))
-                .child(
-                  field()
-                    .label("Engine")
-                    .child(Select::new(&view.form_engine)),
-                )
-                .child(field().label("From URL").child(Input::new(&view.form_url)))
-                .child(field().label("Env").child(Select::new(&view.form_env)))
-                .child(
-                  field()
-                    .label("Agent access")
-                    .child(Select::new(&view.form_agent_access)),
-                )
-                .when(kind == ConnectorKind::Sqlite, |form| {
-                  let this_browse = this_browse.clone();
-                  form.child(
-                    field().label("Database file").child(
-                      h_flex()
-                        .w_full()
-                        .gap_2()
-                        .child(div().flex_1().child(Input::new(&view.form_path)))
-                        .child(
-                          Button::new("browse-sqlite")
-                            .ghost()
-                            .label("Browse")
-                            .debug_selector(|| "browse-sqlite".into())
-                            .on_click(move |_, _, cx| {
-                              this_browse
-                                .update(cx, |this, cx| this.browse_sqlite_path(cx))
-                                .ok();
-                            }),
-                        ),
-                    ),
-                  )
-                })
-                .when(is_server, |form| {
-                  form
-                    .child(field().label("Host").child(Input::new(&view.form_host)))
-                    .child(field().label("Port").child(Input::new(&view.form_port)))
-                })
-                .when(kind == ConnectorKind::Redis, |form| {
-                  form.child(
-                    field()
-                      .label("DB index")
-                      .child(Input::new(&view.form_db_index)),
-                  )
-                })
-                .when(kind == ConnectorKind::Mongo, |form| {
-                  form
-                    .child(
-                      field()
-                        .label("Database")
-                        .child(Input::new(&view.form_database)),
-                    )
-                    .child(
-                      field()
-                        .label("Auth source")
-                        .child(Input::new(&view.form_auth_source)),
-                    )
-                })
-                .when(is_sql, |form| {
-                  form
-                    .child(
-                      field()
-                        .label("Database")
-                        .child(Input::new(&view.form_database)),
-                    )
-                    .child(field().label("User").child(Input::new(&view.form_user)))
-                    .child(field().label("SSL").child(Select::new(&view.form_ssl)))
-                    .when(ssl_mode == SslMode::VerifyFull, |form| {
-                      form.child(
-                        field()
-                          .label("CA cert")
-                          .child(Input::new(&view.form_ssl_root_cert)),
-                      )
-                    })
-                })
-                .when(
-                  matches!(kind, ConnectorKind::Redis | ConnectorKind::Mongo),
-                  |form| {
-                    form
-                      .child(field().label("User").child(Input::new(&view.form_user)))
-                      .child(field().label("TLS").child(
-                        Switch::new("form-tls").checked(tls).on_click({
-                          let this_tls = this_tls.clone();
-                          move |checked, _, cx| {
-                            let checked = *checked;
-                            this_tls
-                              .update(cx, |view, cx| {
-                                view.form_tls = checked;
-                                cx.notify();
-                              })
-                              .ok();
-                          }
-                        }),
-                      ))
-                  },
-                )
-                .when(is_server, |form| {
-                  form.child(
-                    field()
-                      .label("SSH tunnel")
-                      .child(Select::new(&view.form_tunnel)),
-                  )
-                })
-                .when(is_server, |form| {
-                  form
-                    .child(
-                      field()
-                        .label("Password")
-                        .child(Select::new(&view.form_credential)),
-                    )
-                    // Amber, not destructive: one mode is gone, nothing is broken.
-                    .when_some(view.state.secrets_problem.clone(), |form, problem| {
-                      form.child(
-                        field()
-                          .label("")
-                          .child(div().text_xs().text_color(cx.theme().yellow).child(problem)),
-                      )
-                    })
-                    .when(mode != CredentialMode::Command, |form| {
-                      form
-                        .child(
-                          field()
-                            .label(if mode == CredentialMode::Prompt {
-                              "(for Test only)"
-                            } else {
-                              ""
-                            })
-                            .child(Input::new(&view.form_password)),
-                        )
-                        .when_some(credential_mode_hint(mode), |form, text| {
-                          form.child(hint(text.into(), cx))
-                        })
-                    })
-                    .when(mode == CredentialMode::Command, |form| {
-                      form
-                        .child(
-                          field()
-                            .label("Command")
-                            .child(Input::new(&view.form_command)),
-                        )
-                        .child(field().label("").child(command_preview(
-                          &command,
-                          CONNECTION_COMMAND_HINT,
-                          cx,
-                        )))
-                        .when_some(credential_command_caveat(kind), |form, caveat| {
-                          form.child(hint(caveat.into(), cx))
-                        })
-                    })
-                })
-                .when(!status.is_empty(), |form| form.child(hint(status, cx))),
-            )
-            .footer(
-              h_flex()
-                .gap_2()
-                .justify_end()
-                .child(
-                  Button::new("form-test")
-                    .ghost()
-                    .label("Test")
-                    .on_click(move |_, _, cx| {
-                      this_test.update(cx, |this, cx| this.test_form(cx)).ok();
-                    }),
-                )
-                .child(
-                  Button::new("form-cancel")
-                    .label("Cancel")
-                    .on_click(|_, window, cx| window.close_dialog(cx)),
-                )
-                .child(Button::new("form-save").primary().label("Save").on_click(
-                  move |_, window, cx| {
-                    this_save.update(cx, |this, cx| this.save_form(cx)).ok();
-                    window.close_dialog(cx);
-                  },
-                )),
-            )
-        }
+        let title = if view.editing.is_some() {
+          "Edit connection"
+        } else {
+          "New connection"
+        };
+        let this_test = this.clone();
+        let this_save = this.clone();
+        dialog
+          .title(title)
+          .w(px(520.))
+          .child(ConnectionForm {
+            view: strong.clone(),
+          })
+          .footer(
+            h_flex()
+              .gap_2()
+              .justify_end()
+              .child(
+                Button::new("form-test")
+                  .ghost()
+                  .label("Test")
+                  .on_click(move |_, _, cx| {
+                    this_test.update(cx, |this, cx| this.test_form(cx)).ok();
+                  }),
+              )
+              .child(
+                Button::new("form-cancel")
+                  .label("Cancel")
+                  .on_click(|_, window, cx| window.close_dialog(cx)),
+              )
+              .child(Button::new("form-save").primary().label("Save").on_click(
+                move |_, window, cx| {
+                  this_save.update(cx, |this, cx| this.save_form(cx)).ok();
+                  window.close_dialog(cx);
+                },
+              )),
+          )
       });
     });
   }
@@ -1575,110 +1394,39 @@ impl ConnectionsView {
           return dialog;
         };
         let view = strong.read(cx);
-        {
-          let include = view.export_include_secrets;
-          let busy = view.export_busy;
-          let error = view.export_error.clone();
-          let this_toggle = this.clone();
-          let this_run = this.clone();
-          dialog
-            .title("Export connections")
-            .w(px(460.))
-            .on_ok(|_, _, _| false)
-            .child(
-              v_flex()
-                .gap_3()
-                .child(div().text_sm().child(
-                  "Every connection, group and SSH tunnel in one file. Host keys stay on \
-                   this machine: you confirm them again on the first connect.",
-                ))
-                .child(
-                  v_flex()
-                    .gap_2()
-                    .p_3()
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .rounded(cx.theme().radius)
-                    .child(
-                      h_flex()
-                        .justify_between()
-                        .items_center()
-                        .child(div().text_sm().child("Include passwords"))
-                        .child(Switch::new("export-secrets").checked(include).on_click(
-                          move |checked, _, cx| {
-                            let checked = *checked;
-                            this_toggle
-                              .update(cx, |view, cx| {
-                                view.export_include_secrets = checked;
-                                cx.notify();
-                              })
-                              .ok();
-                          },
-                        )),
-                    )
-                    .child(
-                      div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(if include {
-                          "The file is encrypted with your passphrase. Lose it and the file \
-                           is unreadable."
-                        } else {
-                          "Off: the file is plain text and safe to share, passwords get \
-                           re-entered on the other side."
-                        }),
-                    ),
-                )
-                .when(include, |form| {
-                  form.child(
-                    v_form()
-                      .child(
-                        field()
-                          .label("Passphrase")
-                          .child(Input::new(&view.export_passphrase)),
-                      )
-                      .child(
-                        field()
-                          .label("Confirm passphrase")
-                          .child(Input::new(&view.export_confirm)),
-                      ),
-                  )
-                })
-                .when_some(error, |form, error| {
-                  form.child(
-                    div()
-                      .text_xs()
-                      .font_family("IBM Plex Mono")
-                      .text_color(cx.theme().danger)
-                      .child(error),
-                  )
-                }),
-            )
-            .footer(
-              h_flex()
-                .gap_2()
-                .justify_end()
-                .child(
-                  Button::new("export-cancel")
-                    .label("Cancel")
-                    .on_click(|_, window, cx| window.close_dialog(cx)),
-                )
-                .child(
-                  Button::new("run-export")
-                    .primary()
-                    .label(if busy {
-                      "Exporting…"
-                    } else {
-                      "Choose a file…"
-                    })
-                    .disabled(busy)
-                    .debug_selector(|| "run-export".into())
-                    .on_click(move |_, _, cx| {
-                      this_run.update(cx, |this, cx| this.run_export(cx)).ok();
-                    }),
-                ),
-            )
-        }
+        let busy = view.export_busy;
+        let this_run = this.clone();
+        dialog
+          .title("Export connections")
+          .w(px(460.))
+          .on_ok(|_, _, _| false)
+          .child(ExportForm {
+            view: strong.clone(),
+          })
+          .footer(
+            h_flex()
+              .gap_2()
+              .justify_end()
+              .child(
+                Button::new("export-cancel")
+                  .label("Cancel")
+                  .on_click(|_, window, cx| window.close_dialog(cx)),
+              )
+              .child(
+                Button::new("run-export")
+                  .primary()
+                  .label(if busy {
+                    "Exporting…"
+                  } else {
+                    "Choose a file…"
+                  })
+                  .disabled(busy)
+                  .debug_selector(|| "run-export".into())
+                  .on_click(move |_, _, cx| {
+                    this_run.update(cx, |this, cx| this.run_export(cx)).ok();
+                  }),
+              ),
+          )
       });
     });
   }
@@ -1929,6 +1677,567 @@ fn outline_badge(text: String, color: Hsla, cx: &App) -> Div {
 }
 
 /// The import dialog body, re-read from the view every frame like the forms.
+/// The form body; the dialog builder keeps only the chrome around it.
+#[derive(IntoElement)]
+struct ConnectionForm {
+  view: Entity<ConnectionsView>,
+}
+
+impl RenderOnce for ConnectionForm {
+  fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+    let this = self.view.downgrade();
+    let view = self.view.read(cx);
+    let status = view.status.clone();
+    let mode = view.selected_mode(cx);
+    let kind = view.selected_kind(cx);
+    let is_server = kind != ConnectorKind::Sqlite;
+    let is_sql = matches!(kind, ConnectorKind::Postgres | ConnectorKind::Mysql);
+    let ssl_mode = view
+      .form_ssl
+      .read(cx)
+      .selected_value()
+      .and_then(|label| SSL_MODES.iter().find(|m| ssl_label(**m) == label))
+      .copied()
+      .unwrap_or(SslMode::Prefer);
+    let tls = view.form_tls;
+    let command = view.form_command.read(cx).value().trim().to_string();
+    let this_tls = this.clone();
+    let this_browse = this.clone();
+    let hint = |text: SharedString, cx: &App| {
+      field().label("").child(
+        div()
+          .text_xs()
+          .text_color(cx.theme().muted_foreground)
+          .child(text),
+      )
+    };
+    v_form()
+      .label_width(px(96.))
+      .child(field().label("Name").child(Input::new(&view.form_name)))
+      .child(field().label("Group").child(Input::new(&view.form_group)))
+      .child(
+        field()
+          .label("Engine")
+          .child(Select::new(&view.form_engine)),
+      )
+      .child(field().label("From URL").child(Input::new(&view.form_url)))
+      .child(field().label("Env").child(Select::new(&view.form_env)))
+      .child(
+        field()
+          .label("Agent access")
+          .child(Select::new(&view.form_agent_access)),
+      )
+      .when(kind == ConnectorKind::Sqlite, |form| {
+        let this_browse = this_browse.clone();
+        form.child(
+          field().label("Database file").child(
+            h_flex()
+              .w_full()
+              .gap_2()
+              .child(div().flex_1().child(Input::new(&view.form_path)))
+              .child(
+                Button::new("browse-sqlite")
+                  .ghost()
+                  .label("Browse")
+                  .debug_selector(|| "browse-sqlite".into())
+                  .on_click(move |_, _, cx| {
+                    this_browse
+                      .update(cx, |this, cx| this.browse_sqlite_path(cx))
+                      .ok();
+                  }),
+              ),
+          ),
+        )
+      })
+      .when(is_server, |form| {
+        form
+          .child(field().label("Host").child(Input::new(&view.form_host)))
+          .child(field().label("Port").child(Input::new(&view.form_port)))
+      })
+      .when(kind == ConnectorKind::Redis, |form| {
+        form.child(
+          field()
+            .label("DB index")
+            .child(Input::new(&view.form_db_index)),
+        )
+      })
+      .when(kind == ConnectorKind::Mongo, |form| {
+        form
+          .child(
+            field()
+              .label("Database")
+              .child(Input::new(&view.form_database)),
+          )
+          .child(
+            field()
+              .label("Auth source")
+              .child(Input::new(&view.form_auth_source)),
+          )
+      })
+      .when(is_sql, |form| {
+        form
+          .child(
+            field()
+              .label("Database")
+              .child(Input::new(&view.form_database)),
+          )
+          .child(field().label("User").child(Input::new(&view.form_user)))
+          .child(field().label("SSL").child(Select::new(&view.form_ssl)))
+          .when(ssl_mode == SslMode::VerifyFull, |form| {
+            form.child(
+              field()
+                .label("CA cert")
+                .child(Input::new(&view.form_ssl_root_cert)),
+            )
+          })
+      })
+      .when(
+        matches!(kind, ConnectorKind::Redis | ConnectorKind::Mongo),
+        |form| {
+          form
+            .child(field().label("User").child(Input::new(&view.form_user)))
+            .child(
+              field()
+                .label("TLS")
+                .child(Switch::new("form-tls").checked(tls).on_click({
+                  let this_tls = this_tls.clone();
+                  move |checked, _, cx| {
+                    let checked = *checked;
+                    this_tls
+                      .update(cx, |view, cx| {
+                        view.form_tls = checked;
+                        cx.notify();
+                      })
+                      .ok();
+                  }
+                })),
+            )
+        },
+      )
+      .when(is_server, |form| {
+        form.child(
+          field()
+            .label("SSH tunnel")
+            .child(Select::new(&view.form_tunnel)),
+        )
+      })
+      .when(is_server, |form| {
+        form
+          .child(
+            field()
+              .label("Password")
+              .child(Select::new(&view.form_credential)),
+          )
+          // Amber, not destructive: one mode is gone, nothing is broken.
+          .when_some(view.state.secrets_problem.clone(), |form, problem| {
+            form.child(
+              field()
+                .label("")
+                .child(div().text_xs().text_color(cx.theme().yellow).child(problem)),
+            )
+          })
+          .when(mode != CredentialMode::Command, |form| {
+            form
+              .child(
+                field()
+                  .label(if mode == CredentialMode::Prompt {
+                    "(for Test only)"
+                  } else {
+                    ""
+                  })
+                  .child(Input::new(&view.form_password)),
+              )
+              .when_some(credential_mode_hint(mode), |form, text| {
+                form.child(hint(text.into(), cx))
+              })
+          })
+          .when(mode == CredentialMode::Command, |form| {
+            form
+              .child(
+                field()
+                  .label("Command")
+                  .child(Input::new(&view.form_command)),
+              )
+              .child(field().label("").child(command_preview(
+                &command,
+                CONNECTION_COMMAND_HINT,
+                cx,
+              )))
+              .when_some(credential_command_caveat(kind), |form, caveat| {
+                form.child(hint(caveat.into(), cx))
+              })
+          })
+      })
+      .when(!status.is_empty(), |form| form.child(hint(status, cx)))
+  }
+}
+
+/// The export body; the dialog builder keeps only the chrome around it.
+#[derive(IntoElement)]
+struct ExportForm {
+  view: Entity<ConnectionsView>,
+}
+
+impl RenderOnce for ExportForm {
+  fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+    let this = self.view.downgrade();
+    let view = self.view.read(cx);
+    let include = view.export_include_secrets;
+    let error = view.export_error.clone();
+    let this_toggle = this.clone();
+    v_flex()
+      .gap_3()
+      .child(div().text_sm().child(
+        "Every connection, group and SSH tunnel in one file. Host keys stay on \
+                   this machine: you confirm them again on the first connect.",
+      ))
+      .child(
+        v_flex()
+          .gap_2()
+          .p_3()
+          .border_1()
+          .border_color(cx.theme().border)
+          .rounded(cx.theme().radius)
+          .child(
+            h_flex()
+              .justify_between()
+              .items_center()
+              .child(div().text_sm().child("Include passwords"))
+              .child(Switch::new("export-secrets").checked(include).on_click(
+                move |checked, _, cx| {
+                  let checked = *checked;
+                  this_toggle
+                    .update(cx, |view, cx| {
+                      view.export_include_secrets = checked;
+                      cx.notify();
+                    })
+                    .ok();
+                },
+              )),
+          )
+          .child(
+            div()
+              .text_xs()
+              .text_color(cx.theme().muted_foreground)
+              .child(if include {
+                "The file is encrypted with your passphrase. Lose it and the file \
+                           is unreadable."
+              } else {
+                "Off: the file is plain text and safe to share, passwords get \
+                           re-entered on the other side."
+              }),
+          ),
+      )
+      .when(include, |form| {
+        form.child(
+          v_form()
+            .child(
+              field()
+                .label("Passphrase")
+                .child(Input::new(&view.export_passphrase)),
+            )
+            .child(
+              field()
+                .label("Confirm passphrase")
+                .child(Input::new(&view.export_confirm)),
+            ),
+        )
+      })
+      .when_some(error, |form, error| {
+        form.child(
+          div()
+            .text_xs()
+            .font_family("IBM Plex Mono")
+            .text_color(cx.theme().danger)
+            .child(error),
+        )
+      })
+  }
+}
+
+/// The import body; `import_dialog` keeps only the chrome around it.
+#[derive(IntoElement)]
+struct ImportForm {
+  view: Entity<ConnectionsView>,
+}
+
+impl RenderOnce for ImportForm {
+  fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+    let this = self.view.downgrade();
+    let view = self.view.read(cx);
+    let path_text = view
+      .import_path
+      .as_ref()
+      .map(|p| p.to_string_lossy().to_string())
+      .unwrap_or_default();
+    let plan = view.import_preview.as_ref().map(transfer::import_plan);
+    let blocked = plan.as_ref().is_some_and(|p| p.problems > 0);
+    let locked = view.import_locked;
+    let busy = view.import_busy;
+    let error = view.import_error.clone();
+    let counts = view
+      .import_preview
+      .as_ref()
+      .map(|p| (p.connections.len(), p.tunnels.len(), p.encrypted));
+    let with_secrets = view.import_with_secrets;
+    let strategy_ix = view.import_strategy;
+    let unlockable = !busy && !view.import_passphrase.read(cx).value().is_empty();
+    let this_unlock = this.clone();
+    let this_secrets = this.clone();
+    let this_strategy = this.clone();
+    v_flex()
+      .gap_3()
+      .child(
+        div()
+          .text_xs()
+          .font_family("IBM Plex Mono")
+          .text_color(cx.theme().muted_foreground)
+          .truncate()
+          .child(path_text),
+      )
+      .when(locked, |body| {
+        body.child(
+          v_flex()
+            .gap_2()
+            .child(
+              h_flex()
+                .gap_2()
+                .items_center()
+                .child(
+                  div()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(SoquelIcon::Lock),
+                )
+                .child(div().text_sm().child("This file is encrypted")),
+            )
+            .child(
+              h_flex()
+                .gap_2()
+                .child(div().flex_1().child(Input::new(&view.import_passphrase)))
+                .child(
+                  Button::new("import-unlock")
+                    .outline()
+                    .label("Unlock")
+                    .disabled(!unlockable)
+                    .debug_selector(|| "import-unlock".into())
+                    .on_click(move |_, _, cx| {
+                      this_unlock
+                        .update(cx, |view, cx| view.load_import_preview(cx))
+                        .ok();
+                    }),
+                ),
+            ),
+        )
+      })
+      .when_some(plan.filter(|_| !locked), |body, plan| {
+        let (connections, tunnels, encrypted) = counts.unwrap_or_default();
+        let entries = plan.entries.len();
+        body
+          .child(
+            h_flex()
+              .flex_wrap()
+              .gap_2()
+              .items_center()
+              .child(
+                div()
+                  .text_sm()
+                  .font_family("IBM Plex Mono")
+                  .child(format!("{connections} connections, {tunnels} tunnels")),
+              )
+              .when(encrypted, |row| {
+                row.child(outline_badge(
+                  "encrypted".to_string(),
+                  cx.theme().muted_foreground,
+                  cx,
+                ))
+              })
+              .when(plan.secrets > 0, |row| {
+                row.child(outline_badge(
+                  format!("{} passwords", plan.secrets),
+                  cx.theme().muted_foreground,
+                  cx,
+                ))
+              })
+              .when(plan.commands > 0, |row| {
+                row.child(outline_badge(
+                  format!("{} run a command", plan.commands),
+                  cx.theme().yellow,
+                  cx,
+                ))
+              }),
+          )
+          .child(
+            v_flex()
+              .id("import-entries")
+              .max_h(px(224.))
+              .overflow_y_scroll()
+              .border_1()
+              .border_color(cx.theme().border)
+              .rounded(cx.theme().radius)
+              .children(plan.entries.iter().enumerate().map(|(ix, entry)| {
+                h_flex()
+                  .px_3()
+                  .py_2()
+                  .gap_2()
+                  .items_center()
+                  .when(ix + 1 < entries, |row| {
+                    row.border_b_1().border_color(cx.theme().border)
+                  })
+                  .child(
+                    div()
+                      .text_color(cx.theme().muted_foreground)
+                      .child(match entry.kind {
+                        EntryKind::Connection => SoquelIcon::Database,
+                        EntryKind::Tunnel => SoquelIcon::Cable,
+                      }),
+                  )
+                  .child(
+                    v_flex()
+                      .flex_1()
+                      .min_w_0()
+                      .child(div().text_sm().truncate().child(entry.entry.name.clone()))
+                      .child(
+                        div()
+                          .text_xs()
+                          .font_family("IBM Plex Mono")
+                          .text_color(cx.theme().muted_foreground)
+                          .truncate()
+                          .child(entry.entry.target.clone()),
+                      ),
+                  )
+                  .when_some(entry.entry.problem.clone(), |row, problem| {
+                    row.child(outline_badge(problem, cx.theme().danger, cx))
+                  })
+                  .when(
+                    entry.entry.problem.is_none() && entry.entry.has_command,
+                    |row| row.child(outline_badge("command".to_string(), cx.theme().yellow, cx)),
+                  )
+                  .when(
+                    entry.entry.problem.is_none()
+                      && !entry.entry.has_command
+                      && entry.entry.duplicate,
+                    |row| {
+                      row.child(outline_badge(
+                        "exists".to_string(),
+                        cx.theme().muted_foreground,
+                        cx,
+                      ))
+                    },
+                  )
+              })),
+          )
+          .when(plan.secrets > 0, |body| {
+            body.child(
+              v_flex()
+                .gap_2()
+                .p_3()
+                .border_1()
+                .border_color(cx.theme().border)
+                .rounded(cx.theme().radius)
+                .child(
+                  h_flex()
+                    .justify_between()
+                    .items_center()
+                    .child(div().text_sm().child("Bring the passwords"))
+                    .child(
+                      Switch::new("import-secrets")
+                        .checked(with_secrets)
+                        .on_click({
+                          let this = this_secrets.clone();
+                          move |checked, _, cx| {
+                            let checked = *checked;
+                            this
+                              .update(cx, |view, cx| {
+                                view.import_with_secrets = checked;
+                                cx.notify();
+                              })
+                              .ok();
+                          }
+                        }),
+                    ),
+                )
+                .child(
+                  div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(if with_secrets {
+                      format!("{} passwords land in the keychain.", plan.secrets)
+                    } else {
+                      "Off: the connections arrive without them, ready to re-enter.".to_string()
+                    }),
+                ),
+            )
+          })
+          .when(plan.duplicates > 0 && !blocked, |body| {
+            body.child(
+              v_flex()
+                .gap_2()
+                .child(
+                  div()
+                    .text_sm()
+                    .child(format!("{} already here", plan.duplicates)),
+                )
+                .child(
+                  RadioGroup::vertical("import-strategy")
+                    .selected_index(Some(strategy_ix))
+                    .on_click({
+                      let this = this_strategy.clone();
+                      move |ix, _, cx| {
+                        let ix = *ix;
+                        this
+                          .update(cx, |view, cx| {
+                            view.import_strategy = ix;
+                            cx.notify();
+                          })
+                          .ok();
+                      }
+                    })
+                    .children(transfer::DUPLICATE_STRATEGIES.iter().enumerate().map(
+                      |(ix, strategy)| {
+                        Radio::new(("strategy", ix))
+                          .label(transfer::strategy_label(*strategy))
+                          .child(
+                            div()
+                              .text_xs()
+                              .text_color(cx.theme().muted_foreground)
+                              .child(transfer::strategy_hint(*strategy)),
+                          )
+                      },
+                    )),
+                ),
+            )
+          })
+          .child(if blocked {
+            div().text_xs().text_color(cx.theme().danger).child(
+              "Nothing is imported while an entry is invalid: fix the file, or remove \
+                 those entries.",
+            )
+          } else {
+            div()
+              .text_xs()
+              .text_color(cx.theme().muted_foreground)
+              .child(format!(
+                "Imported connections stay hidden from agents whatever the file says.{}",
+                if plan.commands > 0 {
+                  " A credential command runs nothing until you read it and approve it."
+                } else {
+                  ""
+                }
+              ))
+          })
+      })
+      .when_some(error, |body, error| {
+        body.child(
+          div()
+            .text_xs()
+            .font_family("IBM Plex Mono")
+            .text_color(cx.theme().danger)
+            .child(error),
+        )
+      })
+  }
+}
+
 fn import_dialog(
   dialog: gpui_component::dialog::Dialog,
   this: &WeakEntity<ConnectionsView>,
@@ -1938,27 +2247,11 @@ fn import_dialog(
     return dialog;
   };
   let view = strong.read(cx);
-  let path_text = view
-    .import_path
-    .as_ref()
-    .map(|p| p.to_string_lossy().to_string())
-    .unwrap_or_default();
   let plan = view.import_preview.as_ref().map(transfer::import_plan);
   let has_plan = plan.is_some();
   let blocked = plan.as_ref().is_some_and(|p| p.problems > 0);
   let locked = view.import_locked;
   let busy = view.import_busy;
-  let error = view.import_error.clone();
-  let counts = view
-    .import_preview
-    .as_ref()
-    .map(|p| (p.connections.len(), p.tunnels.len(), p.encrypted));
-  let with_secrets = view.import_with_secrets;
-  let strategy_ix = view.import_strategy;
-  let unlockable = !busy && !view.import_passphrase.read(cx).value().is_empty();
-  let this_unlock = this.clone();
-  let this_secrets = this.clone();
-  let this_strategy = this.clone();
   let this_run = this.clone();
   let this_ok = this.clone();
   dialog
@@ -1975,258 +2268,9 @@ fn import_dialog(
         .ok();
       false
     })
-    .child(
-      v_flex()
-        .gap_3()
-        .child(
-          div()
-            .text_xs()
-            .font_family("IBM Plex Mono")
-            .text_color(cx.theme().muted_foreground)
-            .truncate()
-            .child(path_text),
-        )
-        .when(locked, |body| {
-          body.child(
-            v_flex()
-              .gap_2()
-              .child(
-                h_flex()
-                  .gap_2()
-                  .items_center()
-                  .child(
-                    div()
-                      .text_color(cx.theme().muted_foreground)
-                      .child(SoquelIcon::Lock),
-                  )
-                  .child(div().text_sm().child("This file is encrypted")),
-              )
-              .child(
-                h_flex()
-                  .gap_2()
-                  .child(div().flex_1().child(Input::new(&view.import_passphrase)))
-                  .child(
-                    Button::new("import-unlock")
-                      .outline()
-                      .label("Unlock")
-                      .disabled(!unlockable)
-                      .debug_selector(|| "import-unlock".into())
-                      .on_click(move |_, _, cx| {
-                        this_unlock
-                          .update(cx, |view, cx| view.load_import_preview(cx))
-                          .ok();
-                      }),
-                  ),
-              ),
-          )
-        })
-        .when_some(plan.filter(|_| !locked), |body, plan| {
-          let (connections, tunnels, encrypted) = counts.unwrap_or_default();
-          let entries = plan.entries.len();
-          body
-            .child(
-              h_flex()
-                .flex_wrap()
-                .gap_2()
-                .items_center()
-                .child(
-                  div()
-                    .text_sm()
-                    .font_family("IBM Plex Mono")
-                    .child(format!("{connections} connections, {tunnels} tunnels")),
-                )
-                .when(encrypted, |row| {
-                  row.child(outline_badge(
-                    "encrypted".to_string(),
-                    cx.theme().muted_foreground,
-                    cx,
-                  ))
-                })
-                .when(plan.secrets > 0, |row| {
-                  row.child(outline_badge(
-                    format!("{} passwords", plan.secrets),
-                    cx.theme().muted_foreground,
-                    cx,
-                  ))
-                })
-                .when(plan.commands > 0, |row| {
-                  row.child(outline_badge(
-                    format!("{} run a command", plan.commands),
-                    cx.theme().yellow,
-                    cx,
-                  ))
-                }),
-            )
-            .child(
-              v_flex()
-                .id("import-entries")
-                .max_h(px(224.))
-                .overflow_y_scroll()
-                .border_1()
-                .border_color(cx.theme().border)
-                .rounded(cx.theme().radius)
-                .children(plan.entries.iter().enumerate().map(|(ix, entry)| {
-                  h_flex()
-                    .px_3()
-                    .py_2()
-                    .gap_2()
-                    .items_center()
-                    .when(ix + 1 < entries, |row| {
-                      row.border_b_1().border_color(cx.theme().border)
-                    })
-                    .child(
-                      div()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(match entry.kind {
-                          EntryKind::Connection => SoquelIcon::Database,
-                          EntryKind::Tunnel => SoquelIcon::Cable,
-                        }),
-                    )
-                    .child(
-                      v_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .child(div().text_sm().truncate().child(entry.entry.name.clone()))
-                        .child(
-                          div()
-                            .text_xs()
-                            .font_family("IBM Plex Mono")
-                            .text_color(cx.theme().muted_foreground)
-                            .truncate()
-                            .child(entry.entry.target.clone()),
-                        ),
-                    )
-                    .when_some(entry.entry.problem.clone(), |row, problem| {
-                      row.child(outline_badge(problem, cx.theme().danger, cx))
-                    })
-                    .when(
-                      entry.entry.problem.is_none() && entry.entry.has_command,
-                      |row| row.child(outline_badge("command".to_string(), cx.theme().yellow, cx)),
-                    )
-                    .when(
-                      entry.entry.problem.is_none()
-                        && !entry.entry.has_command
-                        && entry.entry.duplicate,
-                      |row| {
-                        row.child(outline_badge(
-                          "exists".to_string(),
-                          cx.theme().muted_foreground,
-                          cx,
-                        ))
-                      },
-                    )
-                })),
-            )
-            .when(plan.secrets > 0, |body| {
-              body.child(
-                v_flex()
-                  .gap_2()
-                  .p_3()
-                  .border_1()
-                  .border_color(cx.theme().border)
-                  .rounded(cx.theme().radius)
-                  .child(
-                    h_flex()
-                      .justify_between()
-                      .items_center()
-                      .child(div().text_sm().child("Bring the passwords"))
-                      .child(
-                        Switch::new("import-secrets")
-                          .checked(with_secrets)
-                          .on_click({
-                            let this = this_secrets.clone();
-                            move |checked, _, cx| {
-                              let checked = *checked;
-                              this
-                                .update(cx, |view, cx| {
-                                  view.import_with_secrets = checked;
-                                  cx.notify();
-                                })
-                                .ok();
-                            }
-                          }),
-                      ),
-                  )
-                  .child(
-                    div()
-                      .text_xs()
-                      .text_color(cx.theme().muted_foreground)
-                      .child(if with_secrets {
-                        format!("{} passwords land in the keychain.", plan.secrets)
-                      } else {
-                        "Off: the connections arrive without them, ready to re-enter.".to_string()
-                      }),
-                  ),
-              )
-            })
-            .when(plan.duplicates > 0 && !blocked, |body| {
-              body.child(
-                v_flex()
-                  .gap_2()
-                  .child(
-                    div()
-                      .text_sm()
-                      .child(format!("{} already here", plan.duplicates)),
-                  )
-                  .child(
-                    RadioGroup::vertical("import-strategy")
-                      .selected_index(Some(strategy_ix))
-                      .on_click({
-                        let this = this_strategy.clone();
-                        move |ix, _, cx| {
-                          let ix = *ix;
-                          this
-                            .update(cx, |view, cx| {
-                              view.import_strategy = ix;
-                              cx.notify();
-                            })
-                            .ok();
-                        }
-                      })
-                      .children(transfer::DUPLICATE_STRATEGIES.iter().enumerate().map(
-                        |(ix, strategy)| {
-                          Radio::new(("strategy", ix))
-                            .label(transfer::strategy_label(*strategy))
-                            .child(
-                              div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(transfer::strategy_hint(*strategy)),
-                            )
-                        },
-                      )),
-                  ),
-              )
-            })
-            .child(if blocked {
-              div().text_xs().text_color(cx.theme().danger).child(
-                "Nothing is imported while an entry is invalid: fix the file, or remove \
-                 those entries.",
-              )
-            } else {
-              div()
-                .text_xs()
-                .text_color(cx.theme().muted_foreground)
-                .child(format!(
-                  "Imported connections stay hidden from agents whatever the file says.{}",
-                  if plan.commands > 0 {
-                    " A credential command runs nothing until you read it and approve it."
-                  } else {
-                    ""
-                  }
-                ))
-            })
-        })
-        .when_some(error, |body, error| {
-          body.child(
-            div()
-              .text_xs()
-              .font_family("IBM Plex Mono")
-              .text_color(cx.theme().danger)
-              .child(error),
-          )
-        }),
-    )
+    .child(ImportForm {
+      view: strong.clone(),
+    })
     .footer(
       h_flex()
         .gap_2()
