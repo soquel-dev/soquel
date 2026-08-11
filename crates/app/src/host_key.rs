@@ -27,13 +27,11 @@ pub fn open_host_key_dialog<V: 'static>(
   cx: &mut Context<V>,
   on_done: impl Fn(&mut V, Result<(), Error>, &mut Context<V>) + Clone + 'static,
 ) {
-  cx.defer(move |cx| {
-    let Some(window_handle) = cx.active_window() else {
-      return;
-    };
-    let _ = cx.update_window(window_handle, |_, window, cx| {
-      window.open_dialog(cx, move |dialog, _, cx| {
-        let this = this.clone();
+  let this = this.downgrade();
+  crate::dialogs::defer_on_active_window(cx, move |window, cx| {
+    window.open_dialog(cx, move |dialog, _, cx| {
+      let this = this.clone();
+      {
         let state = state.clone();
         let prompt = prompt.clone();
         let on_done = on_done.clone();
@@ -67,7 +65,9 @@ pub fn open_host_key_dialog<V: 'static>(
             // Popped before the retry so a fresh failure can stack cleanly.
             window.close_dialog(cx);
             let on_done = on_done.clone();
-            this.update(cx, move |view, cx| on_done(view, result, cx));
+            this
+              .update(cx, move |view, cx| on_done(view, result, cx))
+              .ok();
           });
         dialog
           .title(title)
@@ -100,7 +100,7 @@ pub fn open_host_key_dialog<V: 'static>(
               )
               .child(trust),
           )
-      });
+      }
     });
   });
 }

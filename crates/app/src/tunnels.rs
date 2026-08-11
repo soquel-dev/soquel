@@ -17,6 +17,7 @@ use soquel_core::profiles::CredentialSource;
 use soquel_core::tunnels::{SshAuth, TunnelInput, TunnelProfile};
 
 use crate::core;
+use crate::dialogs;
 use crate::host_key::{self, HostKeyPrompt};
 use crate::icons::SoquelIcon;
 
@@ -225,6 +226,14 @@ fn ssh_dsn(tunnel: &TunnelProfile) -> String {
   format!("ssh://{}@{}:{}", tunnel.user, tunnel.host, tunnel.port)
 }
 
+/// Fires on every save, delete or import refresh: the connection form's
+/// tunnel picker listens so it never shows a stale list.
+pub enum TunnelsEvent {
+  Changed,
+}
+
+impl EventEmitter<TunnelsEvent> for TunnelsView {}
+
 pub struct TunnelsView {
   state: Arc<AppState>,
   tunnels: Vec<TunnelProfile>,
@@ -333,6 +342,7 @@ impl TunnelsView {
 
   pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
     self.tunnels = core::list_tunnels(&self.state);
+    cx.emit(TunnelsEvent::Changed);
     cx.notify();
   }
 
@@ -390,62 +400,62 @@ impl TunnelsView {
     self.editing = editing.as_ref().map(|t| t.id.clone());
     self.status = SharedString::default();
     self.default_keys = core::default_ssh_keys();
-    let this = cx.entity();
-    cx.defer(move |cx| {
-      let Some(window_handle) = cx.active_window() else {
-        return;
-      };
-      let _ = cx.update_window(window_handle, |_, window, cx| {
-        this.update(cx, |view, cx| {
-          let values = editing
-            .as_ref()
-            .map(form_values)
-            .unwrap_or(TunnelFormValues {
-              port: "22".to_string(),
-              credential_mode: default_credential_mode(view.keychain_available),
-              ..Default::default()
-            });
-          view
-            .form_name
-            .update(cx, |i, cx| i.set_value(values.name, window, cx));
-          view
-            .form_host
-            .update(cx, |i, cx| i.set_value(values.host, window, cx));
-          view
-            .form_port
-            .update(cx, |i, cx| i.set_value(values.port, window, cx));
-          view
-            .form_user
-            .update(cx, |i, cx| i.set_value(values.user, window, cx));
-          view
-            .form_key_path
-            .update(cx, |i, cx| i.set_value(values.key_path, window, cx));
-          view
-            .form_secret
-            .update(cx, |i, cx| i.set_value("", window, cx));
-          view.form_command.update(cx, |i, cx| {
-            i.set_value(values.credential_command, window, cx)
+    let this = cx.entity().downgrade();
+    dialogs::defer_on_active_window(cx, move |window, cx| {
+      let _ = this.update(cx, |view, cx| {
+        let values = editing
+          .as_ref()
+          .map(form_values)
+          .unwrap_or(TunnelFormValues {
+            port: "22".to_string(),
+            credential_mode: default_credential_mode(view.keychain_available),
+            ..Default::default()
           });
-          let method_ix = AUTH_METHODS
-            .iter()
-            .position(|m| *m == values.method)
-            .unwrap_or(0);
-          let mode_ix = available_credential_modes(view.keychain_available)
-            .iter()
-            .position(|m| *m == values.credential_mode)
-            .unwrap_or(0);
-          view.form_auth.update(cx, |s, cx| {
-            s.set_selected_index(Some(IndexPath::new(method_ix)), window, cx)
-          });
-          view.form_credential.update(cx, |s, cx| {
-            s.set_selected_index(Some(IndexPath::new(mode_ix)), window, cx)
-          });
-          view.update_secret_placeholder(window, cx);
+        view
+          .form_name
+          .update(cx, |i, cx| i.set_value(values.name, window, cx));
+        view
+          .form_host
+          .update(cx, |i, cx| i.set_value(values.host, window, cx));
+        view
+          .form_port
+          .update(cx, |i, cx| i.set_value(values.port, window, cx));
+        view
+          .form_user
+          .update(cx, |i, cx| i.set_value(values.user, window, cx));
+        view
+          .form_key_path
+          .update(cx, |i, cx| i.set_value(values.key_path, window, cx));
+        view
+          .form_secret
+          .update(cx, |i, cx| i.set_value("", window, cx));
+        view.form_command.update(cx, |i, cx| {
+          i.set_value(values.credential_command, window, cx)
         });
+        let method_ix = AUTH_METHODS
+          .iter()
+          .position(|m| *m == values.method)
+          .unwrap_or(0);
+        let mode_ix = available_credential_modes(view.keychain_available)
+          .iter()
+          .position(|m| *m == values.credential_mode)
+          .unwrap_or(0);
+        view.form_auth.update(cx, |s, cx| {
+          s.set_selected_index(Some(IndexPath::new(method_ix)), window, cx)
+        });
+        view.form_credential.update(cx, |s, cx| {
+          s.set_selected_index(Some(IndexPath::new(mode_ix)), window, cx)
+        });
+        view.update_secret_placeholder(window, cx);
+      });
 
-        let this = this.clone();
-        window.open_dialog(cx, move |dialog, _, cx| {
-          let view = this.read(cx);
+      let this = this.clone();
+      window.open_dialog(cx, move |dialog, _, cx| {
+        let Some(strong) = this.upgrade() else {
+          return dialog;
+        };
+        let view = strong.read(cx);
+        {
           let title = if view.editing.is_some() {
             "Edit tunnel"
           } else {
@@ -515,11 +525,13 @@ impl TunnelsView {
                             .label(key)
                             .on_click(move |_, window, cx| {
                               let value = value.clone();
-                              this_chip.update(cx, |view, cx| {
-                                view
-                                  .form_key_path
-                                  .update(cx, |i, cx| i.set_value(value, window, cx));
-                              });
+                              this_chip
+                                .update(cx, |view, cx| {
+                                  view
+                                    .form_key_path
+                                    .update(cx, |i, cx| i.set_value(value, window, cx));
+                                })
+                                .ok();
                             })
                         }),
                       )))
@@ -596,7 +608,7 @@ impl TunnelsView {
                     .outline()
                     .label("Test connection")
                     .on_click(move |_, _, cx| {
-                      this_test.update(cx, |this, cx| this.run_test(cx));
+                      this_test.update(cx, |this, cx| this.run_test(cx)).ok();
                     }),
                 )
                 .child(
@@ -616,13 +628,13 @@ impl TunnelsView {
                           "Create tunnel"
                         })
                         .on_click(move |_, window, cx| {
-                          this_save.update(cx, |this, cx| this.save_form(cx));
+                          this_save.update(cx, |this, cx| this.save_form(cx)).ok();
                           window.close_dialog(cx);
                         }),
                     ),
                 ),
             )
-        });
+        }
       });
     });
   }

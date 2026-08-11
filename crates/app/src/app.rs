@@ -17,6 +17,7 @@ use crate::actions::ToggleCommandPalette;
 use crate::command_palette::{CommandPaletteDelegate, PaletteItem};
 use crate::connections::{ConnectionsEvent, ConnectionsView, group_connections};
 use crate::core;
+use crate::dialogs;
 use crate::doc::{DocWorkspace, DocWorkspaceEvent};
 use crate::kv::{KvWorkspace, KvWorkspaceEvent};
 use crate::mcp::{McpAuditView, McpPanel};
@@ -141,73 +142,53 @@ impl App {
   fn open_mcp_panel(&mut self, cx: &mut Context<Self>) {
     let state = self.state.clone();
     let make_approver = self.make_approver.clone();
-    cx.defer(move |cx| {
-      let Some(window_handle) = cx.active_window() else {
-        return;
-      };
-      let _ = cx.update_window(window_handle, |_, window, cx| {
-        let panel = cx.new(|cx| McpPanel::new(state.clone(), make_approver.clone(), window, cx));
-        window.open_dialog(cx, move |dialog, _, _| {
-          dialog.w(px(560.)).child(panel.clone())
-        });
+    dialogs::defer_on_active_window(cx, move |window, cx| {
+      let panel = cx.new(|cx| McpPanel::new(state, make_approver, window, cx));
+      window.open_dialog(cx, move |dialog, _, _| {
+        dialog.w(px(560.)).child(panel.clone())
       });
     });
   }
 
   fn open_diagnostics(&mut self, cx: &mut Context<Self>) {
     let state = self.state.clone();
-    cx.defer(move |cx| {
-      let Some(window_handle) = cx.active_window() else {
-        return;
-      };
-      let _ = cx.update_window(window_handle, |_, window, cx| {
-        let view = cx.new(|cx| crate::diagnostics::DiagnosticsView::new(state.clone(), cx));
-        window.open_dialog(cx, move |dialog, _, _| {
-          dialog
-            .title(
-              div()
-                .font_family("IBM Plex Mono")
-                .child("Diagnostics and logs"),
-            )
-            .w(px(520.))
-            .child(view.clone())
-        });
+    dialogs::defer_on_active_window(cx, move |window, cx| {
+      let view = cx.new(|cx| crate::diagnostics::DiagnosticsView::new(state, cx));
+      window.open_dialog(cx, move |dialog, _, _| {
+        dialog
+          .title(
+            div()
+              .font_family("IBM Plex Mono")
+              .child("Diagnostics and logs"),
+          )
+          .w(px(520.))
+          .child(view.clone())
       });
     });
   }
 
   fn open_licence(&mut self, cx: &mut Context<Self>) {
     let state = self.state.clone();
-    cx.defer(move |cx| {
-      let Some(window_handle) = cx.active_window() else {
-        return;
-      };
-      let _ = cx.update_window(window_handle, |_, window, cx| {
-        let view = cx.new(|cx| crate::licence::LicenceView::new(state.clone(), window, cx));
-        window.open_dialog(cx, move |dialog, _, _| {
-          dialog
-            .title(div().font_family("IBM Plex Mono").child("Licence"))
-            .w(px(440.))
-            .child(view.clone())
-        });
+    dialogs::defer_on_active_window(cx, move |window, cx| {
+      let view = cx.new(|cx| crate::licence::LicenceView::new(state, window, cx));
+      window.open_dialog(cx, move |dialog, _, _| {
+        dialog
+          .title(div().font_family("IBM Plex Mono").child("Licence"))
+          .w(px(440.))
+          .child(view.clone())
       });
     });
   }
 
   fn open_audit(&mut self, cx: &mut Context<Self>) {
     let state = self.state.clone();
-    cx.defer(move |cx| {
-      let Some(window_handle) = cx.active_window() else {
-        return;
-      };
-      let _ = cx.update_window(window_handle, |_, window, cx| {
-        let audit = cx.new(|cx| McpAuditView::new(state.clone(), cx));
-        window.open_dialog(cx, move |dialog, _, _| {
-          dialog
-            .title(div().font_family("IBM Plex Mono").child("Agent activity"))
-            .w(px(640.))
-            .child(audit.clone())
-        });
+    dialogs::defer_on_active_window(cx, move |window, cx| {
+      let audit = cx.new(|cx| McpAuditView::new(state, cx));
+      window.open_dialog(cx, move |dialog, _, _| {
+        dialog
+          .title(div().font_family("IBM Plex Mono").child("Agent activity"))
+          .w(px(640.))
+          .child(audit.clone())
       });
     });
   }
@@ -310,33 +291,45 @@ impl App {
       keywords: "toggle theme dark light".to_string(),
       run: Rc::new(theme::toggle),
     });
-    let panel_app = cx.entity();
+    // Items live in the palette dialog: weak handles so an open palette never
+    // keeps a swapped-out screen alive.
+    let panel_app = cx.entity().downgrade();
     items.push(PaletteItem {
       label: "MCP server".into(),
       hint: None,
       keywords: "mcp server agent access port token".to_string(),
-      run: Rc::new(move |_, cx| panel_app.update(cx, |app, cx| app.open_mcp_panel(cx))),
+      run: Rc::new(move |_, cx| {
+        panel_app.update(cx, |app, cx| app.open_mcp_panel(cx)).ok();
+      }),
     });
-    let audit_app = cx.entity();
+    let audit_app = cx.entity().downgrade();
     items.push(PaletteItem {
       label: "Agent activity".into(),
       hint: None,
       keywords: "agent activity audit log mcp".to_string(),
-      run: Rc::new(move |_, cx| audit_app.update(cx, |app, cx| app.open_audit(cx))),
+      run: Rc::new(move |_, cx| {
+        audit_app.update(cx, |app, cx| app.open_audit(cx)).ok();
+      }),
     });
-    let licence_app = cx.entity();
+    let licence_app = cx.entity().downgrade();
     items.push(PaletteItem {
       label: "Licence".into(),
       hint: None,
       keywords: "licence license unlock buy activate tabs".to_string(),
-      run: Rc::new(move |_, cx| licence_app.update(cx, |app, cx| app.open_licence(cx))),
+      run: Rc::new(move |_, cx| {
+        licence_app.update(cx, |app, cx| app.open_licence(cx)).ok();
+      }),
     });
-    let diagnostics_app = cx.entity();
+    let diagnostics_app = cx.entity().downgrade();
     items.push(PaletteItem {
       label: "Diagnostics and logs".into(),
       hint: None,
       keywords: "diagnostics logs support bug report".to_string(),
-      run: Rc::new(move |_, cx| diagnostics_app.update(cx, |app, cx| app.open_diagnostics(cx))),
+      run: Rc::new(move |_, cx| {
+        diagnostics_app
+          .update(cx, |app, cx| app.open_diagnostics(cx))
+          .ok();
+      }),
     });
 
     match &self.screen {
@@ -345,7 +338,7 @@ impl App {
         for (group, profiles) in group_connections(&profiles) {
           for profile in profiles {
             let id = profile.id.clone();
-            let view = view.clone();
+            let view = view.downgrade();
             let target = soquel_core::transfer::target(&profile.params);
             items.push(PaletteItem {
               label: profile.name.clone().into(),
@@ -359,98 +352,132 @@ impl App {
               .to_lowercase(),
               run: Rc::new(move |_, cx| {
                 let id = id.clone();
-                view.update(cx, |view, cx| view.connect(id, cx));
+                view.update(cx, |view, cx| view.connect(id, cx)).ok();
               }),
             });
           }
         }
         let has_connections = !core::list_connections(&self.state).is_empty();
-        let new_view = view.clone();
+        let new_view = view.downgrade();
         items.push(PaletteItem {
           label: "New connection".into(),
           hint: None,
           keywords: "new connection".to_string(),
-          run: Rc::new(move |_, cx| new_view.update(cx, |view, cx| view.open_form(None, cx))),
+          run: Rc::new(move |_, cx| {
+            new_view
+              .update(cx, |view, cx| view.open_form(None, cx))
+              .ok();
+          }),
         });
-        let import_view = view.clone();
+        let import_view = view.downgrade();
         items.push(PaletteItem {
           label: "Import connections…".into(),
           hint: None,
           keywords: "import connections file".to_string(),
-          run: Rc::new(move |_, cx| import_view.update(cx, |view, cx| view.import_via_picker(cx))),
+          run: Rc::new(move |_, cx| {
+            import_view
+              .update(cx, |view, cx| view.import_via_picker(cx))
+              .ok();
+          }),
         });
         if has_connections {
-          let export_view = view.clone();
+          let export_view = view.downgrade();
           items.push(PaletteItem {
             label: "Export connections…".into(),
             hint: None,
             keywords: "export connections file".to_string(),
             run: Rc::new(move |_, cx| {
-              export_view.update(cx, |view, cx| view.open_export_dialog(cx))
+              export_view
+                .update(cx, |view, cx| view.open_export_dialog(cx))
+                .ok();
             }),
           });
         }
       }
       Screen::Workspace { view, .. } => {
-        let run_view = view.clone();
+        let run_view = view.downgrade();
         items.push(PaletteItem {
           label: "Run query".into(),
           hint: None,
           keywords: "run query execute".to_string(),
-          run: Rc::new(move |_, cx| run_view.update(cx, |view, cx| view.run(cx))),
+          run: Rc::new(move |_, cx| {
+            run_view.update(cx, |view, cx| view.run(cx)).ok();
+          }),
         });
-        let sql_view = view.clone();
+        let sql_view = view.downgrade();
         items.push(PaletteItem {
           label: "New SQL tab".into(),
           hint: None,
           keywords: "new sql tab".to_string(),
-          run: Rc::new(move |window, cx| sql_view.update(cx, |view, cx| view.open_sql(window, cx))),
+          run: Rc::new(move |window, cx| {
+            sql_view
+              .update(cx, |view, cx| view.open_sql(window, cx))
+              .ok();
+          }),
         });
-        let refresh_view = view.clone();
+        let refresh_view = view.downgrade();
         items.push(PaletteItem {
           label: "Refresh schema".into(),
           hint: None,
           keywords: "refresh schema reload".to_string(),
-          run: Rc::new(move |_, cx| refresh_view.update(cx, |view, cx| view.refresh_schema(cx))),
+          run: Rc::new(move |_, cx| {
+            refresh_view
+              .update(cx, |view, cx| view.refresh_schema(cx))
+              .ok();
+          }),
         });
-        let focus_view = view.clone();
+        let focus_view = view.downgrade();
         items.push(PaletteItem {
           label: "Focus editor".into(),
           hint: None,
           keywords: "focus editor sql".to_string(),
           run: Rc::new(move |window, cx| {
-            focus_view.update(cx, |view, cx| view.focus_editor(window, cx))
+            focus_view
+              .update(cx, |view, cx| view.focus_editor(window, cx))
+              .ok();
           }),
         });
-        let next_view = view.clone();
+        let next_view = view.downgrade();
         items.push(PaletteItem {
           label: "Next tab".into(),
           hint: None,
           keywords: "next tab".to_string(),
-          run: Rc::new(move |_, cx| next_view.update(cx, |view, cx| view.cycle(1, cx))),
+          run: Rc::new(move |_, cx| {
+            next_view.update(cx, |view, cx| view.cycle(1, cx)).ok();
+          }),
         });
-        let prev_view = view.clone();
+        let prev_view = view.downgrade();
         items.push(PaletteItem {
           label: "Previous tab".into(),
           hint: None,
           keywords: "previous tab".to_string(),
-          run: Rc::new(move |_, cx| prev_view.update(cx, |view, cx| view.cycle(-1, cx))),
+          run: Rc::new(move |_, cx| {
+            prev_view.update(cx, |view, cx| view.cycle(-1, cx)).ok();
+          }),
         });
-        let app = cx.entity();
+        let app = cx.entity().downgrade();
         items.push(PaletteItem {
           label: "Back to connections".into(),
           hint: None,
           keywords: "back connections close disconnect".to_string(),
-          run: Rc::new(move |window, cx| app.update(cx, |app, cx| app.close_workspace(window, cx))),
+          run: Rc::new(move |window, cx| {
+            app
+              .update(cx, |app, cx| app.close_workspace(window, cx))
+              .ok();
+          }),
         });
       }
       Screen::KvWorkspace { .. } | Screen::DocWorkspace { .. } => {
-        let app = cx.entity();
+        let app = cx.entity().downgrade();
         items.push(PaletteItem {
           label: "Back to connections".into(),
           hint: None,
           keywords: "back connections close disconnect".to_string(),
-          run: Rc::new(move |window, cx| app.update(cx, |app, cx| app.close_workspace(window, cx))),
+          run: Rc::new(move |window, cx| {
+            app
+              .update(cx, |app, cx| app.close_workspace(window, cx))
+              .ok();
+          }),
         });
       }
     }
@@ -458,29 +485,25 @@ impl App {
   }
 
   fn open_command_palette(&mut self, _: &mut Window, cx: &mut Context<Self>) {
-    let this = cx.entity();
-    cx.defer(move |cx| {
-      let Some(window_handle) = cx.active_window() else {
+    let this = cx.entity().downgrade();
+    dialogs::defer_on_active_window(cx, move |window, cx| {
+      let Ok(items) = this.update(cx, |this, cx| this.palette_items(cx)) else {
         return;
       };
-      let _ = cx.update_window(window_handle, |_, window, cx| {
-        let items = this.update(cx, |this, cx| this.palette_items(cx));
-        let state = cx.new(|cx| {
-          ListState::new(CommandPaletteDelegate::new(items), window, cx).searchable(true)
-        });
-        // No footer: the List owns enter/escape under its own key context.
-        let list = state.clone();
-        window.open_dialog(cx, move |dialog, _, _| {
-          dialog.w(px(560.)).child(
-            List::new(&list)
-              .search_placeholder("Search connections and actions…")
-              .max_h(px(360.)),
-          )
-        });
-        // After the dialog took focus: hand it to the query input so typing
-        // filters and Enter reaches the List's own confirm, not the dialog's.
-        state.update(cx, |state, cx| state.focus(window, cx));
+      let state = cx
+        .new(|cx| ListState::new(CommandPaletteDelegate::new(items), window, cx).searchable(true));
+      // No footer: the List owns enter/escape under its own key context.
+      let list = state.clone();
+      window.open_dialog(cx, move |dialog, _, _| {
+        dialog.w(px(560.)).child(
+          List::new(&list)
+            .search_placeholder("Search connections and actions…")
+            .max_h(px(360.)),
+        )
       });
+      // After the dialog took focus: hand it to the query input so typing
+      // filters and Enter reaches the List's own confirm, not the dialog's.
+      state.update(cx, |state, cx| state.focus(window, cx));
     });
   }
 }

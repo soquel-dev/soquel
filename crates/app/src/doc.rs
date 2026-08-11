@@ -343,9 +343,8 @@ impl DocWorkspace {
 
   fn load_databases(&mut self, cx: &mut Context<Self>) {
     let task = core::doc_databases(&self.db, cx);
-    let this = cx.entity();
     let db_select = self.db_select.clone();
-    cx.spawn(async move |_, cx| {
+    cx.spawn(async move |this, cx| {
       let Ok(databases) = task.await else {
         return;
       };
@@ -361,18 +360,23 @@ impl DocWorkspace {
             None => d.name.clone(),
           })
           .collect();
-        let current = this
-          .read(cx)
-          .doc_db
-          .as_ref()
-          .and_then(|db| names.iter().position(|n| n == db));
-        this.update(cx, |this, cx| {
-          this.db_names = names.clone();
-          if this.doc_db.is_none() {
-            this.doc_db = names.first().cloned();
-          }
-          cx.notify();
-        });
+        let Ok(current) = this.read_with(cx, |view, _| {
+          view
+            .doc_db
+            .as_ref()
+            .and_then(|db| names.iter().position(|n| n == db))
+        }) else {
+          return;
+        };
+        this
+          .update(cx, |this, cx| {
+            this.db_names = names.clone();
+            if this.doc_db.is_none() {
+              this.doc_db = names.first().cloned();
+            }
+            cx.notify();
+          })
+          .ok();
         db_select.update(cx, |select, cx| {
           select.set_items(labels, window, cx);
           if let Some(ix) = current {
@@ -626,9 +630,8 @@ impl DocWorkspace {
     }
     let prompt = format!("{db}.{collection}");
     let task = core::doc_run_query(&self.db, db, collection, source.clone(), cx);
-    let this = cx.entity();
     let input = self.console_input.clone();
-    self._op_task = cx.spawn(async move |_, cx| {
+    self._op_task = cx.spawn(async move |this, cx| {
       let result = task.await;
       let Some(handle) = cx.update(|cx| cx.active_window()) else {
         return;
@@ -662,10 +665,12 @@ impl DocWorkspace {
           },
         };
         input.update(cx, |input, cx| input.set_value("", window, cx));
-        this.update(cx, |this, cx| {
-          this.console_log.push(entry);
-          cx.notify();
-        });
+        this
+          .update(cx, |this, cx| {
+            this.console_log.push(entry);
+            cx.notify();
+          })
+          .ok();
       });
     });
   }

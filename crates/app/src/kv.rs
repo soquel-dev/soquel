@@ -295,9 +295,8 @@ impl KvWorkspace {
 
   fn load_databases(&mut self, cx: &mut Context<Self>) {
     let task = core::kv_databases(&self.db, cx);
-    let this = cx.entity();
     let db_select = self.db_select.clone();
-    cx.spawn(async move |_, cx| {
+    cx.spawn(async move |this, cx| {
       let Ok(databases) = task.await else {
         return;
       };
@@ -319,11 +318,13 @@ impl KvWorkspace {
           })
           .collect();
         let current = databases.current as usize;
-        this.update(cx, |this, cx| {
-          this.db_indices = indices;
-          this.databases = Some(databases);
-          cx.notify();
-        });
+        this
+          .update(cx, |this, cx| {
+            this.db_indices = indices;
+            this.databases = Some(databases);
+            cx.notify();
+          })
+          .ok();
         db_select.update(cx, |select, cx| {
           select.set_items(labels, window, cx);
           select.set_selected_index(Some(IndexPath::new(current)), window, cx);
@@ -373,20 +374,21 @@ impl KvWorkspace {
     self.delete_armed = false;
     cx.notify();
     let task = core::kv_key_detail(&self.db, key, cx);
-    let this = cx.entity();
     let string_draft = self.string_draft.clone();
     let ttl_input = self.ttl_input.clone();
     let _ = window;
-    self._detail_task = cx.spawn(async move |_, cx| {
+    self._detail_task = cx.spawn(async move |this, cx| {
       let result = task.await;
       let Some(handle) = cx.update(|cx| cx.active_window()) else {
         return;
       };
       let _ = cx.update_window(handle, move |_, window, cx| {
-        this.update(cx, |this, cx| {
-          this.detail_loading = false;
-          cx.notify();
-        });
+        this
+          .update(cx, |this, cx| {
+            this.detail_loading = false;
+            cx.notify();
+          })
+          .ok();
         match result {
           Ok(detail) => {
             let value = match &detail.value {
@@ -399,16 +401,20 @@ impl KvWorkspace {
               .unwrap_or_default();
             string_draft.update(cx, |input, cx| input.set_value(value, window, cx));
             ttl_input.update(cx, |input, cx| input.set_value(ttl_secs, window, cx));
-            this.update(cx, |this, cx| {
-              this.detail = Some(detail);
-              cx.notify();
-            });
+            this
+              .update(cx, |this, cx| {
+                this.detail = Some(detail);
+                cx.notify();
+              })
+              .ok();
           }
           Err(error) => {
-            this.update(cx, |this, cx| {
-              this.status = format!("error: {error}").into();
-              cx.notify();
-            });
+            this
+              .update(cx, |this, cx| {
+                this.status = format!("error: {error}").into();
+                cx.notify();
+              })
+              .ok();
           }
         }
       });
@@ -421,9 +427,8 @@ impl KvWorkspace {
       return;
     }
     let task = core::kv_run_command(&self.db, command.clone(), cx);
-    let this = cx.entity();
     let input = self.console_input.clone();
-    self._op_task = cx.spawn(async move |_, cx| {
+    self._op_task = cx.spawn(async move |this, cx| {
       let result = task.await;
       let Some(handle) = cx.update(|cx| cx.active_window()) else {
         return;
@@ -442,13 +447,15 @@ impl KvWorkspace {
           },
         };
         input.update(cx, |input, cx| input.set_value("", window, cx));
-        this.update(cx, |this, cx| {
-          this.console_log.push(entry);
-          // A write via the console shifts the keyspace.
-          this.scan(true, cx);
-          this.load_databases(cx);
-          cx.notify();
-        });
+        this
+          .update(cx, |this, cx| {
+            this.console_log.push(entry);
+            // A write via the console shifts the keyspace.
+            this.scan(true, cx);
+            this.load_databases(cx);
+            cx.notify();
+          })
+          .ok();
       });
     });
   }

@@ -643,7 +643,7 @@ impl Workspace {
     };
 
     let statements = preview_sql(&changes);
-    let this = cx.entity();
+    let this = cx.entity().downgrade();
     window.open_dialog(cx, move |dialog, _, cx| {
       let changes = changes.clone();
       let db = db.clone();
@@ -679,7 +679,9 @@ impl Workspace {
                   window.close_dialog(cx);
                   let changes = changes.clone();
                   let db = db.clone();
-                  this.update(cx, |this, cx| this.run_apply(db, changes, cx));
+                  this
+                    .update(cx, |this, cx| this.run_apply(db, changes, cx))
+                    .ok();
                 }),
             ),
         )
@@ -1017,14 +1019,15 @@ impl Workspace {
     self.history_search.update(cx, |state, cx| {
       state.set_value("", window, cx);
     });
-    let this = cx.entity();
+    let this = cx.entity().downgrade();
     let search = self.history_search.clone();
     window.open_dialog(cx, move |dialog, _, cx| {
       let this_entity = this.clone();
-      let entries = {
-        let workspace = this_entity.read(cx);
-        let query = search.read(cx).value().to_string();
+      let query = search.read(cx).value().to_string();
+      let Ok(entries) = this_entity.read_with(cx, |workspace, _| {
         filter_history(&workspace.history, &query)
+      }) else {
+        return dialog;
       };
       dialog.title("Query history").child(
         v_flex().gap_2().child(Input::new(&search)).child(
@@ -1053,7 +1056,9 @@ impl Workspace {
                 .on_click(move |_, window, app| {
                   let sql = sql.clone();
                   window.close_dialog(app);
-                  this.update(app, |this, cx| this.load_history_entry(sql, window, cx));
+                  this
+                    .update(app, |this, cx| this.load_history_entry(sql, window, cx))
+                    .ok();
                 })
                 .child(
                   div()

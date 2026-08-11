@@ -20,15 +20,13 @@ pub fn open_mcp_approval_dialog<V: 'static>(
   cx: &mut Context<V>,
   on_answer: impl Fn(&mut V, ApprovalAnswer, &mut Context<V>) + Clone + 'static,
 ) {
-  cx.defer(move |cx| {
-    let Some(window_handle) = cx.active_window() else {
-      return;
-    };
-    let _ = cx.update_window(window_handle, |_, window, cx| {
-      // One dialog, one answer: shared across the buttons and the dismiss path.
-      let resolved = Rc::new(Cell::new(false));
-      window.open_dialog(cx, move |dialog, _, cx| {
-        let this = this.clone();
+  let this = this.downgrade();
+  crate::dialogs::defer_on_active_window(cx, move |window, cx| {
+    // One dialog, one answer: shared across the buttons and the dismiss path.
+    let resolved = Rc::new(Cell::new(false));
+    window.open_dialog(cx, move |dialog, _, cx| {
+      let this = this.clone();
+      {
         let request = request.clone();
         let on_answer = on_answer.clone();
         let resolved = resolved.clone();
@@ -43,7 +41,9 @@ pub fn open_mcp_approval_dialog<V: 'static>(
             }
             window.close_dialog(cx);
             let on_answer = on_answer.clone();
-            this.update(cx, move |view, cx| on_answer(view, ans, cx));
+            this
+              .update(cx, move |view, cx| on_answer(view, ans, cx))
+              .ok();
           }
         };
 
@@ -90,9 +90,11 @@ pub fn open_mcp_approval_dialog<V: 'static>(
                 return;
               }
               let on_answer = on_answer.clone();
-              this.update(cx, move |view, cx| {
-                on_answer(view, ApprovalAnswer::Deny, cx)
-              });
+              this
+                .update(cx, move |view, cx| {
+                  on_answer(view, ApprovalAnswer::Deny, cx)
+                })
+                .ok();
             }
           })
           .child(
@@ -156,7 +158,7 @@ pub fn open_mcp_approval_dialog<V: 'static>(
               .child(deny)
               .child(h_flex().gap_2().child(allow_window).child(run)),
           )
-      });
+      }
     });
   });
 }

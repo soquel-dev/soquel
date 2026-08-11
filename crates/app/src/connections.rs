@@ -24,12 +24,13 @@ use soquel_core::transfer::{DuplicateStrategy, ImportPreview};
 
 use crate::command_approval::{self, CommandApprovalPrompt};
 use crate::core::{self, Db};
+use crate::dialogs;
 use crate::host_key::{self, HostKeyPrompt};
 use crate::icons::SoquelIcon;
 use crate::transfer::{self, EntryKind};
 use crate::tunnels::{
-  CredentialMode, TunnelsView, available_credential_modes, command_preview, credential_mode_hint,
-  credential_mode_label, default_credential_mode,
+  CredentialMode, TunnelsEvent, TunnelsView, available_credential_modes, command_preview,
+  credential_mode_hint, credential_mode_label, default_credential_mode,
 };
 
 #[allow(clippy::large_enum_variant)]
@@ -523,6 +524,17 @@ impl ConnectionsView {
       )
     });
     let tunnels_section = cx.new(|cx| TunnelsView::new(state.clone(), window, cx));
+    // A tunnel saved or deleted while the connection form is open refreshes
+    // the form's picker, keeping the current selection when it survives.
+    cx.subscribe_in(
+      &tunnels_section,
+      window,
+      |this, _, _: &TunnelsEvent, window, cx| {
+        let current = this.selected_tunnel_id(cx);
+        this.refresh_tunnel_picker(current.as_deref(), window, cx);
+      },
+    )
+    .detach();
 
     Self {
       state,
@@ -682,36 +694,35 @@ impl ConnectionsView {
     cx: &mut Context<Self>,
   ) {
     self.prompt_remember = false;
-    let this = cx.entity();
+    let this = cx.entity().downgrade();
     let input = self.prompt_password.clone();
-    cx.defer(move |cx| {
-      let Some(window_handle) = cx.active_window() else {
-        return;
-      };
-      let _ = cx.update_window(window_handle, |_, window, cx| {
-        input.update(cx, |input, cx| {
-          input.set_value("", window, cx);
-          input.focus(window, cx);
-        });
-        let input = input.clone();
+    dialogs::defer_on_active_window(cx, move |window, cx| {
+      input.update(cx, |input, cx| {
+        input.set_value("", window, cx);
+        input.focus(window, cx);
+      });
+      let input = input.clone();
+      let this = this.clone();
+      window.open_dialog(cx, move |dialog, _, cx| {
         let this = this.clone();
-        window.open_dialog(cx, move |dialog, _, cx| {
+        let (subject, target_id, target_name, connect_id) = (
+          subject,
+          target_id.clone(),
+          target_name.clone(),
+          connect_id.clone(),
+        );
+        let Ok(remember) = this.read_with(cx, |view, _| view.prompt_remember) else {
+          return dialog;
+        };
+        // Shared by the Connect button and Enter (the dialog's ConfirmDialog).
+        let submit = {
           let this = this.clone();
-          let (subject, target_id, target_name, connect_id) = (
-            subject,
-            target_id.clone(),
-            target_name.clone(),
-            connect_id.clone(),
-          );
-          let remember = this.read(cx).prompt_remember;
-          // Shared by the Connect button and Enter (the dialog's ConfirmDialog).
-          let submit = {
-            let this = this.clone();
-            let input = input.clone();
-            move |_: &mut Window, cx: &mut App| {
-              let secret = input.read(cx).value().to_string();
-              let (target_id, connect_id) = (target_id.clone(), connect_id.clone());
-              this.update(cx, |this, cx| {
+          let input = input.clone();
+          move |_: &mut Window, cx: &mut App| {
+            let secret = input.read(cx).value().to_string();
+            let (target_id, connect_id) = (target_id.clone(), connect_id.clone());
+            this
+              .update(cx, |this, cx| {
                 core::unlock_secret(
                   &this.state,
                   subject,
@@ -720,59 +731,61 @@ impl ConnectionsView {
                   this.prompt_remember,
                 );
                 this.connect(connect_id, cx);
-              });
+              })
+              .ok();
+          }
+        };
+        dialog
+          .title(match subject {
+            SecretSubject::Tunnel => format!("Credential for the tunnel {target_name}"),
+            _ => format!("Password for {target_name}"),
+          })
+          .on_ok({
+            let submit = submit.clone();
+            move |_, window, cx| {
+              submit(window, cx);
+              true
             }
-          };
-          dialog
-            .title(match subject {
-              SecretSubject::Tunnel => format!("Credential for the tunnel {target_name}"),
-              _ => format!("Password for {target_name}"),
-            })
-            .on_ok({
-              let submit = submit.clone();
-              move |_, window, cx| {
-                submit(window, cx);
-                true
-              }
-            })
-            .child(
-              v_flex().gap_3().child(Input::new(&input)).child(
-                Checkbox::new("remember")
-                  .label("Keep for this session")
-                  .checked(remember)
-                  .on_click({
-                    let this = this.clone();
-                    move |checked, _, cx| {
-                      let checked = *checked;
-                      this.update(cx, |this, cx| {
+          })
+          .child(
+            v_flex().gap_3().child(Input::new(&input)).child(
+              Checkbox::new("remember")
+                .label("Keep for this session")
+                .checked(remember)
+                .on_click({
+                  let this = this.clone();
+                  move |checked, _, cx| {
+                    let checked = *checked;
+                    this
+                      .update(cx, |this, cx| {
                         this.prompt_remember = checked;
                         cx.notify();
-                      });
-                    }
+                      })
+                      .ok();
+                  }
+                }),
+            ),
+          )
+          .footer(
+            h_flex()
+              .gap_2()
+              .justify_end()
+              .child(
+                Button::new("prompt-cancel")
+                  .label("Cancel")
+                  .on_click(|_, window, cx| window.close_dialog(cx)),
+              )
+              .child(
+                Button::new("prompt-connect")
+                  .primary()
+                  .label("Connect")
+                  .debug_selector(|| "prompt-connect".into())
+                  .on_click(move |_, window, cx| {
+                    window.close_dialog(cx);
+                    submit(window, cx);
                   }),
               ),
-            )
-            .footer(
-              h_flex()
-                .gap_2()
-                .justify_end()
-                .child(
-                  Button::new("prompt-cancel")
-                    .label("Cancel")
-                    .on_click(|_, window, cx| window.close_dialog(cx)),
-                )
-                .child(
-                  Button::new("prompt-connect")
-                    .primary()
-                    .label("Connect")
-                    .debug_selector(|| "prompt-connect".into())
-                    .on_click(move |_, window, cx| {
-                      window.close_dialog(cx);
-                      submit(window, cx);
-                    }),
-                ),
-            )
-        });
+          )
       });
     });
   }
@@ -780,231 +793,239 @@ impl ConnectionsView {
   pub(crate) fn open_form(&mut self, editing: Option<ConnectionProfile>, cx: &mut Context<Self>) {
     self.editing = editing.as_ref().map(|p| p.id.clone());
     self.status = SharedString::default();
-    let this = cx.entity();
-    cx.defer(move |cx| {
-      let Some(window_handle) = cx.active_window() else {
-        return;
-      };
-      let _ =
-        cx.update_window(window_handle, |_, window, cx| {
-          this.update(cx, |view, cx| {
-            view.prefill_form(editing.as_ref(), window, cx);
-          });
+    let this = cx.entity().downgrade();
+    dialogs::defer_on_active_window(cx, move |window, cx| {
+      this
+        .update(cx, |view, cx| {
+          view.prefill_form(editing.as_ref(), window, cx);
+        })
+        .ok();
 
-          let this = this.clone();
-          window.open_dialog(cx, move |dialog, _, cx| {
-            let view = this.read(cx);
-            let title = if view.editing.is_some() {
-              "Edit connection"
-            } else {
-              "New connection"
-            };
-            let status = view.status.clone();
-            let mode = view.selected_mode(cx);
-            let kind = view.selected_kind(cx);
-            let is_server = kind != ConnectorKind::Sqlite;
-            let is_sql = matches!(kind, ConnectorKind::Postgres | ConnectorKind::Mysql);
-            let ssl_mode = view
-              .form_ssl
-              .read(cx)
-              .selected_value()
-              .and_then(|label| SSL_MODES.iter().find(|m| ssl_label(**m) == label))
-              .copied()
-              .unwrap_or(SslMode::Prefer);
-            let tls = view.form_tls;
-            let command = view.form_command.read(cx).value().trim().to_string();
-            let this_test = this.clone();
-            let this_save = this.clone();
-            let this_tls = this.clone();
-            let this_browse = this.clone();
-            let hint = |text: SharedString, cx: &App| {
-              field().label("").child(
-                div()
-                  .text_xs()
-                  .text_color(cx.theme().muted_foreground)
-                  .child(text),
-              )
-            };
-            dialog
-              .title(title)
-              .w(px(520.))
-              .child(
-                v_form()
-                  .label_width(px(96.))
-                  .child(field().label("Name").child(Input::new(&view.form_name)))
-                  .child(field().label("Group").child(Input::new(&view.form_group)))
-                  .child(
-                    field()
-                      .label("Engine")
-                      .child(Select::new(&view.form_engine)),
+      let this = this.clone();
+      window.open_dialog(cx, move |dialog, _, cx| {
+        let Some(strong) = this.upgrade() else {
+          return dialog;
+        };
+        let view = strong.read(cx);
+        {
+          let title = if view.editing.is_some() {
+            "Edit connection"
+          } else {
+            "New connection"
+          };
+          let status = view.status.clone();
+          let mode = view.selected_mode(cx);
+          let kind = view.selected_kind(cx);
+          let is_server = kind != ConnectorKind::Sqlite;
+          let is_sql = matches!(kind, ConnectorKind::Postgres | ConnectorKind::Mysql);
+          let ssl_mode = view
+            .form_ssl
+            .read(cx)
+            .selected_value()
+            .and_then(|label| SSL_MODES.iter().find(|m| ssl_label(**m) == label))
+            .copied()
+            .unwrap_or(SslMode::Prefer);
+          let tls = view.form_tls;
+          let command = view.form_command.read(cx).value().trim().to_string();
+          let this_test = this.clone();
+          let this_save = this.clone();
+          let this_tls = this.clone();
+          let this_browse = this.clone();
+          let hint = |text: SharedString, cx: &App| {
+            field().label("").child(
+              div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(text),
+            )
+          };
+          dialog
+            .title(title)
+            .w(px(520.))
+            .child(
+              v_form()
+                .label_width(px(96.))
+                .child(field().label("Name").child(Input::new(&view.form_name)))
+                .child(field().label("Group").child(Input::new(&view.form_group)))
+                .child(
+                  field()
+                    .label("Engine")
+                    .child(Select::new(&view.form_engine)),
+                )
+                .child(field().label("From URL").child(Input::new(&view.form_url)))
+                .child(field().label("Env").child(Select::new(&view.form_env)))
+                .child(
+                  field()
+                    .label("Agent access")
+                    .child(Select::new(&view.form_agent_access)),
+                )
+                .when(kind == ConnectorKind::Sqlite, |form| {
+                  let this_browse = this_browse.clone();
+                  form.child(
+                    field().label("Database file").child(
+                      h_flex()
+                        .w_full()
+                        .gap_2()
+                        .child(div().flex_1().child(Input::new(&view.form_path)))
+                        .child(
+                          Button::new("browse-sqlite")
+                            .ghost()
+                            .label("Browse")
+                            .debug_selector(|| "browse-sqlite".into())
+                            .on_click(move |_, _, cx| {
+                              this_browse
+                                .update(cx, |this, cx| this.browse_sqlite_path(cx))
+                                .ok();
+                            }),
+                        ),
+                    ),
                   )
-                  .child(field().label("From URL").child(Input::new(&view.form_url)))
-                  .child(field().label("Env").child(Select::new(&view.form_env)))
-                  .child(
+                })
+                .when(is_server, |form| {
+                  form
+                    .child(field().label("Host").child(Input::new(&view.form_host)))
+                    .child(field().label("Port").child(Input::new(&view.form_port)))
+                })
+                .when(kind == ConnectorKind::Redis, |form| {
+                  form.child(
                     field()
-                      .label("Agent access")
-                      .child(Select::new(&view.form_agent_access)),
+                      .label("DB index")
+                      .child(Input::new(&view.form_db_index)),
                   )
-                  .when(kind == ConnectorKind::Sqlite, |form| {
-                    let this_browse = this_browse.clone();
-                    form.child(
-                      field().label("Database file").child(
-                        h_flex()
-                          .w_full()
-                          .gap_2()
-                          .child(div().flex_1().child(Input::new(&view.form_path)))
-                          .child(
-                            Button::new("browse-sqlite")
-                              .ghost()
-                              .label("Browse")
-                              .debug_selector(|| "browse-sqlite".into())
-                              .on_click(move |_, _, cx| {
-                                this_browse.update(cx, |this, cx| this.browse_sqlite_path(cx));
-                              }),
-                          ),
-                      ),
-                    )
-                  })
-                  .when(is_server, |form| {
-                    form
-                      .child(field().label("Host").child(Input::new(&view.form_host)))
-                      .child(field().label("Port").child(Input::new(&view.form_port)))
-                  })
-                  .when(kind == ConnectorKind::Redis, |form| {
-                    form.child(
+                })
+                .when(kind == ConnectorKind::Mongo, |form| {
+                  form
+                    .child(
                       field()
-                        .label("DB index")
-                        .child(Input::new(&view.form_db_index)),
+                        .label("Database")
+                        .child(Input::new(&view.form_database)),
                     )
-                  })
-                  .when(kind == ConnectorKind::Mongo, |form| {
+                    .child(
+                      field()
+                        .label("Auth source")
+                        .child(Input::new(&view.form_auth_source)),
+                    )
+                })
+                .when(is_sql, |form| {
+                  form
+                    .child(
+                      field()
+                        .label("Database")
+                        .child(Input::new(&view.form_database)),
+                    )
+                    .child(field().label("User").child(Input::new(&view.form_user)))
+                    .child(field().label("SSL").child(Select::new(&view.form_ssl)))
+                    .when(ssl_mode == SslMode::VerifyFull, |form| {
+                      form.child(
+                        field()
+                          .label("CA cert")
+                          .child(Input::new(&view.form_ssl_root_cert)),
+                      )
+                    })
+                })
+                .when(
+                  matches!(kind, ConnectorKind::Redis | ConnectorKind::Mongo),
+                  |form| {
                     form
-                      .child(
-                        field()
-                          .label("Database")
-                          .child(Input::new(&view.form_database)),
-                      )
-                      .child(
-                        field()
-                          .label("Auth source")
-                          .child(Input::new(&view.form_auth_source)),
-                      )
-                  })
-                  .when(is_sql, |form| {
-                    form
-                      .child(
-                        field()
-                          .label("Database")
-                          .child(Input::new(&view.form_database)),
-                      )
                       .child(field().label("User").child(Input::new(&view.form_user)))
-                      .child(field().label("SSL").child(Select::new(&view.form_ssl)))
-                      .when(ssl_mode == SslMode::VerifyFull, |form| {
-                        form.child(
-                          field()
-                            .label("CA cert")
-                            .child(Input::new(&view.form_ssl_root_cert)),
-                        )
-                      })
-                  })
-                  .when(
-                    matches!(kind, ConnectorKind::Redis | ConnectorKind::Mongo),
-                    |form| {
-                      form
-                        .child(field().label("User").child(Input::new(&view.form_user)))
-                        .child(field().label("TLS").child(
-                          Switch::new("form-tls").checked(tls).on_click({
-                            let this_tls = this_tls.clone();
-                            move |checked, _, cx| {
-                              let checked = *checked;
-                              this_tls.update(cx, |view, cx| {
+                      .child(field().label("TLS").child(
+                        Switch::new("form-tls").checked(tls).on_click({
+                          let this_tls = this_tls.clone();
+                          move |checked, _, cx| {
+                            let checked = *checked;
+                            this_tls
+                              .update(cx, |view, cx| {
                                 view.form_tls = checked;
                                 cx.notify();
-                              });
-                            }
-                          }),
-                        ))
-                    },
-                  )
-                  .when(is_server, |form| {
-                    form.child(
-                      field()
-                        .label("SSH tunnel")
-                        .child(Select::new(&view.form_tunnel)),
-                    )
-                  })
-                  .when(is_server, |form| {
-                    form
-                      .child(
-                        field()
-                          .label("Password")
-                          .child(Select::new(&view.form_credential)),
-                      )
-                      // Amber, not destructive: one mode is gone, nothing is broken.
-                      .when_some(view.state.secrets_problem.clone(), |form, problem| {
-                        form.child(
-                          field()
-                            .label("")
-                            .child(div().text_xs().text_color(cx.theme().yellow).child(problem)),
-                        )
-                      })
-                      .when(mode != CredentialMode::Command, |form| {
-                        form
-                          .child(
-                            field()
-                              .label(if mode == CredentialMode::Prompt {
-                                "(for Test only)"
-                              } else {
-                                ""
                               })
-                              .child(Input::new(&view.form_password)),
-                          )
-                          .when_some(credential_mode_hint(mode), |form, text| {
-                            form.child(hint(text.into(), cx))
-                          })
-                      })
-                      .when(mode == CredentialMode::Command, |form| {
-                        form
-                          .child(
-                            field()
-                              .label("Command")
-                              .child(Input::new(&view.form_command)),
-                          )
-                          .child(field().label("").child(command_preview(
-                            &command,
-                            CONNECTION_COMMAND_HINT,
-                            cx,
-                          )))
-                          .when_some(credential_command_caveat(kind), |form, caveat| {
-                            form.child(hint(caveat.into(), cx))
-                          })
-                      })
-                  })
-                  .when(!status.is_empty(), |form| form.child(hint(status, cx))),
-              )
-              .footer(
-                h_flex()
-                  .gap_2()
-                  .justify_end()
-                  .child(Button::new("form-test").ghost().label("Test").on_click(
-                    move |_, _, cx| {
-                      this_test.update(cx, |this, cx| this.test_form(cx));
-                    },
-                  ))
-                  .child(
-                    Button::new("form-cancel")
-                      .label("Cancel")
-                      .on_click(|_, window, cx| window.close_dialog(cx)),
+                              .ok();
+                          }
+                        }),
+                      ))
+                  },
+                )
+                .when(is_server, |form| {
+                  form.child(
+                    field()
+                      .label("SSH tunnel")
+                      .child(Select::new(&view.form_tunnel)),
                   )
-                  .child(Button::new("form-save").primary().label("Save").on_click(
-                    move |_, window, cx| {
-                      this_save.update(cx, |this, cx| this.save_form(cx));
-                      window.close_dialog(cx);
-                    },
-                  )),
-              )
-          });
-        });
+                })
+                .when(is_server, |form| {
+                  form
+                    .child(
+                      field()
+                        .label("Password")
+                        .child(Select::new(&view.form_credential)),
+                    )
+                    // Amber, not destructive: one mode is gone, nothing is broken.
+                    .when_some(view.state.secrets_problem.clone(), |form, problem| {
+                      form.child(
+                        field()
+                          .label("")
+                          .child(div().text_xs().text_color(cx.theme().yellow).child(problem)),
+                      )
+                    })
+                    .when(mode != CredentialMode::Command, |form| {
+                      form
+                        .child(
+                          field()
+                            .label(if mode == CredentialMode::Prompt {
+                              "(for Test only)"
+                            } else {
+                              ""
+                            })
+                            .child(Input::new(&view.form_password)),
+                        )
+                        .when_some(credential_mode_hint(mode), |form, text| {
+                          form.child(hint(text.into(), cx))
+                        })
+                    })
+                    .when(mode == CredentialMode::Command, |form| {
+                      form
+                        .child(
+                          field()
+                            .label("Command")
+                            .child(Input::new(&view.form_command)),
+                        )
+                        .child(field().label("").child(command_preview(
+                          &command,
+                          CONNECTION_COMMAND_HINT,
+                          cx,
+                        )))
+                        .when_some(credential_command_caveat(kind), |form, caveat| {
+                          form.child(hint(caveat.into(), cx))
+                        })
+                    })
+                })
+                .when(!status.is_empty(), |form| form.child(hint(status, cx))),
+            )
+            .footer(
+              h_flex()
+                .gap_2()
+                .justify_end()
+                .child(
+                  Button::new("form-test")
+                    .ghost()
+                    .label("Test")
+                    .on_click(move |_, _, cx| {
+                      this_test.update(cx, |this, cx| this.test_form(cx)).ok();
+                    }),
+                )
+                .child(
+                  Button::new("form-cancel")
+                    .label("Cancel")
+                    .on_click(|_, window, cx| window.close_dialog(cx)),
+                )
+                .child(Button::new("form-save").primary().label("Save").on_click(
+                  move |_, window, cx| {
+                    this_save.update(cx, |this, cx| this.save_form(cx)).ok();
+                    window.close_dialog(cx);
+                  },
+                )),
+            )
+        }
+      });
     });
   }
 
@@ -1245,6 +1266,15 @@ impl ConnectionsView {
     });
   }
 
+  fn selected_tunnel_id(&self, cx: &App) -> Option<String> {
+    let ix = self
+      .form_tunnel
+      .read(cx)
+      .selected_index(cx)
+      .map_or(0, |ix| ix.row);
+    self.form_tunnel_ids.get(ix).cloned().flatten()
+  }
+
   /// Ids and labels rebuilt together: the picker maps by index, since tunnel
   /// names can collide.
   fn refresh_tunnel_picker(
@@ -1311,12 +1341,7 @@ impl ConnectionsView {
       let value = input.read(cx).value().trim().to_string();
       (!value.is_empty()).then_some(value)
     };
-    let tunnel_ix = self
-      .form_tunnel
-      .read(cx)
-      .selected_index(cx)
-      .map_or(0, |ix| ix.row);
-    let tunnel_id = self.form_tunnel_ids.get(tunnel_ix).cloned().flatten();
+    let tunnel_id = self.selected_tunnel_id(cx);
 
     let params = match kind {
       ConnectorKind::Sqlite => {
@@ -1524,23 +1549,25 @@ impl ConnectionsView {
     self.export_include_secrets = false;
     self.export_busy = false;
     self.export_error = None;
-    let this = cx.entity();
-    cx.defer(move |cx| {
-      let Some(window_handle) = cx.active_window() else {
-        return;
-      };
-      let _ = cx.update_window(window_handle, |_, window, cx| {
-        this.update(cx, |view, cx| {
+    let this = cx.entity().downgrade();
+    dialogs::defer_on_active_window(cx, move |window, cx| {
+      this
+        .update(cx, |view, cx| {
           view
             .export_passphrase
             .update(cx, |i, cx| i.set_value("", window, cx));
           view
             .export_confirm
             .update(cx, |i, cx| i.set_value("", window, cx));
-        });
-        let this = this.clone();
-        window.open_dialog(cx, move |dialog, _, cx| {
-          let view = this.read(cx);
+        })
+        .ok();
+      let this = this.clone();
+      window.open_dialog(cx, move |dialog, _, cx| {
+        let Some(strong) = this.upgrade() else {
+          return dialog;
+        };
+        let view = strong.read(cx);
+        {
           let include = view.export_include_secrets;
           let busy = view.export_busy;
           let error = view.export_error.clone();
@@ -1572,10 +1599,12 @@ impl ConnectionsView {
                         .child(Switch::new("export-secrets").checked(include).on_click(
                           move |checked, _, cx| {
                             let checked = *checked;
-                            this_toggle.update(cx, |view, cx| {
-                              view.export_include_secrets = checked;
-                              cx.notify();
-                            });
+                            this_toggle
+                              .update(cx, |view, cx| {
+                                view.export_include_secrets = checked;
+                                cx.notify();
+                              })
+                              .ok();
                           },
                         )),
                     )
@@ -1637,11 +1666,11 @@ impl ConnectionsView {
                     .disabled(busy)
                     .debug_selector(|| "run-export".into())
                     .on_click(move |_, _, cx| {
-                      this_run.update(cx, |this, cx| this.run_export(cx));
+                      this_run.update(cx, |this, cx| this.run_export(cx)).ok();
                     }),
                 ),
             )
-        });
+        }
       });
     });
   }
@@ -1743,21 +1772,18 @@ impl ConnectionsView {
     self.import_locked = false;
     self.import_busy = false;
     self.import_error = None;
-    let this = cx.entity();
-    cx.defer(move |cx| {
-      let Some(window_handle) = cx.active_window() else {
-        return;
-      };
-      let _ = cx.update_window(window_handle, |_, window, cx| {
-        this.update(cx, |view, cx| {
+    let this = cx.entity().downgrade();
+    dialogs::defer_on_active_window(cx, move |window, cx| {
+      this
+        .update(cx, |view, cx| {
           view
             .import_passphrase
             .update(cx, |i, cx| i.set_value("", window, cx));
           view.load_import_preview(cx);
-        });
-        let this = this.clone();
-        window.open_dialog(cx, move |dialog, _, cx| import_dialog(dialog, &this, cx));
-      });
+        })
+        .ok();
+      let this = this.clone();
+      window.open_dialog(cx, move |dialog, _, cx| import_dialog(dialog, &this, cx));
     });
   }
 
@@ -1897,10 +1923,13 @@ fn outline_badge(text: String, color: Hsla, cx: &App) -> Div {
 /// The import dialog body, re-read from the view every frame like the forms.
 fn import_dialog(
   dialog: gpui_component::dialog::Dialog,
-  this: &Entity<ConnectionsView>,
+  this: &WeakEntity<ConnectionsView>,
   cx: &App,
 ) -> gpui_component::dialog::Dialog {
-  let view = this.read(cx);
+  let Some(strong) = this.upgrade() else {
+    return dialog;
+  };
+  let view = strong.read(cx);
   let path_text = view
     .import_path
     .as_ref()
@@ -1929,11 +1958,13 @@ fn import_dialog(
     .w(px(520.))
     // Enter unlocks while locked; it never runs the import.
     .on_ok(move |_, _, cx| {
-      this_ok.update(cx, |view, cx| {
-        if view.import_locked && !view.import_busy {
-          view.load_import_preview(cx);
-        }
-      });
+      this_ok
+        .update(cx, |view, cx| {
+          if view.import_locked && !view.import_busy {
+            view.load_import_preview(cx);
+          }
+        })
+        .ok();
       false
     })
     .child(
@@ -1973,7 +2004,9 @@ fn import_dialog(
                       .disabled(!unlockable)
                       .debug_selector(|| "import-unlock".into())
                       .on_click(move |_, _, cx| {
-                        this_unlock.update(cx, |view, cx| view.load_import_preview(cx));
+                        this_unlock
+                          .update(cx, |view, cx| view.load_import_preview(cx))
+                          .ok();
                       }),
                   ),
               ),
@@ -2096,10 +2129,12 @@ fn import_dialog(
                             let this = this_secrets.clone();
                             move |checked, _, cx| {
                               let checked = *checked;
-                              this.update(cx, |view, cx| {
-                                view.import_with_secrets = checked;
-                                cx.notify();
-                              });
+                              this
+                                .update(cx, |view, cx| {
+                                  view.import_with_secrets = checked;
+                                  cx.notify();
+                                })
+                                .ok();
                             }
                           }),
                       ),
@@ -2132,10 +2167,12 @@ fn import_dialog(
                         let this = this_strategy.clone();
                         move |ix, _, cx| {
                           let ix = *ix;
-                          this.update(cx, |view, cx| {
-                            view.import_strategy = ix;
-                            cx.notify();
-                          });
+                          this
+                            .update(cx, |view, cx| {
+                              view.import_strategy = ix;
+                              cx.notify();
+                            })
+                            .ok();
                         }
                       })
                       .children(transfer::DUPLICATE_STRATEGIES.iter().enumerate().map(
@@ -2198,7 +2235,7 @@ fn import_dialog(
             .disabled(busy || blocked || !has_plan || locked)
             .debug_selector(|| "run-import".into())
             .on_click(move |_, _, cx| {
-              this_run.update(cx, |this, cx| this.run_import(cx));
+              this_run.update(cx, |this, cx| this.run_import(cx)).ok();
             }),
         ),
     )

@@ -28,13 +28,11 @@ pub fn open_command_approval_dialog<V: 'static>(
   cx: &mut Context<V>,
   on_approved: impl Fn(&mut V, Result<(), Error>, &mut Context<V>) + Clone + 'static,
 ) {
-  cx.defer(move |cx| {
-    let Some(window_handle) = cx.active_window() else {
-      return;
-    };
-    let _ = cx.update_window(window_handle, |_, window, cx| {
-      window.open_dialog(cx, move |dialog, _, cx| {
-        let this = this.clone();
+  let this = this.downgrade();
+  crate::dialogs::defer_on_active_window(cx, move |window, cx| {
+    window.open_dialog(cx, move |dialog, _, cx| {
+      let this = this.clone();
+      {
         let state = state.clone();
         let prompt = prompt.clone();
         let on_approved = on_approved.clone();
@@ -54,7 +52,9 @@ pub fn open_command_approval_dialog<V: 'static>(
               // Popped before the retry so a fresh failure can stack cleanly.
               window.close_dialog(cx);
               let on_approved = on_approved.clone();
-              this.update(cx, move |view, cx| on_approved(view, result, cx));
+              this
+                .update(cx, move |view, cx| on_approved(view, result, cx))
+                .ok();
             }
           });
         dialog
@@ -108,7 +108,7 @@ pub fn open_command_approval_dialog<V: 'static>(
               )
               .child(approve),
           )
-      });
+      }
     });
   });
 }

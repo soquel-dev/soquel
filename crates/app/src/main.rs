@@ -8,6 +8,7 @@ mod completion;
 mod connections;
 mod core;
 mod diagnostics;
+mod dialogs;
 mod doc;
 mod explain;
 mod export;
