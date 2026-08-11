@@ -117,7 +117,7 @@ fn test_profile(params: MongoParams) -> ConnectionProfile {
 }
 
 fn params_from_env() -> Option<MongoParams> {
-  let addr = std::env::var("SOQUEL_TEST_MONGO").ok()?;
+  let addr = crate::integration_env("SOQUEL_TEST_MONGO")?;
   let (host, port) = addr
     .split_once(':')
     .expect("SOQUEL_TEST_MONGO is host:port");

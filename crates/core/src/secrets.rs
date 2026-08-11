@@ -41,7 +41,7 @@ pub trait SecretStore: Send + Sync {
 }
 
 /// What the frontend needs to know about secret storage.
-#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+#[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SecretsStatus {
   pub keychain: bool,

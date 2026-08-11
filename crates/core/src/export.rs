@@ -3,7 +3,6 @@
 use std::io::Write;
 
 use serde::Deserialize;
-use specta::Type;
 
 use crate::connectors::{
   ColumnKind, QueryColumn, RowsChunk, SqlQuery, StreamSummary, TableRowsRequest,
@@ -68,7 +67,7 @@ pub async fn run_export(
   Ok(summary)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ExportFormat {
   Csv,

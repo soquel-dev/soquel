@@ -317,7 +317,7 @@ fn connection_from_url(url: &str, ssl_mode: SslMode) -> PostgresConnection {
 }
 
 pub async fn test_connection_from_env() -> Option<PostgresConnection> {
-  let url = std::env::var("SOQUEL_TEST_PG").ok()?;
+  let url = crate::integration_env("SOQUEL_TEST_PG")?;
   Some(connection_from_url(&url, SslMode::Prefer))
 }
 
@@ -471,7 +471,7 @@ async fn integration_postgres_session_cancel_kills_query() {
 
 #[tokio::test]
 async fn integration_postgres_require_tls_fails_on_plaintext_server() {
-  let Ok(url) = std::env::var("SOQUEL_TEST_PG") else {
+  let Some(url) = crate::integration_env("SOQUEL_TEST_PG") else {
     return;
   };
   // The compose postgres has no TLS: require must fail, prefer falls back.
@@ -484,7 +484,7 @@ async fn integration_postgres_require_tls_fails_on_plaintext_server() {
 
 #[tokio::test]
 async fn integration_postgres_tls_require_accepts_self_signed() {
-  let Ok(url) = std::env::var("SOQUEL_TEST_PG_TLS") else {
+  let Some(url) = crate::integration_env("SOQUEL_TEST_PG_TLS") else {
     return;
   };
   // require encrypts without verifying: the throwaway cert must pass.
@@ -502,7 +502,7 @@ async fn integration_postgres_tls_require_accepts_self_signed() {
 
 #[tokio::test]
 async fn integration_postgres_tls_verify_full_rejects_self_signed() {
-  let Ok(url) = std::env::var("SOQUEL_TEST_PG_TLS") else {
+  let Some(url) = crate::integration_env("SOQUEL_TEST_PG_TLS") else {
     return;
   };
   let pg = connection_from_url(&url, SslMode::VerifyFull);
@@ -518,7 +518,7 @@ pub(crate) const TEST_ROOT_CERT: &str =
 
 #[tokio::test]
 async fn integration_postgres_tls_verify_full_passes_with_root_cert() {
-  let Ok(url) = std::env::var("SOQUEL_TEST_PG_TLS") else {
+  let Some(url) = crate::integration_env("SOQUEL_TEST_PG_TLS") else {
     return;
   };
   let mut config: Config = url.parse().unwrap();
@@ -1352,7 +1352,7 @@ fn profile_from_env_url(url: &str) -> ConnectionProfile {
 
 #[tokio::test]
 async fn integration_postgres_auth_failure_maps_to_database_error() {
-  let Ok(url) = std::env::var("SOQUEL_TEST_PG") else {
+  let Some(url) = crate::integration_env("SOQUEL_TEST_PG") else {
     return;
   };
   let profile = profile_from_env_url(&url);
@@ -1374,7 +1374,7 @@ async fn integration_postgres_auth_failure_maps_to_database_error() {
 
 #[tokio::test]
 async fn integration_postgres_unreachable_maps_to_database_error() {
-  let Ok(url) = std::env::var("SOQUEL_TEST_PG") else {
+  let Some(url) = crate::integration_env("SOQUEL_TEST_PG") else {
     return;
   };
   let mut profile = profile_from_env_url(&url);
@@ -1422,7 +1422,7 @@ fn env_password(url: &str) -> String {
 
 #[tokio::test]
 async fn integration_postgres_password_from_a_command() {
-  let Ok(url) = std::env::var("SOQUEL_TEST_PG") else {
+  let Some(url) = crate::integration_env("SOQUEL_TEST_PG") else {
     return;
   };
   let spec =
@@ -1441,7 +1441,7 @@ async fn integration_postgres_password_from_a_command() {
 
 #[tokio::test]
 async fn integration_postgres_expired_command_password_is_resolved_again() {
-  let Ok(url) = std::env::var("SOQUEL_TEST_PG") else {
+  let Some(url) = crate::integration_env("SOQUEL_TEST_PG") else {
     return;
   };
   let dir = tempfile::tempdir().unwrap();

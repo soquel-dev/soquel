@@ -1094,7 +1094,7 @@ mod tests {
   /// detail, the console runs. Skipped silently without SOQUEL_TEST_REDIS.
   #[gpui::test]
   fn integration_kv_workspace_scans_selects_and_runs(cx: &mut gpui::TestAppContext) {
-    let Ok(coord) = std::env::var("SOQUEL_TEST_REDIS") else {
+    let Some(coord) = soquel_core::integration_env("SOQUEL_TEST_REDIS") else {
       return;
     };
     let (host, port) = coord.split_once(':').expect("host:port");

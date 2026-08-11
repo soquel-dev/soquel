@@ -3,7 +3,6 @@ use chacha20poly1305::aead::rand_core::RngCore;
 use chacha20poly1305::aead::{Aead, AeadCore, KeyInit, OsRng, Payload};
 use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
 use serde::{Deserialize, Serialize};
-use specta::Type;
 
 use crate::error::Error;
 
@@ -17,7 +16,7 @@ const BASE64: base64::engine::general_purpose::GeneralPurpose =
 
 /// Everything needed to re-derive the key, minus the passphrase. Doubles as the
 /// AEAD associated data, so tampering with the cost parameters breaks the open.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Encryption {
   pub kdf: String,

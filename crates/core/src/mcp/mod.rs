@@ -14,7 +14,6 @@ use rmcp::transport::streamable_http_server::tower::{
 };
 use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler};
 use serde::Serialize;
-use specta::Type;
 use tokio_util::sync::CancellationToken;
 
 use crate::connectors::TableRowsRequest;
@@ -130,10 +129,10 @@ pub async fn autostart(
   }
 }
 
-#[derive(Debug, Clone, Serialize, serde::Deserialize, Type)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AuditEntry {
-  /// Milliseconds since the epoch; f64 because specta forbids u64 in bindings.
+  /// Milliseconds since the epoch; f64 so the JSON shape stays a plain number.
   pub ts: f64,
   pub tool: String,
   /// How a write got its yes; None on reads, which never ask.
@@ -147,7 +146,7 @@ pub struct AuditEntry {
 }
 
 /// The MCP call stays blocked until this is answered.
-#[derive(Debug, Clone, Serialize, serde::Deserialize, Type)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpApprovalRequest {
   pub id: String,
@@ -159,7 +158,7 @@ pub struct McpApprovalRequest {
   pub payload: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Type)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpStatus {
   pub running: bool,
@@ -603,7 +602,7 @@ pub async fn resolve_approval(
 }
 
 /// How a write got its yes; recorded so the log cannot imply a dialog nobody saw.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Approval {
   Asked,
@@ -650,7 +649,7 @@ async fn await_approval(
 }
 
 /// One row of the panel's "currently covered" list.
-#[derive(Debug, Clone, Serialize, Type)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrustWindowInfo {
   pub session: String,
@@ -1675,7 +1674,7 @@ mod tests {
 
   #[tokio::test]
   async fn integration_mcp_opt_in_gates_every_tool() {
-    let Ok(url) = std::env::var("SOQUEL_TEST_PG") else {
+    let Some(url) = crate::integration_env("SOQUEL_TEST_PG") else {
       return;
     };
     let dir = tempfile::tempdir().unwrap();
@@ -1915,7 +1914,7 @@ mod tests {
 
   #[tokio::test]
   async fn integration_mcp_tools_read_only_capped_audited() {
-    let Ok(url) = std::env::var("SOQUEL_TEST_PG") else {
+    let Some(url) = crate::integration_env("SOQUEL_TEST_PG") else {
       return;
     };
     let dir = tempfile::tempdir().unwrap();
@@ -2806,7 +2805,7 @@ mod tests {
 
   #[tokio::test]
   async fn integration_mcp_kv_tools_read_redis() {
-    let Ok(addr) = std::env::var("SOQUEL_TEST_REDIS") else {
+    let Some(addr) = crate::integration_env("SOQUEL_TEST_REDIS") else {
       return;
     };
     let (host, port) = addr.split_once(':').expect("host:port");
@@ -2897,7 +2896,7 @@ mod tests {
 
   #[tokio::test]
   async fn integration_mcp_kv_writes_need_approval() {
-    let Ok(addr) = std::env::var("SOQUEL_TEST_REDIS") else {
+    let Some(addr) = crate::integration_env("SOQUEL_TEST_REDIS") else {
       return;
     };
     let (host, port) = addr.split_once(':').expect("host:port");
@@ -3040,7 +3039,7 @@ mod tests {
 
   #[tokio::test]
   async fn integration_mcp_doc_tools_read_mongo() {
-    let Ok(addr) = std::env::var("SOQUEL_TEST_MONGO") else {
+    let Some(addr) = crate::integration_env("SOQUEL_TEST_MONGO") else {
       return;
     };
     let (host, port) = addr.split_once(':').expect("host:port");
@@ -3135,7 +3134,7 @@ mod tests {
 
   #[tokio::test]
   async fn integration_mcp_doc_writes_need_approval() {
-    let Ok(addr) = std::env::var("SOQUEL_TEST_MONGO") else {
+    let Some(addr) = crate::integration_env("SOQUEL_TEST_MONGO") else {
       return;
     };
     let (host, port) = addr.split_once(':').expect("host:port");
@@ -3263,7 +3262,7 @@ mod tests {
 
   #[tokio::test]
   async fn integration_mcp_write_needs_approval() {
-    let Ok(url) = std::env::var("SOQUEL_TEST_PG") else {
+    let Some(url) = crate::integration_env("SOQUEL_TEST_PG") else {
       return;
     };
     let dir = tempfile::tempdir().unwrap();

@@ -9,7 +9,6 @@ pub mod file;
 mod tests;
 
 use serde::{Deserialize, Serialize};
-use specta::Type;
 
 use crate::error::Error;
 use crate::profiles::{AgentAccess, ConnectionProfile, ConnectorParams, CredentialSource, Env};
@@ -48,7 +47,7 @@ pub struct ImportBundle {
 }
 
 /// What to do with an entry that already exists here (same name, same target).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DuplicateStrategy {
   Replace,
@@ -56,7 +55,7 @@ pub enum DuplicateStrategy {
   Skip,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreviewEntry {
   pub name: String,
@@ -69,7 +68,7 @@ pub struct PreviewEntry {
   pub problem: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportPreview {
   pub encrypted: bool,
@@ -79,7 +78,7 @@ pub struct ImportPreview {
   pub tunnels: Vec<PreviewEntry>,
 }
 
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportOutcome {
   pub created: u32,
@@ -88,7 +87,7 @@ pub struct ImportOutcome {
   pub tunnels_created: u32,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportSummary {
   pub connections: u32,

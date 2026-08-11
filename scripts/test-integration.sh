@@ -4,6 +4,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Whoever runs this script means it: a missing database must fail the gated
+# tests loudly instead of letting them no-op green.
+export SOQUEL_REQUIRE_INTEGRATION=1
+
 # Connector suites and the mcp agent surface live in the core crate; the gpui
 # frontend runs its browse/stage/apply flow against the same postgres.
 core=crates/core/Cargo.toml
@@ -20,8 +24,9 @@ SOQUEL_TEST_SSH_RECONNECT=localhost:5461 \
   cargo test --manifest-path "$core" integration_
 
 echo "==> postgres oldest supported"
+# TLS handshakes are covered by the full suite; the oldest service has no cert.
 SOQUEL_TEST_PG=postgres://soquel:soquel@localhost:5460/soquel_test \
-  cargo test --manifest-path "$core" integration_postgres_
+  cargo test --manifest-path "$core" integration_postgres_ -- --skip integration_postgres_tls
 
 echo "==> mysql oldest supported"
 SOQUEL_TEST_MYSQL=localhost:5462 \

@@ -999,7 +999,7 @@ mod tests {
   #[gpui::test]
   async fn integration_flow_browse_stage_apply(cx: &mut gpui::TestAppContext) {
     cx.executor().allow_parking();
-    let Ok(url) = std::env::var("SOQUEL_TEST_PG") else {
+    let Some(url) = soquel_core::integration_env("SOQUEL_TEST_PG") else {
       return;
     };
     let (host, port, database, user, pass) = parse_pg_url(&url).expect("parsable test url");
@@ -1090,7 +1090,7 @@ mod tests {
   #[gpui::test]
   async fn integration_flow_mysql(cx: &mut gpui::TestAppContext) {
     cx.executor().allow_parking();
-    let Ok(addr) = std::env::var("SOQUEL_TEST_MYSQL") else {
+    let Some(addr) = soquel_core::integration_env("SOQUEL_TEST_MYSQL") else {
       return;
     };
     let (host, port) = addr
@@ -1177,7 +1177,7 @@ mod tests {
   #[gpui::test]
   async fn integration_flow_sqlite(cx: &mut gpui::TestAppContext) {
     cx.executor().allow_parking();
-    if std::env::var("SOQUEL_TEST_SQLITE").is_err() {
+    if soquel_core::integration_env("SOQUEL_TEST_SQLITE").is_none() {
       return;
     }
     let dir = tempfile::tempdir().unwrap();
@@ -1257,7 +1257,7 @@ mod tests {
   #[gpui::test]
   async fn integration_flow_tunnel_trust_and_connect(cx: &mut gpui::TestAppContext) {
     cx.executor().allow_parking();
-    let Ok(ssh) = std::env::var("SOQUEL_TEST_SSH") else {
+    let Some(ssh) = soquel_core::integration_env("SOQUEL_TEST_SSH") else {
       return;
     };
     let (ssh_host, ssh_port) = ssh.split_once(':').expect("host:port");
@@ -1373,7 +1373,7 @@ mod tests {
     use soquel_core::credentials::Credentials;
     use soquel_core::profiles::RedisParams;
 
-    let Ok(coord) = std::env::var("SOQUEL_TEST_REDIS") else {
+    let Some(coord) = soquel_core::integration_env("SOQUEL_TEST_REDIS") else {
       return;
     };
     let (host, port) = coord.split_once(':').expect("host:port");
@@ -1466,7 +1466,7 @@ mod tests {
     use soquel_core::credentials::Credentials;
     use soquel_core::profiles::MongoParams;
 
-    let Ok(coord) = std::env::var("SOQUEL_TEST_MONGO") else {
+    let Some(coord) = soquel_core::integration_env("SOQUEL_TEST_MONGO") else {
       return;
     };
     let (host, port) = coord.split_once(':').expect("host:port");

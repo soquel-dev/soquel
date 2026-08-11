@@ -90,7 +90,7 @@ fn parse_keyspace_reads_db_lines() {
 // -------- integration, gated on the compose redis --------
 
 fn params_from_env(db: u32) -> Option<RedisParams> {
-  let addr = std::env::var("SOQUEL_TEST_REDIS").ok()?;
+  let addr = crate::integration_env("SOQUEL_TEST_REDIS")?;
   let (host, port) = addr
     .split_once(':')
     .expect("SOQUEL_TEST_REDIS is host:port");

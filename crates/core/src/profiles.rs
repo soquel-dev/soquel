@@ -2,11 +2,10 @@ use std::fs;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use specta::Type;
 
 use crate::error::Error;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Env {
   Dev,
@@ -14,7 +13,7 @@ pub enum Env {
   Prod,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ConnectorKind {
   Postgres,
@@ -26,7 +25,7 @@ pub enum ConnectorKind {
 
 /// libpq semantics: `require` encrypts without verifying the certificate,
 /// only `verify-full` checks the chain and hostname.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SslMode {
   Disable,
@@ -37,7 +36,7 @@ pub enum SslMode {
 }
 
 /// Shared shape for TCP SQL servers (postgres, mysql).
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SqlServerParams {
   pub host: String,
@@ -55,7 +54,7 @@ pub struct SqlServerParams {
 
 /// Redis speaks AUTH, not SQL: username is optional (ACL), the database is a
 /// numeric index, and TLS is a plain toggle (rediss://).
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RedisParams {
   pub host: String,
@@ -73,7 +72,7 @@ pub struct RedisParams {
 /// MongoDB single node (v1); srv/replica-set discovery later. `database` is
 /// the default db the UI opens; credentials validate against `auth_source`,
 /// falling back to `database`, then the driver's "admin" (URI semantics).
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MongoParams {
   pub host: String,
@@ -91,7 +90,7 @@ pub struct MongoParams {
 }
 
 /// Per-kind connection parameters; future kinds bring their own shapes.
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum ConnectorParams {
   Postgres(SqlServerParams),
@@ -174,7 +173,7 @@ impl ConnectorParams {
 }
 
 /// What the MCP server may do with a connection; `None` hides it from agents entirely.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum AgentAccess {
   #[default]
@@ -185,7 +184,7 @@ pub enum AgentAccess {
 
 /// Where the password comes from at connect time. Configuration, not a secret:
 /// it lives in the profile, the password itself never does.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
   tag = "mode",
   rename_all = "kebab-case",
@@ -203,7 +202,7 @@ pub enum CredentialSource {
   },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionProfile {
   pub id: String,
@@ -219,7 +218,7 @@ pub struct ConnectionProfile {
 }
 
 /// Secrets ride in on the input but are stored in the OS keychain, never in the profile.
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionInput {
   pub name: String,

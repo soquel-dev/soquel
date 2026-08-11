@@ -1,8 +1,7 @@
 use serde::{Deserialize, Serialize};
-use specta::Type;
 
 /// What a prompt is asking for; drives the dialog's wording.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SecretSubject {
   Connection,
@@ -11,7 +10,7 @@ pub enum SecretSubject {
 
 /// Why an activation was refused. Each one asks something different of the buyer,
 /// which is the whole reason the licence service distinguishes them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ActivationReason {
   /// The request never got an answer: no network, DNS, TLS, or a timeout.
@@ -26,7 +25,7 @@ pub enum ActivationReason {
 }
 
 /// Normalized error shape crossing the IPC boundary.
-#[derive(Debug, thiserror::Error, Serialize, Type)]
+#[derive(Debug, thiserror::Error, Serialize)]
 #[serde(
   tag = "kind",
   rename_all = "kebab-case",

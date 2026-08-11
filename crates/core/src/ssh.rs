@@ -387,7 +387,7 @@ mod tests {
   }
 
   fn tunnel_from_env(key_path: &str) -> Option<TunnelProfile> {
-    let addr = std::env::var("SOQUEL_TEST_SSH").ok()?;
+    let addr = crate::integration_env("SOQUEL_TEST_SSH")?;
     let (host, port) = addr.split_once(':').expect("SOQUEL_TEST_SSH is host:port");
     Some(TunnelProfile {
       id: "test".to_string(),
@@ -621,7 +621,7 @@ mod tests {
     let Some(profile) = tunnel_from_env(TEST_KEY) else {
       return;
     };
-    if std::env::var("SOQUEL_TEST_REDIS").is_err() {
+    if crate::integration_env("SOQUEL_TEST_REDIS").is_none() {
       return;
     }
     let key = host_key(&profile).await;
@@ -685,7 +685,7 @@ mod tests {
     let Some(tunnel_profile) = tunnel_from_env(TEST_KEY) else {
       return;
     };
-    if std::env::var("SOQUEL_TEST_REDIS").is_err() {
+    if crate::integration_env("SOQUEL_TEST_REDIS").is_none() {
       return;
     }
     let key = host_key(&tunnel_profile).await;
@@ -810,7 +810,7 @@ mod tests {
     let Some(profile) = tunnel_from_env(TEST_KEY) else {
       return;
     };
-    if std::env::var("SOQUEL_TEST_MONGO").is_err() {
+    if crate::integration_env("SOQUEL_TEST_MONGO").is_none() {
       return;
     }
     let key = host_key(&profile).await;
@@ -873,7 +873,7 @@ mod tests {
     let Some(profile) = tunnel_from_env(TEST_KEY) else {
       return;
     };
-    if std::env::var("SOQUEL_TEST_PG_TLS").is_err() {
+    if crate::integration_env("SOQUEL_TEST_PG_TLS").is_none() {
       return;
     }
     let key = host_key(&profile).await;
@@ -939,7 +939,7 @@ mod tests {
 
   #[tokio::test(flavor = "multi_thread")]
   async fn integration_ssh_reconnects_after_sshd_restart() {
-    let Ok(addr) = std::env::var("SOQUEL_TEST_SSH_RECONNECT") else {
+    let Some(addr) = crate::integration_env("SOQUEL_TEST_SSH_RECONNECT") else {
       return;
     };
     let (host, port) = addr.split_once(':').expect("host:port");

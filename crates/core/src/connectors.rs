@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use specta::Type;
 
 use crate::credentials::Credentials;
 use crate::error::Error;
@@ -12,7 +11,7 @@ use crate::profiles::{ConnectionProfile, ConnectorKind};
 use crate::redis::RedisConnector;
 use crate::sqlite::SqliteConnector;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Capability {
   SqlQuery,
@@ -23,7 +22,7 @@ pub enum Capability {
 
 /// Coarse type family for UI decisions (alignment, editors, viewers);
 /// `data_type` keeps the exact postgres name.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ColumnKind {
   Bool,
@@ -39,7 +38,7 @@ pub enum ColumnKind {
 }
 
 // Deserialize: the export operations take columns back from the frontend.
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryColumn {
   pub name: String,
@@ -48,14 +47,14 @@ pub struct QueryColumn {
   pub kind: ColumnKind,
 }
 
-#[derive(Debug, Clone, Serialize, Type)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerNotice {
   pub severity: String,
   pub message: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Type)]
+#[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StatementResult {
   pub columns: Vec<QueryColumn>,
@@ -63,7 +62,7 @@ pub struct StatementResult {
   pub rows_affected: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Type)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryResult {
   pub statements: Vec<StatementResult>,
@@ -71,21 +70,21 @@ pub struct QueryResult {
   pub duration_ms: f64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SortDirection {
   Asc,
   Desc,
 }
 
-#[derive(Debug, Clone, Deserialize, Type)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SortSpec {
   pub column: String,
   pub direction: SortDirection,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum FilterOp {
   Eq,
@@ -100,7 +99,7 @@ pub enum FilterOp {
   IsNotNull,
 }
 
-#[derive(Debug, Clone, Deserialize, Type)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ColumnFilter {
   pub column: String,
@@ -109,7 +108,7 @@ pub struct ColumnFilter {
   pub value: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Type)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TableRowsRequest {
   pub schema: String,
@@ -128,7 +127,7 @@ pub struct TableRowsRequest {
   pub include_xmin: bool,
 }
 
-#[derive(Debug, Clone, Deserialize, Type)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CellValue {
   pub column: String,
@@ -136,27 +135,27 @@ pub struct CellValue {
   pub value: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Type)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RowUpdate {
   pub key: Vec<CellValue>,
   pub set: Vec<CellValue>,
 }
 
-#[derive(Debug, Clone, Deserialize, Type)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RowInsert {
   /// Omitted columns take their DEFAULT.
   pub values: Vec<CellValue>,
 }
 
-#[derive(Debug, Clone, Deserialize, Type)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RowDelete {
   pub key: Vec<CellValue>,
 }
 
-#[derive(Debug, Clone, Deserialize, Type)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TableChanges {
   pub schema: String,
@@ -166,7 +165,7 @@ pub struct TableChanges {
   pub deletes: Vec<RowDelete>,
 }
 
-#[derive(Debug, Clone, Serialize, Type)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RowsChunk {
   /// Present on the first chunk only.
@@ -174,7 +173,7 @@ pub struct RowsChunk {
   pub rows: Vec<Vec<Option<String>>>,
 }
 
-#[derive(Debug, Clone, Serialize, Type)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StreamSummary {
   pub rows: f64,
@@ -182,7 +181,7 @@ pub struct StreamSummary {
   pub notices: Vec<ServerNotice>,
 }
 
-#[derive(Debug, Clone, Serialize, Type)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ApplyResult {
   pub updated: u32,
@@ -222,7 +221,7 @@ pub trait SqlSession: Send + Sync {
   async fn close(&self) -> Result<(), Error>;
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TableKind {
   Table,
@@ -230,7 +229,7 @@ pub enum TableKind {
   MaterializedView,
 }
 
-#[derive(Debug, Clone, Serialize, Type)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ColumnInfo {
   pub name: String,
@@ -239,7 +238,7 @@ pub struct ColumnInfo {
   pub default: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Type)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IndexInfo {
   pub name: String,
@@ -247,7 +246,7 @@ pub struct IndexInfo {
   pub unique: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Type)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ForeignKeyInfo {
   pub name: String,
@@ -257,7 +256,7 @@ pub struct ForeignKeyInfo {
   pub referenced_columns: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Type)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TableInfo {
   pub name: String,
@@ -270,14 +269,14 @@ pub struct TableInfo {
   pub foreign_keys: Vec<ForeignKeyInfo>,
 }
 
-#[derive(Debug, Clone, Serialize, Type)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SchemaInfo {
   pub name: String,
   pub tables: Vec<TableInfo>,
 }
 
-#[derive(Debug, Clone, Serialize, Type)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SchemaSnapshot {
   pub schemas: Vec<SchemaInfo>,
@@ -290,7 +289,7 @@ pub trait Introspect: Send + Sync {
   async fn table_ddl(&self, schema: &str, table: &str) -> Result<String, Error>;
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum KeyKind {
   String,
@@ -302,7 +301,7 @@ pub enum KeyKind {
   Other,
 }
 
-#[derive(Debug, Clone, Serialize, Type)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KeyEntry {
   pub key: String,
@@ -311,7 +310,7 @@ pub struct KeyEntry {
   pub ttl_ms: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize, Type)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KeyScanPage {
   pub keys: Vec<KeyEntry>,
@@ -319,28 +318,28 @@ pub struct KeyScanPage {
   pub cursor: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Type)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ZsetMember {
   pub member: String,
   pub score: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Type)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HashField {
   pub field: String,
   pub value: String,
 }
 
-#[derive(Debug, Clone, Serialize, Type)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StreamEntry {
   pub id: String,
   pub fields: Vec<HashField>,
 }
 
-#[derive(Debug, Clone, Serialize, Type)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(
   tag = "kind",
   rename_all = "kebab-case",
@@ -356,7 +355,7 @@ pub enum KeyValue {
   Other { type_name: String },
 }
 
-#[derive(Debug, Clone, Serialize, Type)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KeyDetail {
   pub key: String,
@@ -367,14 +366,14 @@ pub struct KeyDetail {
   pub value: KeyValue,
 }
 
-#[derive(Debug, Clone, Serialize, Type)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KvDatabaseKeys {
   pub db: u32,
   pub keys: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Type)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KvDatabases {
   pub current: u32,
@@ -403,7 +402,7 @@ pub trait KvBrowse: Send + Sync {
   async fn run_command(&self, command: &str) -> Result<Vec<String>, Error>;
 }
 
-#[derive(Debug, Clone, Serialize, Type)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocDatabase {
   pub name: String,
@@ -412,7 +411,7 @@ pub struct DocDatabase {
   pub empty: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DocCollectionKind {
   Collection,
@@ -421,7 +420,7 @@ pub enum DocCollectionKind {
   Other,
 }
 
-#[derive(Debug, Clone, Serialize, Type)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocCollection {
   pub name: String,
@@ -434,7 +433,7 @@ pub struct DocCollection {
 /// One document on the wire. `doc` is relaxed extended JSON (display); `id` is
 /// canonical extended JSON of the `_id` value alone - the lossless address for
 /// get/replace/delete (the display form must never double as the key).
-#[derive(Debug, Clone, Serialize, Type)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocEntry {
   /// None for documents without `_id`; edit/delete are unavailable then.
@@ -442,7 +441,7 @@ pub struct DocEntry {
   pub doc: String,
 }
 
-#[derive(Debug, Clone, Deserialize, Type)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocFindRequest {
   pub db: String,
@@ -460,7 +459,7 @@ pub struct DocFindRequest {
   pub cursor: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Type)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocPage {
   pub docs: Vec<DocEntry>,
@@ -470,7 +469,7 @@ pub struct DocPage {
 
 /// Both renderings of one document: relaxed for reading, canonical for a
 /// lossless edit round-trip (relaxed collapses Int32/Int64/Double).
-#[derive(Debug, Clone, Serialize, Type)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocDetail {
   pub id: Option<String>,
@@ -478,7 +477,7 @@ pub struct DocDetail {
   pub canonical: String,
 }
 
-#[derive(Debug, Clone, Serialize, Type)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocCount {
   pub count: f64,
@@ -486,7 +485,7 @@ pub struct DocCount {
   pub exact: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Type)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocQueryResult {
   /// Relaxed extended JSON strings; console results are read-only.

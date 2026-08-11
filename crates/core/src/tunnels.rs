@@ -2,12 +2,11 @@ use std::fs;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use specta::Type;
 
 use crate::error::Error;
 use crate::profiles::CredentialSource;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
   tag = "method",
   rename_all = "kebab-case",
@@ -23,7 +22,7 @@ pub enum SshAuth {
   None,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TunnelProfile {
   pub id: String,
@@ -40,7 +39,7 @@ pub struct TunnelProfile {
 
 /// The secret (key passphrase or password) rides in on the input but is
 /// stored in the SecretStore, never in the tunnel profile.
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TunnelInput {
   pub name: String,

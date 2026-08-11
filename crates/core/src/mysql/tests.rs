@@ -9,7 +9,7 @@ fn quote_ident_doubles_backticks() {
 }
 
 fn profile_with_ssl(ssl_mode: SslMode) -> Option<ConnectionProfile> {
-  let addr = std::env::var("SOQUEL_TEST_MYSQL").ok()?;
+  let addr = crate::integration_env("SOQUEL_TEST_MYSQL")?;
   let (host, port) = addr
     .split_once(':')
     .expect("SOQUEL_TEST_MYSQL is host:port");

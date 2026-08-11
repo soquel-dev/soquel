@@ -5,7 +5,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use serde::Serialize;
-use specta::Type;
 use tokio_util::sync::CancellationToken;
 
 use crate::command_approvals::CommandApprovalsStore;
@@ -57,7 +56,7 @@ pub struct McpRunning {
 
 /// What the user answered. `ForWindow` also opens a trust window on the
 /// connection; every other value, including silence, refuses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ApprovalAnswer {
   Deny,
@@ -73,6 +72,21 @@ pub struct TrustWindow {
   /// The same moment as epoch millis, for the panel countdown only.
   pub expires_at_ms: f64,
   pub connection_name: String,
+}
+
+/// Gate for the integration suites: None skips the test silently, unless
+/// SOQUEL_REQUIRE_INTEGRATION=1 (CI), where a missing database must fail
+/// instead of no-oping green.
+pub fn integration_env(var: &str) -> Option<String> {
+  match std::env::var(var) {
+    Ok(value) => Some(value),
+    Err(_) => {
+      if std::env::var("SOQUEL_REQUIRE_INTEGRATION").is_ok_and(|v| v == "1") {
+        panic!("{var} is unset but SOQUEL_REQUIRE_INTEGRATION demands the database");
+      }
+      None
+    }
+  }
 }
 
 pub struct AppState {

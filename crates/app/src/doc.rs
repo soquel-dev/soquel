@@ -1321,7 +1321,7 @@ mod tests {
   /// loads the detail, the console runs. Skipped without SOQUEL_TEST_MONGO.
   #[gpui::test]
   fn integration_doc_workspace_lists_selects_and_runs(cx: &mut gpui::TestAppContext) {
-    let Ok(coord) = std::env::var("SOQUEL_TEST_MONGO") else {
+    let Some(coord) = soquel_core::integration_env("SOQUEL_TEST_MONGO") else {
       return;
     };
     let (host, port) = coord.split_once(':').expect("host:port");

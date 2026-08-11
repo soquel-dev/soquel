@@ -5,7 +5,6 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
-use specta::Type;
 
 use crate::error::Error;
 
@@ -62,7 +61,7 @@ struct Payload {
 
 /// Three states, not two: a lapsed window looks exactly like no licence at all
 /// unless it says so, and that is what gets reported as a regression.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
   tag = "kind",
   rename_all = "kebab-case",
