@@ -8,12 +8,11 @@ use soquel_core::connectors::{
   KeyScanPage, KvBrowse, KvDatabases, QueryColumn, QueryResult, RowsChunk, SchemaSnapshot,
   SqlQuery, SqlSession, StreamSummary, TableChanges, TableRowsRequest,
 };
-use soquel_core::credentials::{self, resolve_credentials, CredentialTarget};
+use soquel_core::credentials;
 use soquel_core::error::{Error, SecretSubject};
 use soquel_core::export::ExportFormat;
 use soquel_core::profiles::{ConnectionInput, ConnectionProfile, ConnectorKind};
-use soquel_core::secrets::SecretKey;
-use soquel_core::ssh::{self, SshTunnel, TunnelTarget};
+use soquel_core::ssh;
 use soquel_core::transfer::{self, DuplicateStrategy, ExportSummary, ImportOutcome, ImportPreview};
 use soquel_core::tunnels::{TunnelInput, TunnelProfile};
 use soquel_core::{AppState, SessionEntry};
@@ -684,20 +683,7 @@ pub fn create_tunnel(
   state: State<'_, AppState>,
   input: TunnelInput,
 ) -> Result<TunnelProfile, Error> {
-  let tunnel = state.tunnels.lock().unwrap().create(&input)?;
-  // No orphan tunnel when the keychain is unavailable.
-  let key = SecretKey::Tunnel(tunnel.id.clone());
-  if let Err(err) = soquel_core::ops::persist_secret(
-    state.inner(),
-    &key,
-    &tunnel.credential,
-    input.secret.as_deref(),
-  ) {
-    let _ = state.tunnels.lock().unwrap().delete(&tunnel.id);
-    return Err(err);
-  }
-  soquel_core::ops::approve_own_command(state.inner(), &key, &tunnel.credential)?;
-  Ok(tunnel)
+  soquel_core::ops::create_tunnel(state.inner(), &input)
 }
 
 #[tauri::command]
@@ -707,37 +693,13 @@ pub fn update_tunnel(
   id: String,
   input: TunnelInput,
 ) -> Result<TunnelProfile, Error> {
-  let tunnel = state.tunnels.lock().unwrap().update(&id, &input)?;
-  let key = SecretKey::Tunnel(tunnel.id.clone());
-  soquel_core::ops::persist_secret(
-    state.inner(),
-    &key,
-    &tunnel.credential,
-    input.secret.as_deref(),
-  )?;
-  soquel_core::ops::approve_own_command(state.inner(), &key, &tunnel.credential)?;
-  Ok(tunnel)
+  soquel_core::ops::update_tunnel(state.inner(), &id, &input)
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn delete_tunnel(state: State<'_, AppState>, id: String) -> Result<(), Error> {
-  let used_by: Vec<String> = state
-    .profiles
-    .lock()
-    .unwrap()
-    .list()
-    .into_iter()
-    .filter(|p| p.params.remote().and_then(|remote| remote.tunnel_id) == Some(id.as_str()))
-    .map(|p| p.name)
-    .collect();
-  if !used_by.is_empty() {
-    return Err(Error::Storage {
-      message: format!("tunnel is used by {}", used_by.join(", ")),
-    });
-  }
-  state.tunnels.lock().unwrap().delete(&id)?;
-  soquel_core::ops::forget(state.inner(), &SecretKey::Tunnel(id))
+  soquel_core::ops::delete_tunnel(state.inner(), &id)
 }
 
 /// Ephemeral tunnel bring-up: validates the host key and the credentials
@@ -749,40 +711,7 @@ pub async fn test_tunnel(
   input: TunnelInput,
   existing_id: Option<String>,
 ) -> Result<(), Error> {
-  let tunnel = TunnelProfile {
-    id: String::new(),
-    name: input.name.clone(),
-    host: input.host.clone(),
-    port: input.port,
-    user: input.user.clone(),
-    auth: input.auth.clone(),
-    credential: input.credential.clone(),
-  };
-  let target = CredentialTarget::tunnel(&tunnel, existing_id.as_deref().unwrap_or_default());
-  let secret = resolve_credentials(state.inner(), &target, input.secret.clone())?
-    .resolve()
-    .await?;
-  let known_key = state
-    .known_hosts
-    .lock()
-    .unwrap()
-    .get(&tunnel.host, tunnel.port)
-    .map(|raw| ssh::parse_public_key(&raw))
-    .transpose()?;
-  let result = SshTunnel::open(
-    &tunnel,
-    secret.as_deref(),
-    known_key,
-    TunnelTarget {
-      host: "127.0.0.1".to_string(),
-      port: 1,
-    },
-  )
-  .await
-  .map(|_| ());
-  // A password typed to test an unsaved tunnel has no tunnel to outlive.
-  state.session_secrets.clear_one_shot(&target.key);
-  result
+  soquel_core::ops::test_tunnel(state.inner(), &input, existing_id.as_deref()).await
 }
 
 #[tauri::command]
@@ -799,8 +728,7 @@ pub fn trust_host_key(
   port: u16,
   key: String,
 ) -> Result<(), Error> {
-  ssh::parse_public_key(&key)?;
-  state.known_hosts.lock().unwrap().trust(&host, port, &key)
+  soquel_core::ops::trust_host_key(state.inner(), &host, port, &key)
 }
 
 #[tauri::command]

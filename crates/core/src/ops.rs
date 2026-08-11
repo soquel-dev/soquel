@@ -1,5 +1,5 @@
-//! Connection lifecycle shared by every frontend: the command layer and the
-//! gpui app both call these, so the flows cannot drift apart.
+//! Connection and tunnel lifecycle shared by every frontend: the command
+//! layer and the gpui app both call these, so the flows cannot drift apart.
 
 use std::sync::Arc;
 
@@ -9,6 +9,7 @@ use crate::error::{Error, SecretSubject};
 use crate::profiles::{ConnectionInput, ConnectionProfile, CredentialSource};
 use crate::secrets::SecretKey;
 use crate::ssh::{self, SshTunnel, TunnelTarget};
+use crate::tunnels::{TunnelInput, TunnelProfile};
 use crate::{ActiveConnection, AppState};
 
 /// Resolve a profile's tunnel (if any); the returned forward tells the
@@ -280,6 +281,97 @@ pub fn forget(state: &AppState, key: &SecretKey) -> Result<(), Error> {
   state.secrets.delete(key)
 }
 
+pub fn create_tunnel(state: &AppState, input: &TunnelInput) -> Result<TunnelProfile, Error> {
+  let tunnel = state.tunnels.lock().unwrap().create(input)?;
+  // No orphan tunnel when the keychain is unavailable.
+  let key = SecretKey::Tunnel(tunnel.id.clone());
+  if let Err(err) = persist_secret(state, &key, &tunnel.credential, input.secret.as_deref()) {
+    let _ = state.tunnels.lock().unwrap().delete(&tunnel.id);
+    return Err(err);
+  }
+  approve_own_command(state, &key, &tunnel.credential)?;
+  Ok(tunnel)
+}
+
+pub fn update_tunnel(
+  state: &AppState,
+  id: &str,
+  input: &TunnelInput,
+) -> Result<TunnelProfile, Error> {
+  let tunnel = state.tunnels.lock().unwrap().update(id, input)?;
+  let key = SecretKey::Tunnel(tunnel.id.clone());
+  persist_secret(state, &key, &tunnel.credential, input.secret.as_deref())?;
+  approve_own_command(state, &key, &tunnel.credential)?;
+  Ok(tunnel)
+}
+
+pub fn delete_tunnel(state: &AppState, id: &str) -> Result<(), Error> {
+  let used_by: Vec<String> = state
+    .profiles
+    .lock()
+    .unwrap()
+    .list()
+    .into_iter()
+    .filter(|p| p.params.remote().and_then(|remote| remote.tunnel_id) == Some(id))
+    .map(|p| p.name)
+    .collect();
+  if !used_by.is_empty() {
+    return Err(Error::Storage {
+      message: format!("tunnel is used by {}", used_by.join(", ")),
+    });
+  }
+  state.tunnels.lock().unwrap().delete(id)?;
+  forget(state, &SecretKey::Tunnel(id.to_string()))
+}
+
+/// Ephemeral tunnel bring-up: validates the host key and the credentials
+/// without touching a database (no channel is opened until a client connects).
+pub async fn test_tunnel(
+  state: &AppState,
+  input: &TunnelInput,
+  existing_id: Option<&str>,
+) -> Result<(), Error> {
+  let tunnel = TunnelProfile {
+    id: String::new(),
+    name: input.name.clone(),
+    host: input.host.clone(),
+    port: input.port,
+    user: input.user.clone(),
+    auth: input.auth.clone(),
+    credential: input.credential.clone(),
+  };
+  let target = CredentialTarget::tunnel(&tunnel, existing_id.unwrap_or_default());
+  let secret = resolve_credentials(state, &target, input.secret.clone())?
+    .resolve()
+    .await?;
+  let known_key = state
+    .known_hosts
+    .lock()
+    .unwrap()
+    .get(&tunnel.host, tunnel.port)
+    .map(|raw| ssh::parse_public_key(&raw))
+    .transpose()?;
+  let result = SshTunnel::open(
+    &tunnel,
+    secret.as_deref(),
+    known_key,
+    TunnelTarget {
+      host: "127.0.0.1".to_string(),
+      port: 1,
+    },
+  )
+  .await
+  .map(|_| ());
+  // A password typed to test an unsaved tunnel has no tunnel to outlive.
+  state.session_secrets.clear_one_shot(&target.key);
+  result
+}
+
+pub fn trust_host_key(state: &AppState, host: &str, port: u16, key: &str) -> Result<(), Error> {
+  ssh::parse_public_key(key)?;
+  state.known_hosts.lock().unwrap().trust(host, port, key)
+}
+
 // Clone the Arc out so queries never hold the map lock.
 pub async fn active(state: &AppState, id: &str) -> Result<Arc<dyn Connection>, Error> {
   state
@@ -366,6 +458,18 @@ mod tests {
     input
   }
 
+  fn tunnel_input(credential: CredentialSource) -> TunnelInput {
+    TunnelInput {
+      name: "bastion".to_string(),
+      host: "bastion.internal".to_string(),
+      port: 22,
+      user: "deploy".to_string(),
+      auth: crate::tunnels::SshAuth::Password,
+      credential,
+      secret: None,
+    }
+  }
+
   #[test]
   fn leaving_the_keychain_mode_wipes_the_stored_password() {
     let dir = tempfile::tempdir().unwrap();
@@ -430,23 +534,15 @@ mod tests {
     let dir = tempfile::tempdir().unwrap();
     let state = state(&dir);
     let stored = TunnelInput {
-      name: "bastion".to_string(),
-      host: "bastion.internal".to_string(),
-      port: 22,
-      user: "deploy".to_string(),
-      auth: crate::tunnels::SshAuth::Password,
-      credential: CredentialSource::Keychain,
       secret: Some("s3cret".to_string()),
+      ..tunnel_input(CredentialSource::Keychain)
     };
-    let tunnel = state.tunnels.lock().unwrap().create(&stored).unwrap();
+    let tunnel = create_tunnel(&state, &stored).unwrap();
     let tunnel_key = SecretKey::Tunnel(tunnel.id.clone());
-    crate::ops::persist_secret(
-      &state,
-      &tunnel_key,
-      &tunnel.credential,
-      stored.secret.as_deref(),
-    )
-    .unwrap();
+    assert_eq!(
+      state.secrets.get(&tunnel_key).unwrap(),
+      Some("s3cret".to_string())
+    );
     // A connection of the same id keeps its own secret: the keys differ.
     state.secrets.set(&key(&tunnel.id), "db").unwrap();
     state
@@ -458,13 +554,7 @@ mod tests {
       secret: None,
       ..stored
     };
-    let switched = state
-      .tunnels
-      .lock()
-      .unwrap()
-      .update(&tunnel.id, &asked)
-      .unwrap();
-    persist_secret(&state, &tunnel_key, &switched.credential, None).unwrap();
+    update_tunnel(&state, &tunnel.id, &asked).unwrap();
 
     assert_eq!(state.secrets.get(&tunnel_key).unwrap(), None);
     assert_eq!(state.session_secrets.get(&tunnel_key), None);
@@ -472,6 +562,83 @@ mod tests {
       state.secrets.get(&key(&tunnel.id)).unwrap(),
       Some("db".to_string())
     );
+  }
+
+  #[test]
+  fn deleting_a_referenced_tunnel_is_refused_until_the_reference_clears() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = state(&dir);
+    let tunnel = create_tunnel(&state, &tunnel_input(CredentialSource::Prompt)).unwrap();
+    let tunnel_key = SecretKey::Tunnel(tunnel.id.clone());
+    let profile = create_connection(&state, &tunnelled_input(&tunnel.id)).unwrap();
+    state
+      .session_secrets
+      .set(&tunnel_key, "typed".to_string(), true);
+
+    let Err(err) = delete_tunnel(&state, &tunnel.id) else {
+      panic!("a referenced tunnel must not delete");
+    };
+    assert!(matches!(&err, Error::Storage { message } if message.contains(&profile.name)));
+    assert!(state.tunnels.lock().unwrap().get(&tunnel.id).is_ok());
+
+    update_connection(
+      &state,
+      &profile.id,
+      &input(CredentialSource::Keychain, None),
+    )
+    .unwrap();
+    delete_tunnel(&state, &tunnel.id).unwrap();
+    assert!(state.tunnels.lock().unwrap().get(&tunnel.id).is_err());
+    assert_eq!(state.session_secrets.get(&tunnel_key), None);
+  }
+
+  #[test]
+  fn saving_a_tunnel_command_approves_it_and_leaving_command_mode_drops_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = state(&dir);
+    let line = "vault-ssh {host}";
+    let tunnel = create_tunnel(&state, &tunnel_input(command(line))).unwrap();
+    let tunnel_key = SecretKey::Tunnel(tunnel.id.clone());
+    assert!(state
+      .command_approvals
+      .lock()
+      .unwrap()
+      .is_approved(&tunnel_key, line));
+
+    update_tunnel(&state, &tunnel.id, &tunnel_input(CredentialSource::Prompt)).unwrap();
+    assert!(!state
+      .command_approvals
+      .lock()
+      .unwrap()
+      .is_approved(&tunnel_key, line));
+  }
+
+  #[tokio::test]
+  async fn a_tunnel_test_clears_the_one_shot_secret_it_was_given() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = state(&dir);
+    // Nothing listens here: the test fails on the dial, after the secret resolved.
+    let asked = TunnelInput {
+      host: "127.0.0.1".to_string(),
+      port: 1,
+      ..tunnel_input(CredentialSource::Prompt)
+    };
+
+    let Err(err) = test_tunnel(&state, &asked, Some("t-1")).await else {
+      panic!("the tunnel must ask for its password");
+    };
+    assert!(
+      matches!(&err, Error::SecretRequired { subject, target_id, .. }
+      if *subject == SecretSubject::Tunnel && target_id == "t-1")
+    );
+
+    let tunnel_key = SecretKey::Tunnel("t-1".to_string());
+    state
+      .session_secrets
+      .set(&tunnel_key, "one-off".to_string(), false);
+    assert!(test_tunnel(&state, &asked, Some("t-1")).await.is_err());
+    // Typed to test an unsaved tunnel: nothing outlives the attempt.
+    assert_eq!(state.session_secrets.get(&tunnel_key), None);
   }
 
   fn command(line: &str) -> CredentialSource {
@@ -539,20 +706,7 @@ mod tests {
 
     // A tunnel resolves against its own store, and a profile with no command
     // has nothing to approve.
-    let tunnel = state
-      .tunnels
-      .lock()
-      .unwrap()
-      .create(&TunnelInput {
-        name: "bastion".to_string(),
-        host: "bastion.internal".to_string(),
-        port: 22,
-        user: "deploy".to_string(),
-        auth: crate::tunnels::SshAuth::Password,
-        credential: command("vault-ssh {host}"),
-        secret: None,
-      })
-      .unwrap();
+    let tunnel = create_tunnel(&state, &tunnel_input(command("vault-ssh {host}"))).unwrap();
     assert_eq!(
       current_command(&state, &SecretKey::Tunnel(tunnel.id.clone())).unwrap(),
       "vault-ssh {host}"
@@ -634,15 +788,7 @@ mod tests {
       .tunnels
       .lock()
       .unwrap()
-      .create(&TunnelInput {
-        name: "bastion".to_string(),
-        host: "bastion.internal".to_string(),
-        port: 22,
-        user: "deploy".to_string(),
-        auth: crate::tunnels::SshAuth::Password,
-        credential: CredentialSource::Prompt,
-        secret: None,
-      })
+      .create(&tunnel_input(CredentialSource::Prompt))
       .unwrap();
     let tunnel_key = SecretKey::Tunnel(tunnel.id.clone());
 
@@ -687,14 +833,10 @@ mod tests {
       .lock()
       .unwrap()
       .create(&TunnelInput {
-        name: "bastion".to_string(),
         // Nothing listens here: the connect fails on the tunnel, which is the point.
         host: "127.0.0.1".to_string(),
         port: 1,
-        user: "deploy".to_string(),
-        auth: crate::tunnels::SshAuth::Password,
-        credential: CredentialSource::Prompt,
-        secret: None,
+        ..tunnel_input(CredentialSource::Prompt)
       })
       .unwrap();
     let tunnel_key = SecretKey::Tunnel(tunnel.id.clone());
