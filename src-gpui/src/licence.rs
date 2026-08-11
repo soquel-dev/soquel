@@ -312,6 +312,39 @@ mod tests {
     assert!(status_blurb(&expired).contains("free tier"));
   }
 
+  #[test]
+  fn outcome_of_routes_success_and_each_refusal() {
+    let licensed = Ok(LicenceStatus::Licensed {
+      email: "b@example.com".to_string(),
+      name: None,
+      updates_until: "2030-01-01T00:00:00Z".to_string(),
+    });
+    assert_eq!(
+      outcome_of(licensed),
+      (true, "Licence added. Tabs are unlimited from here.".into())
+    );
+    // An install that verifies but does not cover this build is not a success.
+    let expired = Ok(LicenceStatus::Expired {
+      email: "b@example.com".to_string(),
+      updates_until: "2020-01-01T00:00:00Z".to_string(),
+    });
+    assert!(!outcome_of(expired).0);
+    // A refused activation carries why, and the reason picks the message.
+    let refused = Err(Error::Activation {
+      message: "the service said no".to_string(),
+      reason: ActivationReason::Revoked,
+    });
+    assert_eq!(
+      outcome_of(refused),
+      (false, activation_message(ActivationReason::Revoked).into())
+    );
+    // Anything else is already a sentence.
+    let other = Err(Error::Unsupported {
+      message: "boom".to_string(),
+    });
+    assert_eq!(outcome_of(other), (false, "boom".into()));
+  }
+
   fn test_state() -> (tempfile::TempDir, Arc<AppState>) {
     let dir = tempfile::tempdir().unwrap();
     let state = Arc::new(soquel_core::AppState::for_tests(
