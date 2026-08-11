@@ -47,7 +47,7 @@ Run from the repo root. Shortcuts are a `Justfile` (`just`), not npm; Rust is pl
 
 ```bash
 just dev               # cargo run -p soquel-app
-just dev-wsl           # same with file-backed plaintext secrets (WSL has no OS keychain); dev only
+just dev-wsl           # same with file-backed plaintext secrets, for a host with no OS keychain; dev only
 just build             # cargo build -p soquel-app
 just test              # cargo test --workspace (unit; integration_* skip without their env vars)
 just --list            # every recipe
@@ -69,7 +69,7 @@ just db-dev-seed       # (re)seed every dev database; `just db-dev-seed pg` for 
 just db-dev-down
 ```
 
-Don't start `just dev` yourself: it opens a window Joris watches. Verify with `cargo check`/`clippy`/tests, or ask him to run it. Under WSL the app runs via WSLg (software rendering, `libEGL` warnings are noise); Joris validates the look on his Mac (Metal).
+Don't start `just dev` yourself: it opens a desktop window someone is watching. Verify with `cargo check`/`clippy`/tests, or ask for it to be run.
 
 ## Testing
 
@@ -110,7 +110,7 @@ Pasting a licence **file** stays as the second path, folded away in `LicenceView
 
 The block is built in the core where the facts are. It carries **no connection names, no hosts, no database paths** and never the log's contents: it is meant to be pasted into a public issue, and driver errors in the log can hold a table name or a query fragment. Counts per kind are enough to triage.
 
-`DiagnosticsView` (from the palette) shows the block before anyone copies it (proving the no-names claim rather than promising it in a toast) and offers to open the log folder. Opening cannot be verified, since the opener spawns detached and a session with no file manager reports success while doing nothing, so the log path stays visible in the block and a "Copy path" button sits next to the open button. Known dead end under WSL: the `open` crate puts PowerShell first and passes the target in an env var not listed in `WSLENV`, so the Windows process receives an empty path; use "Copy path" while developing.
+`DiagnosticsView` (from the palette) shows the block before anyone copies it (proving the no-names claim rather than promising it in a toast) and offers to open the log folder. Opening cannot be verified, since the opener spawns detached and a session with no file manager reports success while doing nothing, so the log path stays visible in the block and a "Copy path" button sits next to the open button.
 
 ### Updater and packaging (deferred)
 
