@@ -2,7 +2,7 @@
 
 A desktop database client that lends coding agents the query, not the credentials.
 
-A Tauri 2 desktop app: the Rust core owns everything heavy and sensitive (database drivers, SSH tunnels, connection pools, result streaming, credentials), the Vue 3 webview is a thin client on top. Pre-release, under active development: no builds to download yet.
+A native desktop app built on [gpui](https://www.gpui.rs) over a Rust core that owns everything heavy and sensitive: database drivers, SSH tunnels, connection pools, result streaming, credentials. Pre-release, under active development: no builds to download yet.
 
 ## Databases
 
@@ -47,26 +47,24 @@ Agents get read tools for every supported engine (schema and DDL, SQL queries, t
 
 ## Design
 
-- **Secrets never reach the webview.** Credentials live in the Rust core and the OS keychain.
+- **Secrets stay in the core and the OS keychain.** The UI only ever holds a password you typed into a prompt, and only long enough to hand it back.
 - **An imported command runs nothing on its own.** A connection can get its password from a program, which makes a shared connections file a way to run code. One that arrived through an import stays inert until you have read the exact arguments and approved them.
-- **A typed command layer is the only IPC boundary.** Every operation is a Tauri command with a normalized error shape; TypeScript bindings are generated from the Rust types. The MCP tools above are that same layer with a second client.
-- **Offline by design.** No remote assets, strict CSP; the app never phones home.
+- **Operations are pure functions on the core.** Each takes the app state and returns a normalized error shape; the app calls them in-process, and the MCP tools above are the same operations with a second client.
+- **Offline by design.** No remote assets; the app bundles its fonts and icons and never phones home.
 
 ## Development
 
-Prerequisites: Rust (stable), Node + pnpm, and the [Tauri v2 system dependencies](https://tauri.app/start/prerequisites/) on Linux.
+Prerequisites: Rust (stable), [`just`](https://github.com/casey/just), and gpui's system libraries on Linux (xkbcommon, wayland, xcb, fontconfig; see the CI workflow for the exact apt set).
 
 ```bash
-pnpm install
-pnpm dev        # tauri dev (Rust core + vite)
-pnpm dev:app    # vite only, webview in a browser
+just dev        # cargo run -p soquel-app
 
-pnpm db:dev     # local dev databases (docker compose), see AGENTS.md for seeds
-pnpm db:test    # throwaway seeded databases for the test suites
-pnpm test:integration
+just db-dev     # local dev databases (docker compose), see AGENTS.md for seeds
+just db-test    # throwaway seeded databases for the test suites
+just test-integration
 ```
 
-See `AGENTS.md` for the full command list and architecture rules.
+Rust checks are plain cargo (`cargo clippy --workspace`, `cargo test --workspace`). See `AGENTS.md` for the full recipe list and architecture rules.
 
 ## License
 
