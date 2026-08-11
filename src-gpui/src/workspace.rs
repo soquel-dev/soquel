@@ -405,7 +405,13 @@ impl Workspace {
     cx.notify();
   }
 
-  fn open_sql(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+  pub(crate) fn focus_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    if let Some((_, editor, _)) = self.active_sql() {
+      editor.update(cx, |editor, cx| editor.focus(window, cx));
+    }
+  }
+
+  pub(crate) fn open_sql(&mut self, window: &mut Window, cx: &mut Context<Self>) {
     let Some(next) = open_sql_tab(&self.tabs, self.tab_limit()) else {
       self.limit_refused(window, cx);
       return;
@@ -468,7 +474,7 @@ impl Workspace {
     }
   }
 
-  fn cycle(&mut self, direction: i32, cx: &mut Context<Self>) {
+  pub(crate) fn cycle(&mut self, direction: i32, cx: &mut Context<Self>) {
     self.tabs = activate_sibling(&self.tabs, direction);
     cx.notify();
   }
@@ -692,7 +698,7 @@ impl Workspace {
     });
   }
 
-  fn refresh_schema(&mut self, cx: &mut Context<Self>) {
+  pub(crate) fn refresh_schema(&mut self, cx: &mut Context<Self>) {
     let Some(db) = self.db.clone() else {
       return;
     };
@@ -708,7 +714,7 @@ impl Workspace {
     });
   }
 
-  fn run(&mut self, cx: &mut Context<Self>) {
+  pub(crate) fn run(&mut self, cx: &mut Context<Self>) {
     self.run_inner(None, cx);
   }
 
@@ -2204,11 +2210,7 @@ impl Render for Workspace {
       .on_action(cx.listener(|_, _: &ToggleThemeMode, window, cx| {
         theme::toggle(window, cx);
       }))
-      .on_action(cx.listener(|this, _: &FocusEditor, window, cx| {
-        if let Some((_, editor, _)) = this.active_sql() {
-          editor.update(cx, |editor, cx| editor.focus(window, cx));
-        }
-      }))
+      .on_action(cx.listener(|this, _: &FocusEditor, window, cx| this.focus_editor(window, cx)))
       .on_action(cx.listener(|this, _: &CancelCellEdit, _, cx| {
         if let Some(table) = this.active_table() {
           table.update(cx, |table, cx| {

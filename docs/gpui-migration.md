@@ -95,9 +95,14 @@ deleted. Each panel lands with its layer-3 tests; each flow with layer 4.
 
 - [x] Workspace shell: sidebar + tabs + panel host + status bar
 - [x] Actions + keymap registry
-- [ ] Command palette (from the action registry)
+- [x] Command palette (secondary-k, `command_palette.rs` on gpui-component's
+      `ListState`/`ListDelegate`; a curated context-aware entry list, not the
+      raw action registry - quick-connect + actions per screen, substring
+      filter; App holds the cross-screen focus home so the global key works on
+      both screens; the List's query input is focused after the dialog opens so
+      Enter reaches its confirm, not the dialog's)
 - [x] Theme: port tokens from `style.css`, light/dark
-- [ ] Toasts (gpui-component notifications)
+- [x] Toasts (gpui-component `push_notification`, used by revoke and transfer)
 - [x] Tab limit (`tabs.rs` ports `lib/tabs.ts` with its tests; free-tier toast,
       SOQUEL_TAB_LIMIT dev override honored; tab persistence across restarts
       still to do)
