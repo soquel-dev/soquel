@@ -6,10 +6,10 @@ use gpui::*;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::checkbox::Checkbox;
 use gpui_component::form::{field, v_form};
-use gpui_component::input::{Input, InputState};
+use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::notification::Notification;
 use gpui_component::radio::{Radio, RadioGroup};
-use gpui_component::select::{Select, SelectState};
+use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::switch::Switch;
 use gpui_component::{
   ActiveTheme, Disableable, IndexPath, Sizable, StyledExt, WindowExt, h_flex, v_flex,
@@ -17,8 +17,8 @@ use gpui_component::{
 use soquel_core::AppState;
 use soquel_core::error::{Error, SecretSubject};
 use soquel_core::profiles::{
-  AgentAccess, ConnectionInput, ConnectionProfile, ConnectorParams, CredentialSource, Env,
-  SqlServerParams, SslMode,
+  AgentAccess, ConnectionInput, ConnectionProfile, ConnectorKind, ConnectorParams,
+  CredentialSource, Env, MongoParams, RedisParams, SqlServerParams, SslMode,
 };
 use soquel_core::transfer::{DuplicateStrategy, ImportPreview};
 
@@ -66,23 +66,264 @@ fn ssl_label(mode: SslMode) -> &'static str {
 const CONNECTION_COMMAND_HINT: &str =
   "No shell: {host} {port} {user} {database} are substituted, pipes and $(...) are not supported.";
 
+/// The engine picker's kinds; `sqlite` has no port and no protocol.
+const KINDS: [ConnectorKind; 5] = [
+  ConnectorKind::Postgres,
+  ConnectorKind::Mysql,
+  ConnectorKind::Sqlite,
+  ConnectorKind::Redis,
+  ConnectorKind::Mongo,
+];
+
+fn kind_default_port(kind: ConnectorKind) -> u16 {
+  match kind {
+    ConnectorKind::Postgres => 5432,
+    ConnectorKind::Mysql => 3306,
+    ConnectorKind::Sqlite => 0,
+    ConnectorKind::Redis => 6379,
+    ConnectorKind::Mongo => 27017,
+  }
+}
+
+fn kind_short(kind: ConnectorKind) -> &'static str {
+  match kind {
+    ConnectorKind::Postgres => "PG",
+    ConnectorKind::Mysql => "MySQL",
+    ConnectorKind::Sqlite => "SQLite",
+    ConnectorKind::Redis => "Redis",
+    ConnectorKind::Mongo => "Mongo",
+  }
+}
+
+/// URL schemes that prefill each kind; `mongodb+srv` needs DNS discovery the
+/// single-node connector does not do yet.
+fn kind_protocols(kind: ConnectorKind) -> &'static [&'static str] {
+  match kind {
+    ConnectorKind::Postgres => &["postgres", "postgresql"],
+    ConnectorKind::Mysql => &["mysql"],
+    ConnectorKind::Sqlite => &[],
+    ConnectorKind::Redis => &["redis", "rediss"],
+    ConnectorKind::Mongo => &["mongodb"],
+  }
+}
+
+/// The engine select's entries: MariaDB is a display entry riding the mysql kind
+/// (wire-compatible, quirks handled at runtime via the version).
+struct EngineChoice {
+  id: &'static str,
+  label: &'static str,
+  kind: ConnectorKind,
+}
+
+const ENGINE_CHOICES: [EngineChoice; 6] = [
+  EngineChoice {
+    id: "postgres",
+    label: "PostgreSQL",
+    kind: ConnectorKind::Postgres,
+  },
+  EngineChoice {
+    id: "mysql",
+    label: "MySQL",
+    kind: ConnectorKind::Mysql,
+  },
+  EngineChoice {
+    id: "mariadb",
+    label: "MariaDB",
+    kind: ConnectorKind::Mysql,
+  },
+  EngineChoice {
+    id: "sqlite",
+    label: "SQLite",
+    kind: ConnectorKind::Sqlite,
+  },
+  EngineChoice {
+    id: "redis",
+    label: "Redis",
+    kind: ConnectorKind::Redis,
+  },
+  EngineChoice {
+    id: "mongo",
+    label: "MongoDB",
+    kind: ConnectorKind::Mongo,
+  },
+];
+
+/// A profile edits back to its kind's first engine entry; MariaDB is only ever
+/// chosen by hand.
+fn engine_choice_for_kind(kind: ConnectorKind) -> &'static str {
+  ENGINE_CHOICES
+    .iter()
+    .find(|choice| choice.kind == kind)
+    .map_or("postgres", |choice| choice.id)
+}
+
+/// Only some connectors hold the credential for the connection's life, so a
+/// token that expires mid-session is not replayed; None where the pool re-resolves.
+fn credential_command_caveat(kind: ConnectorKind) -> Option<&'static str> {
+  match kind {
+    ConnectorKind::Redis => {
+      Some("Read once at connect and never refreshed: an expired token needs a manual reconnect.")
+    }
+    ConnectorKind::Mongo => Some(
+      "Read once at connect and never refreshed: once it expires new pooled connections fail, \
+       and you have to reconnect.",
+    ),
+    _ => None,
+  }
+}
+
+/// Follow the kind only when the port still sits on the previous kind's default;
+/// a hand-set port survives an engine switch. SQLite has no port, so switching
+/// away always lands on the next kind's default.
+fn port_for_kind_change(port: &str, previous: ConnectorKind, next: ConnectorKind) -> String {
+  if next == ConnectorKind::Sqlite {
+    return port.to_string();
+  }
+  let follows = previous == ConnectorKind::Sqlite
+    || port.trim().parse::<u16>().ok() == Some(kind_default_port(previous));
+  if follows {
+    kind_default_port(next).to_string()
+  } else {
+    port.to_string()
+  }
+}
+
+/// Workspace badge for a live server: MariaDB and Valkey announce themselves
+/// through the mysql / redis version strings.
+pub fn server_badge(kind: ConnectorKind, version: &str) -> (String, String) {
+  if kind == ConnectorKind::Mysql && version.contains("MariaDB") {
+    return ("MariaDB".to_string(), first_segment(version, '-'));
+  }
+  if kind == ConnectorKind::Redis && version.contains("valkey") {
+    return ("Valkey".to_string(), first_segment(version, '-'));
+  }
+  (kind_short(kind).to_string(), first_segment(version, ' '))
+}
+
+fn first_segment(value: &str, sep: char) -> String {
+  value.split(sep).next().unwrap_or(value).to_string()
+}
+
 fn dsn(params: &ConnectorParams) -> String {
   match params {
-    ConnectorParams::Postgres(p) | ConnectorParams::Mysql(p) => format!(
-      "{}://{}@{}:{}/{}",
-      match params.kind() {
-        soquel_core::profiles::ConnectorKind::Mysql => "mysql",
-        _ => "postgres",
-      },
-      p.user,
-      p.host,
-      p.port,
-      p.database
-    ),
     ConnectorParams::Sqlite { path } => format!("sqlite://{path}"),
-    ConnectorParams::Redis(p) => format!("redis://{}:{}/{}", p.host, p.port, p.db),
-    ConnectorParams::Mongo(p) => format!("mongodb://{}:{}", p.host, p.port),
+    ConnectorParams::Redis(p) => {
+      let scheme = if p.tls { "rediss" } else { "redis" };
+      format!("{scheme}://{}:{}/{}", p.host, p.port, p.db)
+    }
+    ConnectorParams::Mongo(p) => {
+      let auth = p
+        .username
+        .as_ref()
+        .map(|user| format!("{user}@"))
+        .unwrap_or_default();
+      let db = p
+        .database
+        .as_ref()
+        .map(|db| format!("/{db}"))
+        .unwrap_or_default();
+      format!("mongodb://{auth}{}:{}{db}", p.host, p.port)
+    }
+    ConnectorParams::Postgres(p) | ConnectorParams::Mysql(p) => {
+      let scheme = match params.kind() {
+        ConnectorKind::Mysql => "mysql",
+        _ => "postgres",
+      };
+      format!("{scheme}://{}@{}:{}/{}", p.user, p.host, p.port, p.database)
+    }
   }
+}
+
+/// libpq's `sslmode` mapped onto the app's coarser set.
+fn url_ssl_mode(value: &str) -> Option<SslMode> {
+  match value {
+    "disable" => Some(SslMode::Disable),
+    "allow" | "prefer" => Some(SslMode::Prefer),
+    "require" => Some(SslMode::Require),
+    "verify-ca" | "verify-full" => Some(SslMode::VerifyFull),
+    _ => None,
+  }
+}
+
+/// mysql's `ssl-mode` vocabulary (case-insensitive) mapped onto the app's set.
+fn mysql_url_ssl_mode(value: &str) -> Option<SslMode> {
+  match value.to_ascii_uppercase().as_str() {
+    "DISABLED" => Some(SslMode::Disable),
+    "PREFERRED" => Some(SslMode::Prefer),
+    "REQUIRED" => Some(SslMode::Require),
+    "VERIFY_CA" | "VERIFY_IDENTITY" => Some(SslMode::VerifyFull),
+    _ => None,
+  }
+}
+
+/// What a pasted connection URL prefills; fields the kind does not use stay at
+/// their defaults and are ignored by `form_input`.
+#[derive(Debug, Clone, PartialEq)]
+struct ParsedUrl {
+  kind: ConnectorKind,
+  host: String,
+  port: u16,
+  database: String,
+  user: String,
+  password: String,
+  db_index: u32,
+  tls: bool,
+  ssl_mode: Option<SslMode>,
+  ssl_root_cert: Option<String>,
+  auth_source: Option<String>,
+}
+
+fn decode(value: &str) -> String {
+  percent_encoding::percent_decode_str(value)
+    .decode_utf8_lossy()
+    .into_owned()
+}
+
+/// Prefill from a postgres:// / mysql:// / redis(s):// / mongodb:// URL; None
+/// when it does not parse or the scheme is not one we know.
+fn parse_connection_url(raw: &str) -> Option<ParsedUrl> {
+  let url = url::Url::parse(raw.trim()).ok()?;
+  let scheme = url.scheme();
+  let kind = KINDS
+    .into_iter()
+    .find(|kind| kind_protocols(*kind).contains(&scheme))?;
+  let host = url
+    .host_str()
+    .filter(|host| !host.is_empty())
+    .unwrap_or("localhost")
+    .to_string();
+  let port = url.port().unwrap_or_else(|| kind_default_port(kind));
+  let path = url.path().trim_start_matches('/');
+  let mut parsed = ParsedUrl {
+    kind,
+    host,
+    port,
+    database: decode(path),
+    user: decode(url.username()),
+    password: url.password().map(decode).unwrap_or_default(),
+    db_index: 0,
+    tls: false,
+    ssl_mode: None,
+    ssl_root_cert: None,
+    auth_source: None,
+  };
+  if kind == ConnectorKind::Redis {
+    // The path is a numeric db index, not a database name.
+    parsed.database = String::new();
+    parsed.db_index = path.parse().unwrap_or(0);
+    parsed.tls = scheme == "rediss";
+  }
+  for (key, value) in url.query_pairs() {
+    match key.as_ref() {
+      "authSource" if kind == ConnectorKind::Mongo => parsed.auth_source = Some(value.into_owned()),
+      "tls" | "ssl" if kind == ConnectorKind::Mongo => parsed.tls = value == "true",
+      "sslmode" => parsed.ssl_mode = url_ssl_mode(&value).or(parsed.ssl_mode),
+      "ssl-mode" => parsed.ssl_mode = mysql_url_ssl_mode(&value).or(parsed.ssl_mode),
+      "sslrootcert" => parsed.ssl_root_cert = Some(value.into_owned()),
+      _ => {}
+    }
+  }
+  Some(parsed)
 }
 
 /// Ungrouped first, then groups alphabetically; profiles keep their order.
@@ -116,6 +357,16 @@ pub struct ConnectionsView {
   form_user: Entity<InputState>,
   form_password: Entity<InputState>,
   form_command: Entity<InputState>,
+  form_path: Entity<InputState>,
+  form_db_index: Entity<InputState>,
+  form_auth_source: Entity<InputState>,
+  form_ssl_root_cert: Entity<InputState>,
+  form_url: Entity<InputState>,
+  form_tls: bool,
+  /// The engine select's source of truth for the previous kind, so a port on the
+  /// old default follows the switch (see `port_for_kind_change`).
+  form_kind: ConnectorKind,
+  form_engine: Entity<SelectState<Vec<String>>>,
   form_env: Entity<SelectState<Vec<String>>>,
   form_agent_access: Entity<SelectState<Vec<String>>>,
   form_ssl: Entity<SelectState<Vec<String>>>,
@@ -159,6 +410,11 @@ impl ConnectionsView {
     let form_database = text(cx, "database");
     let form_user = text(cx, "user");
     let form_command = text(cx, "");
+    let form_path = text(cx, "/path/to/database.db");
+    let form_db_index = text(cx, "0");
+    let form_auth_source = text(cx, "admin (optional)");
+    let form_ssl_root_cert = text(cx, "CA bundle path (optional)");
+    let form_url = text(cx, "paste a connection URL to prefill");
     let form_password = cx.new(|cx| {
       InputState::new(window, cx)
         .placeholder("password")
@@ -176,6 +432,39 @@ impl ConnectionsView {
         .placeholder("Passphrase")
         .masked(true)
     });
+    let form_engine = cx.new(|cx| {
+      SelectState::new(
+        ENGINE_CHOICES
+          .iter()
+          .map(|choice| choice.label.to_string())
+          .collect::<Vec<_>>(),
+        Some(IndexPath::default()),
+        window,
+        cx,
+      )
+    });
+    // Switching engine follows the port and swaps the kind-specific fields.
+    cx.subscribe_in(
+      &form_engine,
+      window,
+      |this, _, event: &SelectEvent<Vec<String>>, window, cx| {
+        if let SelectEvent::Confirm(Some(label)) = event {
+          this.on_engine_change(label.clone(), window, cx);
+        }
+      },
+    )
+    .detach();
+    // Enter on a pasted URL prefills and clears the field.
+    cx.subscribe_in(
+      &form_url,
+      window,
+      |this, _, event: &InputEvent, window, cx| {
+        if matches!(event, InputEvent::PressEnter { .. }) {
+          this.apply_url(window, cx);
+        }
+      },
+    )
+    .detach();
     let form_env = cx.new(|cx| {
       SelectState::new(
         ENVS
@@ -244,6 +533,14 @@ impl ConnectionsView {
       form_user,
       form_password,
       form_command,
+      form_path,
+      form_db_index,
+      form_auth_source,
+      form_ssl_root_cert,
+      form_url,
+      form_tls: false,
+      form_kind: ConnectorKind::Postgres,
+      form_engine,
       form_env,
       form_agent_access,
       form_ssl,
@@ -498,87 +795,164 @@ impl ConnectionsView {
             };
             let status = view.status.clone();
             let mode = view.selected_mode(cx);
+            let kind = view.selected_kind(cx);
+            let is_server = kind != ConnectorKind::Sqlite;
+            let is_sql = matches!(kind, ConnectorKind::Postgres | ConnectorKind::Mysql);
+            let ssl_mode = view
+              .form_ssl
+              .read(cx)
+              .selected_value()
+              .and_then(|label| SSL_MODES.iter().find(|m| ssl_label(**m) == label))
+              .copied()
+              .unwrap_or(SslMode::Prefer);
+            let tls = view.form_tls;
             let command = view.form_command.read(cx).value().trim().to_string();
             let this_test = this.clone();
             let this_save = this.clone();
+            let this_tls = this.clone();
+            let hint = |text: SharedString, cx: &App| {
+              field().label("").child(
+                div()
+                  .text_xs()
+                  .text_color(cx.theme().muted_foreground)
+                  .child(text),
+              )
+            };
             dialog
               .title(title)
               .w(px(520.))
               .child(
                 v_form()
-                  .label_width(px(90.))
+                  .label_width(px(96.))
                   .child(field().label("Name").child(Input::new(&view.form_name)))
                   .child(field().label("Group").child(Input::new(&view.form_group)))
+                  .child(
+                    field()
+                      .label("Engine")
+                      .child(Select::new(&view.form_engine)),
+                  )
+                  .child(field().label("From URL").child(Input::new(&view.form_url)))
                   .child(field().label("Env").child(Select::new(&view.form_env)))
                   .child(
                     field()
                       .label("Agent access")
                       .child(Select::new(&view.form_agent_access)),
                   )
-                  .child(field().label("Host").child(Input::new(&view.form_host)))
-                  .child(field().label("Port").child(Input::new(&view.form_port)))
-                  .child(
-                    field()
-                      .label("Database")
-                      .child(Input::new(&view.form_database)),
-                  )
-                  .child(field().label("User").child(Input::new(&view.form_user)))
-                  .child(field().label("SSL").child(Select::new(&view.form_ssl)))
-                  .child(
-                    field()
-                      .label("SSH tunnel")
-                      .child(Select::new(&view.form_tunnel)),
-                  )
-                  .child(
-                    field()
-                      .label("Password")
-                      .child(Select::new(&view.form_credential)),
-                  )
-                  .when(mode != CredentialMode::Command, |form| {
+                  .when(kind == ConnectorKind::Sqlite, |form| {
+                    form.child(
+                      field()
+                        .label("Database file")
+                        .child(Input::new(&view.form_path)),
+                    )
+                  })
+                  .when(is_server, |form| {
+                    form
+                      .child(field().label("Host").child(Input::new(&view.form_host)))
+                      .child(field().label("Port").child(Input::new(&view.form_port)))
+                  })
+                  .when(kind == ConnectorKind::Redis, |form| {
+                    form.child(
+                      field()
+                        .label("DB index")
+                        .child(Input::new(&view.form_db_index)),
+                    )
+                  })
+                  .when(kind == ConnectorKind::Mongo, |form| {
                     form
                       .child(
                         field()
-                          .label(if mode == CredentialMode::Prompt {
-                            "(for Test only)"
-                          } else {
-                            ""
-                          })
-                          .child(Input::new(&view.form_password)),
+                          .label("Database")
+                          .child(Input::new(&view.form_database)),
                       )
-                      .when_some(credential_mode_hint(mode), |form, hint| {
+                      .child(
+                        field()
+                          .label("Auth source")
+                          .child(Input::new(&view.form_auth_source)),
+                      )
+                  })
+                  .when(is_sql, |form| {
+                    form
+                      .child(
+                        field()
+                          .label("Database")
+                          .child(Input::new(&view.form_database)),
+                      )
+                      .child(field().label("User").child(Input::new(&view.form_user)))
+                      .child(field().label("SSL").child(Select::new(&view.form_ssl)))
+                      .when(ssl_mode == SslMode::VerifyFull, |form| {
                         form.child(
-                          field().label("").child(
-                            div()
-                              .text_xs()
-                              .text_color(cx.theme().muted_foreground)
-                              .child(hint),
-                          ),
+                          field()
+                            .label("CA cert")
+                            .child(Input::new(&view.form_ssl_root_cert)),
                         )
                       })
                   })
-                  .when(mode == CredentialMode::Command, |form| {
+                  .when(
+                    matches!(kind, ConnectorKind::Redis | ConnectorKind::Mongo),
+                    |form| {
+                      form
+                        .child(field().label("User").child(Input::new(&view.form_user)))
+                        .child(field().label("TLS").child(
+                          Switch::new("form-tls").checked(tls).on_click({
+                            let this_tls = this_tls.clone();
+                            move |checked, _, cx| {
+                              let checked = *checked;
+                              this_tls.update(cx, |view, cx| {
+                                view.form_tls = checked;
+                                cx.notify();
+                              });
+                            }
+                          }),
+                        ))
+                    },
+                  )
+                  .when(is_server, |form| {
+                    form.child(
+                      field()
+                        .label("SSH tunnel")
+                        .child(Select::new(&view.form_tunnel)),
+                    )
+                  })
+                  .when(is_server, |form| {
                     form
                       .child(
                         field()
-                          .label("Command")
-                          .child(Input::new(&view.form_command)),
+                          .label("Password")
+                          .child(Select::new(&view.form_credential)),
                       )
-                      .child(field().label("").child(command_preview(
-                        &command,
-                        CONNECTION_COMMAND_HINT,
-                        cx,
-                      )))
+                      .when(mode != CredentialMode::Command, |form| {
+                        form
+                          .child(
+                            field()
+                              .label(if mode == CredentialMode::Prompt {
+                                "(for Test only)"
+                              } else {
+                                ""
+                              })
+                              .child(Input::new(&view.form_password)),
+                          )
+                          .when_some(credential_mode_hint(mode), |form, text| {
+                            form.child(hint(text.into(), cx))
+                          })
+                      })
+                      .when(mode == CredentialMode::Command, |form| {
+                        form
+                          .child(
+                            field()
+                              .label("Command")
+                              .child(Input::new(&view.form_command)),
+                          )
+                          .child(field().label("").child(command_preview(
+                            &command,
+                            CONNECTION_COMMAND_HINT,
+                            cx,
+                          )))
+                          .when_some(credential_command_caveat(kind), |form, caveat| {
+                            form.child(hint(caveat.into(), cx))
+                          })
+                      })
                   })
-                  .when(!status.is_empty(), |this| {
-                    this.child(
-                      field().label("").child(
-                        div()
-                          .text_sm()
-                          .text_color(cx.theme().muted_foreground)
-                          .child(status),
-                      ),
-                    )
-                  }),
+                  .when(!status.is_empty(), |form| form.child(hint(status, cx))),
               )
               .footer(
                 h_flex()
@@ -612,117 +986,110 @@ impl ConnectionsView {
     window: &mut Window,
     cx: &mut Context<Self>,
   ) {
-    let (
-      name,
-      group,
-      host,
-      port,
-      database,
-      user,
-      env_ix,
-      agent_ix,
-      ssl_ix,
-      cred_ix,
-      command,
-      tunnel_id,
-    ) = match editing {
-      Some(profile) => {
-        let (host, port, database, user, ssl, tunnel_id) = match &profile.params {
-          ConnectorParams::Postgres(p) => (
-            p.host.clone(),
-            p.port.to_string(),
-            p.database.clone(),
-            p.user.clone(),
-            p.ssl_mode,
-            p.tunnel_id.clone(),
-          ),
-          _ => (
-            String::new(),
-            String::new(),
-            String::new(),
-            String::new(),
-            SslMode::Prefer,
-            None,
-          ),
-        };
-        let (mode, command) = match &profile.credential {
-          CredentialSource::Keychain => (CredentialMode::Keychain, String::new()),
-          CredentialSource::Prompt => (CredentialMode::Prompt, String::new()),
-          CredentialSource::Command { command, .. } => (CredentialMode::Command, command.clone()),
-        };
-        (
-          profile.name.clone(),
-          profile.group.clone().unwrap_or_default(),
-          host,
-          port,
-          database,
-          user,
-          ENVS.iter().position(|e| *e == profile.env).unwrap_or(0),
-          crate::mcp::AGENT_ACCESSES
-            .iter()
-            .position(|a| *a == profile.agent_access)
-            .unwrap_or(0),
-          SSL_MODES.iter().position(|m| *m == ssl).unwrap_or(1),
-          CREDENTIAL_MODES
-            .iter()
-            .position(|m| *m == mode)
-            .unwrap_or(0),
-          command,
-          tunnel_id,
-        )
+    // Defaults for a new connection; an edit overrides per kind below.
+    let mut name = String::new();
+    let mut group = String::new();
+    let mut host = "localhost".to_string();
+    let mut port = kind_default_port(ConnectorKind::Postgres).to_string();
+    let mut database = String::new();
+    let mut user = String::new();
+    let mut path = String::new();
+    let mut db_index = "0".to_string();
+    let mut auth_source = String::new();
+    let mut ssl_root_cert = String::new();
+    let mut tls = false;
+    let mut kind = ConnectorKind::Postgres;
+    let mut env_ix = 0;
+    let mut agent_ix = 0;
+    let mut ssl_ix = 1;
+    let mut cred_ix = 0;
+    let mut command = String::new();
+    let mut tunnel_id: Option<String> = None;
+
+    if let Some(profile) = editing {
+      name = profile.name.clone();
+      group = profile.group.clone().unwrap_or_default();
+      env_ix = ENVS.iter().position(|e| *e == profile.env).unwrap_or(0);
+      agent_ix = crate::mcp::AGENT_ACCESSES
+        .iter()
+        .position(|a| *a == profile.agent_access)
+        .unwrap_or(0);
+      let (mode, cmd) = match &profile.credential {
+        CredentialSource::Keychain => (CredentialMode::Keychain, String::new()),
+        CredentialSource::Prompt => (CredentialMode::Prompt, String::new()),
+        CredentialSource::Command { command, .. } => (CredentialMode::Command, command.clone()),
+      };
+      command = cmd;
+      cred_ix = CREDENTIAL_MODES
+        .iter()
+        .position(|m| *m == mode)
+        .unwrap_or(0);
+      kind = profile.params.kind();
+      match &profile.params {
+        ConnectorParams::Postgres(p) | ConnectorParams::Mysql(p) => {
+          host = p.host.clone();
+          port = p.port.to_string();
+          database = p.database.clone();
+          user = p.user.clone();
+          ssl_ix = SSL_MODES.iter().position(|m| *m == p.ssl_mode).unwrap_or(1);
+          ssl_root_cert = p.ssl_root_cert.clone().unwrap_or_default();
+          tunnel_id = p.tunnel_id.clone();
+        }
+        ConnectorParams::Sqlite { path: stored } => path = stored.clone(),
+        ConnectorParams::Redis(p) => {
+          host = p.host.clone();
+          port = p.port.to_string();
+          db_index = p.db.to_string();
+          user = p.username.clone().unwrap_or_default();
+          tls = p.tls;
+          tunnel_id = p.tunnel_id.clone();
+        }
+        ConnectorParams::Mongo(p) => {
+          host = p.host.clone();
+          port = p.port.to_string();
+          database = p.database.clone().unwrap_or_default();
+          user = p.username.clone().unwrap_or_default();
+          auth_source = p.auth_source.clone().unwrap_or_default();
+          tls = p.tls;
+          tunnel_id = p.tunnel_id.clone();
+        }
       }
-      None => (
-        String::new(),
-        String::new(),
-        String::new(),
-        "5432".to_string(),
-        String::new(),
-        String::new(),
-        0,
-        0,
-        1,
-        0,
-        String::new(),
-        None,
-      ),
-    };
+    }
+
+    self.form_kind = kind;
+    self.form_tls = tls;
+    let engine_ix = ENGINE_CHOICES
+      .iter()
+      .position(|choice| choice.id == engine_choice_for_kind(kind))
+      .unwrap_or(0);
+
     self.refresh_tunnel_picker(tunnel_id.as_deref(), window, cx);
-    self
-      .form_name
-      .update(cx, |i, cx| i.set_value(name, window, cx));
-    self
-      .form_group
-      .update(cx, |i, cx| i.set_value(group, window, cx));
-    self
-      .form_host
-      .update(cx, |i, cx| i.set_value(host, window, cx));
-    self
-      .form_port
-      .update(cx, |i, cx| i.set_value(port, window, cx));
-    self
-      .form_database
-      .update(cx, |i, cx| i.set_value(database, window, cx));
-    self
-      .form_user
-      .update(cx, |i, cx| i.set_value(user, window, cx));
-    self
-      .form_password
-      .update(cx, |i, cx| i.set_value("", window, cx));
-    self
-      .form_command
-      .update(cx, |i, cx| i.set_value(command, window, cx));
-    self.form_env.update(cx, |s, cx| {
-      s.set_selected_index(Some(IndexPath::new(env_ix)), window, cx)
-    });
-    self.form_agent_access.update(cx, |s, cx| {
-      s.set_selected_index(Some(IndexPath::new(agent_ix)), window, cx)
-    });
-    self.form_ssl.update(cx, |s, cx| {
-      s.set_selected_index(Some(IndexPath::new(ssl_ix)), window, cx)
-    });
-    self.form_credential.update(cx, |s, cx| {
-      s.set_selected_index(Some(IndexPath::new(cred_ix)), window, cx)
-    });
+    let mut text = |input: &Entity<InputState>, value: String| {
+      input.update(cx, |i, cx| i.set_value(value, window, cx));
+    };
+    text(&self.form_name, name);
+    text(&self.form_group, group);
+    text(&self.form_host, host);
+    text(&self.form_port, port);
+    text(&self.form_database, database);
+    text(&self.form_user, user);
+    text(&self.form_password, String::new());
+    text(&self.form_command, command);
+    text(&self.form_path, path);
+    text(&self.form_db_index, db_index);
+    text(&self.form_auth_source, auth_source);
+    text(&self.form_ssl_root_cert, ssl_root_cert);
+    text(&self.form_url, String::new());
+    let mut select = |state: &Entity<SelectState<Vec<String>>>, ix: usize| {
+      state.update(cx, |s, cx| {
+        s.set_selected_index(Some(IndexPath::new(ix)), window, cx)
+      });
+    };
+    select(&self.form_engine, engine_ix);
+    select(&self.form_env, env_ix);
+    select(&self.form_agent_access, agent_ix);
+    select(&self.form_ssl, ssl_ix);
+    select(&self.form_credential, cred_ix);
   }
 
   fn selected_mode(&self, cx: &App) -> CredentialMode {
@@ -732,6 +1099,79 @@ impl ConnectionsView {
       .selected_index(cx)
       .map_or(0, |ix| ix.row);
     CREDENTIAL_MODES.get(ix).copied().unwrap_or_default()
+  }
+
+  /// The kind the engine select points at; MariaDB reads as mysql here (the
+  /// distinction is a runtime version, not a form shape).
+  fn selected_kind(&self, cx: &App) -> ConnectorKind {
+    let label = self.form_engine.read(cx).selected_value().cloned();
+    label
+      .and_then(|label| ENGINE_CHOICES.iter().find(|choice| choice.label == label))
+      .map_or(ConnectorKind::Postgres, |choice| choice.kind)
+  }
+
+  fn on_engine_change(&mut self, label: String, window: &mut Window, cx: &mut Context<Self>) {
+    let next = ENGINE_CHOICES
+      .iter()
+      .find(|choice| choice.label == label)
+      .map_or(ConnectorKind::Postgres, |choice| choice.kind);
+    let port = self.form_port.read(cx).value().to_string();
+    let next_port = port_for_kind_change(&port, self.form_kind, next);
+    self.form_kind = next;
+    if next != ConnectorKind::Sqlite {
+      self
+        .form_port
+        .update(cx, |i, cx| i.set_value(next_port, window, cx));
+    }
+    cx.notify();
+  }
+
+  /// Prefill from a pasted URL, then clear the field so it does not linger.
+  fn apply_url(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    let raw = self.form_url.read(cx).value().to_string();
+    if raw.trim().is_empty() {
+      return;
+    }
+    let Some(parsed) = parse_connection_url(&raw) else {
+      return;
+    };
+    let engine_ix = ENGINE_CHOICES
+      .iter()
+      .position(|choice| choice.id == engine_choice_for_kind(parsed.kind))
+      .unwrap_or(0);
+    self.form_engine.update(cx, |s, cx| {
+      s.set_selected_index(Some(IndexPath::new(engine_ix)), window, cx)
+    });
+    self.form_kind = parsed.kind;
+    let mut set = |input: &Entity<InputState>, value: String| {
+      input.update(cx, |i, cx| i.set_value(value, window, cx));
+    };
+    set(&self.form_host, parsed.host);
+    set(&self.form_port, parsed.port.to_string());
+    set(&self.form_database, parsed.database);
+    set(&self.form_user, parsed.user);
+    if !parsed.password.is_empty() {
+      set(&self.form_password, parsed.password);
+    }
+    set(&self.form_db_index, parsed.db_index.to_string());
+    set(
+      &self.form_auth_source,
+      parsed.auth_source.unwrap_or_default(),
+    );
+    if let Some(cert) = parsed.ssl_root_cert {
+      set(&self.form_ssl_root_cert, cert);
+    }
+    self.form_tls = parsed.tls;
+    if let Some(mode) = parsed.ssl_mode {
+      let ssl_ix = SSL_MODES.iter().position(|m| *m == mode).unwrap_or(1);
+      self.form_ssl.update(cx, |s, cx| {
+        s.set_selected_index(Some(IndexPath::new(ssl_ix)), window, cx)
+      });
+    }
+    self
+      .form_url
+      .update(cx, |i, cx| i.set_value("", window, cx));
+    cx.notify();
   }
 
   /// Ids and labels rebuilt together: the picker maps by index, since tunnel
@@ -765,19 +1205,10 @@ impl ConnectionsView {
 
   fn form_input(&self, cx: &Context<Self>) -> Result<ConnectionInput, String> {
     let name = self.form_name.read(cx).value().trim().to_string();
-    let host = self.form_host.read(cx).value().trim().to_string();
-    let database = self.form_database.read(cx).value().trim().to_string();
-    let user = self.form_user.read(cx).value().trim().to_string();
-    if name.is_empty() || host.is_empty() || database.is_empty() || user.is_empty() {
-      return Err("name, host, database and user are required".to_string());
+    if name.is_empty() {
+      return Err("Name is required".to_string());
     }
-    let port: u16 = self
-      .form_port
-      .read(cx)
-      .value()
-      .trim()
-      .parse()
-      .map_err(|_| "the port is not a number".to_string())?;
+    let kind = self.selected_kind(cx);
     let group = self.form_group.read(cx).value().trim().to_string();
     let env = self
       .form_env
@@ -797,50 +1228,129 @@ impl ConnectionsView {
       })
       .copied()
       .unwrap_or(AgentAccess::None);
-    let ssl_mode = self
-      .form_ssl
-      .read(cx)
-      .selected_value()
-      .and_then(|label| SSL_MODES.iter().find(|m| ssl_label(**m) == label))
-      .copied()
-      .unwrap_or(SslMode::Prefer);
-    let credential = match self.selected_mode(cx) {
-      CredentialMode::Keychain => CredentialSource::Keychain,
-      CredentialMode::Prompt => CredentialSource::Prompt,
-      CredentialMode::Command => {
-        let command = self.form_command.read(cx).value().trim().to_string();
-        if command.is_empty() {
-          return Err("Command is required".to_string());
-        }
-        CredentialSource::Command {
-          command,
-          refresh_after_secs: None,
-        }
-      }
+
+    let host = self.form_host.read(cx).value().trim().to_string();
+    let port_text = self.form_port.read(cx).value().trim().to_string();
+    let parse_port = || {
+      port_text
+        .parse::<u16>()
+        .map_err(|_| "the port is not a number".to_string())
     };
-    let password = self.form_password.read(cx).value().to_string();
+    let optional = |input: &Entity<InputState>| {
+      let value = input.read(cx).value().trim().to_string();
+      (!value.is_empty()).then_some(value)
+    };
     let tunnel_ix = self
       .form_tunnel
       .read(cx)
       .selected_index(cx)
       .map_or(0, |ix| ix.row);
     let tunnel_id = self.form_tunnel_ids.get(tunnel_ix).cloned().flatten();
+
+    let params = match kind {
+      ConnectorKind::Sqlite => {
+        let path = self.form_path.read(cx).value().trim().to_string();
+        if path.is_empty() {
+          return Err("Database file is required".to_string());
+        }
+        ConnectorParams::Sqlite { path }
+      }
+      ConnectorKind::Redis => {
+        if host.is_empty() {
+          return Err("Host is required".to_string());
+        }
+        let db = self
+          .form_db_index
+          .read(cx)
+          .value()
+          .trim()
+          .parse::<u32>()
+          .unwrap_or(0);
+        ConnectorParams::Redis(RedisParams {
+          host,
+          port: parse_port()?,
+          db,
+          username: optional(&self.form_user),
+          tls: self.form_tls,
+          tunnel_id,
+        })
+      }
+      ConnectorKind::Mongo => {
+        if host.is_empty() {
+          return Err("Host is required".to_string());
+        }
+        ConnectorParams::Mongo(MongoParams {
+          host,
+          port: parse_port()?,
+          database: optional(&self.form_database),
+          username: optional(&self.form_user),
+          auth_source: optional(&self.form_auth_source),
+          tls: self.form_tls,
+          tunnel_id,
+        })
+      }
+      ConnectorKind::Postgres | ConnectorKind::Mysql => {
+        let database = self.form_database.read(cx).value().trim().to_string();
+        let user = self.form_user.read(cx).value().trim().to_string();
+        if host.is_empty() || database.is_empty() || user.is_empty() {
+          return Err("host, database and user are required".to_string());
+        }
+        let ssl_mode = self
+          .form_ssl
+          .read(cx)
+          .selected_value()
+          .and_then(|label| SSL_MODES.iter().find(|m| ssl_label(**m) == label))
+          .copied()
+          .unwrap_or(SslMode::Prefer);
+        let params = SqlServerParams {
+          host,
+          port: parse_port()?,
+          database,
+          user,
+          ssl_mode,
+          // The CA only applies to verify-full; don't persist a stale path.
+          ssl_root_cert: (ssl_mode == SslMode::VerifyFull)
+            .then(|| optional(&self.form_ssl_root_cert))
+            .flatten(),
+          tunnel_id,
+        };
+        match kind {
+          ConnectorKind::Mysql => ConnectorParams::Mysql(params),
+          _ => ConnectorParams::Postgres(params),
+        }
+      }
+    };
+
+    // SQLite has no auth: it forces keychain (nothing is stored) and no password.
+    let (credential, password) = if kind == ConnectorKind::Sqlite {
+      (CredentialSource::Keychain, None)
+    } else {
+      let credential = match self.selected_mode(cx) {
+        CredentialMode::Keychain => CredentialSource::Keychain,
+        CredentialMode::Prompt => CredentialSource::Prompt,
+        CredentialMode::Command => {
+          let command = self.form_command.read(cx).value().trim().to_string();
+          if command.is_empty() {
+            return Err("Command is required".to_string());
+          }
+          CredentialSource::Command {
+            command,
+            refresh_after_secs: None,
+          }
+        }
+      };
+      let password = self.form_password.read(cx).value().to_string();
+      (credential, (!password.is_empty()).then_some(password))
+    };
+
     Ok(ConnectionInput {
       name,
       env,
       group: (!group.is_empty()).then_some(group),
       agent_access,
       credential,
-      params: ConnectorParams::Postgres(SqlServerParams {
-        host,
-        port,
-        database,
-        user,
-        ssl_mode,
-        ssl_root_cert: None,
-        tunnel_id,
-      }),
-      password: (!password.is_empty()).then_some(password),
+      params,
+      password,
     })
   }
 
@@ -1924,7 +2434,114 @@ mod tests {
       }),
       "sqlite:///tmp/x.db"
     );
-    let _ = ConnectorKind::Postgres;
+    let redis = ConnectorParams::Redis(RedisParams {
+      host: "cache".into(),
+      port: 6379,
+      db: 2,
+      username: None,
+      tls: true,
+      tunnel_id: None,
+    });
+    assert_eq!(dsn(&redis), "rediss://cache:6379/2");
+    let mongo = ConnectorParams::Mongo(MongoParams {
+      host: "m".into(),
+      port: 27017,
+      database: Some("app".into()),
+      username: Some("u".into()),
+      auth_source: None,
+      tls: false,
+      tunnel_id: None,
+    });
+    assert_eq!(dsn(&mongo), "mongodb://u@m:27017/app");
+  }
+
+  #[test]
+  fn parses_each_connector_url() {
+    let pg = parse_connection_url("postgres://alice:s%40cret@db.host:6000/shop?sslmode=require")
+      .expect("pg url");
+    assert_eq!(pg.kind, ConnectorKind::Postgres);
+    assert_eq!(pg.host, "db.host");
+    assert_eq!(pg.port, 6000);
+    assert_eq!(pg.database, "shop");
+    assert_eq!(pg.user, "alice");
+    assert_eq!(pg.password, "s@cret", "userinfo is percent-decoded");
+    assert_eq!(pg.ssl_mode, Some(SslMode::Require));
+
+    let mysql =
+      parse_connection_url("mysql://root@127.0.0.1/app?ssl-mode=VERIFY_IDENTITY").expect("mysql");
+    assert_eq!(mysql.kind, ConnectorKind::Mysql);
+    assert_eq!(mysql.port, 3306, "no port falls back to the kind default");
+    assert_eq!(mysql.ssl_mode, Some(SslMode::VerifyFull));
+
+    let redis = parse_connection_url("rediss://cache:6380/3").expect("redis");
+    assert_eq!(redis.kind, ConnectorKind::Redis);
+    assert_eq!(redis.db_index, 3);
+    assert!(redis.tls, "rediss is tls");
+    assert_eq!(redis.database, "");
+
+    let mongo =
+      parse_connection_url("mongodb://m:27017/app?authSource=admin&tls=true").expect("mongo");
+    assert_eq!(mongo.auth_source.as_deref(), Some("admin"));
+    assert!(mongo.tls);
+
+    assert!(parse_connection_url("not a url").is_none());
+    assert!(
+      parse_connection_url("ftp://x/y").is_none(),
+      "unknown scheme is refused"
+    );
+  }
+
+  #[test]
+  fn the_port_follows_the_kind_only_when_still_on_the_default() {
+    // On the previous kind's default -> follow to the next default.
+    assert_eq!(
+      port_for_kind_change("5432", ConnectorKind::Postgres, ConnectorKind::Mysql),
+      "3306"
+    );
+    // Hand-set port survives the switch.
+    assert_eq!(
+      port_for_kind_change("9999", ConnectorKind::Postgres, ConnectorKind::Mysql),
+      "9999"
+    );
+    // sqlite has no port: switching away lands on the next default.
+    assert_eq!(
+      port_for_kind_change("", ConnectorKind::Sqlite, ConnectorKind::Redis),
+      "6379"
+    );
+    // Switching to sqlite keeps whatever was there (the field is hidden anyway).
+    assert_eq!(
+      port_for_kind_change("5432", ConnectorKind::Postgres, ConnectorKind::Sqlite),
+      "5432"
+    );
+  }
+
+  #[test]
+  fn the_badge_names_mariadb_and_valkey_by_their_version() {
+    assert_eq!(
+      server_badge(ConnectorKind::Mysql, "11.4.7-MariaDB-log"),
+      ("MariaDB".to_string(), "11.4.7".to_string())
+    );
+    assert_eq!(
+      server_badge(ConnectorKind::Redis, "8.0.1-valkey"),
+      ("Valkey".to_string(), "8.0.1".to_string())
+    );
+    assert_eq!(
+      server_badge(ConnectorKind::Postgres, "16.2 (Debian)"),
+      ("PG".to_string(), "16.2".to_string())
+    );
+    assert_eq!(
+      server_badge(ConnectorKind::Mysql, "8.0.36"),
+      ("MySQL".to_string(), "8.0.36".to_string())
+    );
+  }
+
+  #[test]
+  fn the_engine_entry_for_a_kind_never_lands_on_mariadb() {
+    assert_eq!(engine_choice_for_kind(ConnectorKind::Mysql), "mysql");
+    assert_eq!(engine_choice_for_kind(ConnectorKind::Mongo), "mongo");
+    // MariaDB is a distinct entry but the same kind as mysql.
+    let mariadb = ENGINE_CHOICES.iter().find(|c| c.id == "mariadb").unwrap();
+    assert_eq!(mariadb.kind, ConnectorKind::Mysql);
   }
 
   #[gpui::test]
@@ -1985,11 +2602,8 @@ mod tests {
     let view = cx.update(|window, cx| cx.new(|cx| ConnectionsView::new(state, window, cx)));
     cx.update(|window, cx| {
       view.update(cx, |view, cx| {
-        // A new connection defaults to invisible.
-        assert_eq!(
-          view.form_input(cx).unwrap_err(),
-          "name, host, database and user are required"
-        );
+        // An empty form refuses on the name first.
+        assert_eq!(view.form_input(cx).unwrap_err(), "Name is required");
         let mut profile = profile("warehouse", None);
         profile.agent_access = AgentAccess::WriteWithApproval;
         view.prefill_form(Some(&profile), window, cx);
@@ -1997,6 +2611,130 @@ mod tests {
           view.form_input(cx).unwrap().agent_access,
           AgentAccess::WriteWithApproval
         );
+      });
+    });
+  }
+
+  fn profile_with(params: ConnectorParams) -> ConnectionProfile {
+    ConnectionProfile {
+      id: "c".to_string(),
+      name: "conn".to_string(),
+      env: Env::Dev,
+      group: None,
+      agent_access: AgentAccess::None,
+      credential: CredentialSource::Keychain,
+      params,
+    }
+  }
+
+  #[gpui::test]
+  fn the_form_round_trips_every_kind(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let cx = cx.add_empty_window();
+    let (_dir, state) = test_state();
+    let view = cx.update(|window, cx| cx.new(|cx| ConnectionsView::new(state, window, cx)));
+
+    let sqlite = ConnectorParams::Sqlite {
+      path: "/data/app.db".to_string(),
+    };
+    let mysql = ConnectorParams::Mysql(SqlServerParams {
+      host: "db".to_string(),
+      port: 3307,
+      database: "shop".to_string(),
+      user: "root".to_string(),
+      ssl_mode: SslMode::VerifyFull,
+      ssl_root_cert: Some("/ca.pem".to_string()),
+      tunnel_id: None,
+    });
+    let redis = ConnectorParams::Redis(RedisParams {
+      host: "cache".to_string(),
+      port: 6390,
+      db: 3,
+      username: Some("acl".to_string()),
+      tls: true,
+      tunnel_id: None,
+    });
+    let mongo = ConnectorParams::Mongo(MongoParams {
+      host: "m".to_string(),
+      port: 27018,
+      database: Some("app".to_string()),
+      username: Some("u".to_string()),
+      auth_source: Some("admin".to_string()),
+      tls: true,
+      tunnel_id: None,
+    });
+
+    cx.update(|window, cx| {
+      view.update(cx, |view, cx| {
+        for params in [sqlite, mysql, redis, mongo] {
+          view.prefill_form(Some(&profile_with(params.clone())), window, cx);
+          let got = view.form_input(cx).expect("form is valid").params;
+          match (&params, &got) {
+            (ConnectorParams::Sqlite { path: want }, ConnectorParams::Sqlite { path }) => {
+              assert_eq!(path, want)
+            }
+            (ConnectorParams::Mysql(want), ConnectorParams::Mysql(p)) => {
+              assert_eq!(
+                (&p.host, p.port, &p.database, &p.user),
+                (&want.host, want.port, &want.database, &want.user)
+              );
+              assert_eq!(p.ssl_mode, SslMode::VerifyFull);
+              assert_eq!(p.ssl_root_cert.as_deref(), Some("/ca.pem"));
+            }
+            (ConnectorParams::Redis(want), ConnectorParams::Redis(p)) => {
+              assert_eq!(
+                (&p.host, p.port, p.db, p.tls),
+                (&want.host, want.port, want.db, want.tls)
+              );
+              assert_eq!(p.username.as_deref(), Some("acl"));
+            }
+            (ConnectorParams::Mongo(want), ConnectorParams::Mongo(p)) => {
+              assert_eq!((&p.host, p.port, p.tls), (&want.host, want.port, want.tls));
+              assert_eq!(p.database.as_deref(), Some("app"));
+              assert_eq!(p.auth_source.as_deref(), Some("admin"));
+              assert_eq!(p.username.as_deref(), Some("u"));
+            }
+            other => panic!("kind mismatch: {other:?}"),
+          }
+        }
+      });
+    });
+  }
+
+  #[gpui::test]
+  fn a_pasted_url_prefills_and_builds(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let cx = cx.add_empty_window();
+    let (_dir, state) = test_state();
+    let view = cx.update(|window, cx| cx.new(|cx| ConnectionsView::new(state, window, cx)));
+
+    cx.update(|window, cx| {
+      view.update(cx, |view, cx| {
+        view
+          .form_name
+          .update(cx, |i, cx| i.set_value("prod", window, cx));
+        view.form_url.update(cx, |i, cx| {
+          i.set_value(
+            "mongodb://u:p%40ss@m.host:27019/app?authSource=admin&tls=true",
+            window,
+            cx,
+          )
+        });
+        view.apply_url(window, cx);
+
+        assert_eq!(view.selected_kind(cx), ConnectorKind::Mongo);
+        let input = view.form_input(cx).expect("valid");
+        assert_eq!(input.password.as_deref(), Some("p@ss"), "userinfo decoded");
+        let ConnectorParams::Mongo(p) = input.params else {
+          panic!("mongo");
+        };
+        assert_eq!(p.host, "m.host");
+        assert_eq!(p.port, 27019);
+        assert_eq!(p.database.as_deref(), Some("app"));
+        assert_eq!(p.auth_source.as_deref(), Some("admin"));
+        assert!(p.tls);
+        // The URL field clears itself after applying.
+        assert_eq!(view.form_url.read(cx).value(), "");
       });
     });
   }
