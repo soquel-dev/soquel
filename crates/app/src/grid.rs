@@ -318,7 +318,7 @@ impl RowsDelegate {
               }
               Err(error) => {
                 delegate.eof = true;
-                delegate.status = format!("error: {error}").into();
+                delegate.status = crate::status::error(&error);
               }
             }
           }
@@ -450,7 +450,7 @@ impl TableDelegate for RowsDelegate {
             }
             Err(error) => {
               delegate.eof = true;
-              delegate.status = format!("error: {error}").into();
+              delegate.status = crate::status::error(&error);
             }
           }
           cx.notify();

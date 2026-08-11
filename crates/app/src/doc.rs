@@ -344,7 +344,7 @@ impl DocWorkspace {
     let task = core::doc_databases(&self.db, cx);
     let db_select = self.db_select.clone();
     cx.spawn(async move |this, cx| {
-      let Ok(databases) = task.await else {
+      let Some(databases) = crate::status::ok_or_log(task.await) else {
         return;
       };
       let Some(handle) = cx.update(|cx| cx.active_window()) else {
@@ -423,7 +423,7 @@ impl DocWorkspace {
         }
         match result {
           Ok(collections) => this.collections = collections,
-          Err(error) => this.status = format!("error: {error}").into(),
+          Err(error) => this.status = crate::status::error(&error),
         }
         cx.notify();
       });
@@ -472,7 +472,7 @@ impl DocWorkspace {
     self._find_task = cx.spawn(async move |this, cx| {
       let result = task.await;
       let count = match count_task {
-        Some(task) => task.await.ok(),
+        Some(task) => crate::status::ok_or_log(task.await),
         None => None,
       };
       let _ = this.update(cx, |this, cx| {
@@ -490,7 +490,7 @@ impl DocWorkspace {
               this.docs.extend(page.docs);
             }
           }
-          Err(error) => this.filter_error = Some(format!("{error}").into()),
+          Err(error) => this.filter_error = Some(crate::status::message(&error)),
         }
         cx.notify();
       });
@@ -504,7 +504,7 @@ impl DocWorkspace {
     };
     let task = core::doc_indexes(&self.db, db, collection, cx);
     cx.spawn(async move |this, cx| {
-      if let Ok(indexes) = task.await {
+      if let Some(indexes) = crate::status::ok_or_log(task.await) {
         let _ = this.update(cx, |this, cx| {
           this.indexes = indexes;
           cx.notify();
@@ -537,7 +537,7 @@ impl DocWorkspace {
       let _ = this.update(cx, |this, cx| {
         match result {
           Ok(detail) => this.detail = Some(detail),
-          Err(error) => this.status = format!("error: {error}").into(),
+          Err(error) => this.status = crate::status::error(&error),
         }
         cx.notify();
       });
@@ -581,7 +581,7 @@ impl DocWorkspace {
               this.select_doc(ix, cx);
             }
           }
-          Err(error) => this.status = format!("error: {error}").into(),
+          Err(error) => this.status = crate::status::error(&error),
         }
         cx.notify();
       });
@@ -611,7 +611,7 @@ impl DocWorkspace {
             this.find(true, cx);
             this.load_collections(cx);
           }
-          Err(error) => this.status = format!("error: {error}").into(),
+          Err(error) => this.status = crate::status::error(&error),
         }
         cx.notify();
       });

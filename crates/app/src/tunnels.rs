@@ -557,13 +557,13 @@ impl TunnelsView {
               |view: &mut Self, result, cx| match result {
                 Ok(()) => view.run_test(cx),
                 Err(error) => {
-                  view.status = format!("error: {error}").into();
+                  view.status = crate::status::error(&error);
                   cx.notify();
                 }
               },
             );
           }
-          Err(error) => this.status = format!("error: {error}").into(),
+          Err(error) => this.status = crate::status::error(&error),
         }
         cx.notify();
       });
@@ -588,7 +588,7 @@ impl TunnelsView {
             this.status = SharedString::default();
             this.refresh(cx);
           }
-          Err(error) => this.status = format!("error: {error}").into(),
+          Err(error) => this.status = crate::status::error(&error),
         }
         cx.notify();
       });
@@ -609,7 +609,7 @@ impl TunnelsView {
       }
       Err(error) => {
         let _ = this.update(cx, |this, cx| {
-          this.status = format!("error: {error}").into();
+          this.status = crate::status::error(&error);
           cx.notify();
         });
       }
@@ -622,7 +622,7 @@ impl TunnelsView {
       let result = task.await;
       let _ = this.update(cx, |this, cx| {
         if let Err(error) = result {
-          this.status = format!("error: {error}").into();
+          this.status = crate::status::error(&error);
         }
         this.refresh(cx);
       });

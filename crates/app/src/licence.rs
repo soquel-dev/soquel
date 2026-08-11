@@ -82,7 +82,7 @@ fn outcome_of(result: Result<LicenceStatus, Error>) -> (bool, SharedString) {
       (ok, message.into())
     }
     Err(Error::Activation { reason, .. }) => (false, activation_message(reason).into()),
-    Err(error) => (false, error.to_string().into()),
+    Err(error) => (false, crate::status::message(&error)),
   }
 }
 

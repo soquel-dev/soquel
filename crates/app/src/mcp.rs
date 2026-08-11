@@ -204,7 +204,7 @@ impl McpPanel {
       let status = status_task.await;
       let windows = windows_task.await;
       let _ = this.update(cx, |this, cx| {
-        if let Ok(status) = status {
+        if let Some(status) = crate::status::ok_or_log(status) {
           this.status = Some(status);
         }
         this.windows = windows;
@@ -235,7 +235,7 @@ impl McpPanel {
       let _ = this.update(cx, |this, cx| {
         this.busy = false;
         if let Err(error) = result {
-          this.problem = Some(error.to_string().into());
+          this.problem = Some(crate::status::message(&error));
         }
         this.refresh(cx);
       });
@@ -267,7 +267,7 @@ impl McpPanel {
       // Persist before restarting: the choice survives even if the new port
       // fails to bind.
       if was_running {
-        let _ = core::mcp_stop(state.clone(), cx).await;
+        crate::status::ok_or_log(core::mcp_stop(state.clone(), cx).await);
       }
       let set = core::mcp_set_port(state.clone(), port, cx).await;
       let restart = if was_running && matches!(set, Ok(())) {
@@ -278,7 +278,7 @@ impl McpPanel {
       let _ = this.update(cx, |this, cx| {
         this.busy = false;
         this.problem = match (set, restart) {
-          (Err(error), _) | (_, Some(Err(error))) => Some(error.to_string().into()),
+          (Err(error), _) | (_, Some(Err(error))) => Some(crate::status::message(&error)),
           _ => None,
         };
         this.refresh(cx);
@@ -302,7 +302,7 @@ impl McpPanel {
       let _ = this.update(cx, |this, cx| {
         match result {
           Ok(_) => this.refresh(cx),
-          Err(error) => this.problem = Some(error.to_string().into()),
+          Err(error) => this.problem = Some(crate::status::message(&error)),
         }
         cx.notify();
       });

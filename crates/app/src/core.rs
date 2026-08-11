@@ -177,7 +177,9 @@ pub fn connect_id(
 
 pub fn disconnect_id(state: Arc<AppState>, id: String) {
   runtime().spawn(async move {
-    let _ = soquel_core::ops::disconnect(&state, &id).await;
+    if let Err(error) = soquel_core::ops::disconnect(&state, &id).await {
+      log::warn!("disconnect failed: {error}");
+    }
   });
 }
 
@@ -627,7 +629,9 @@ pub fn cancel_session(session: &Session) {
 
 pub fn close_session(session: Session) {
   runtime().spawn(async move {
-    let _ = session.0.close().await;
+    if let Err(error) = session.0.close().await {
+      log::warn!("session close failed: {error}");
+    }
   });
 }
 

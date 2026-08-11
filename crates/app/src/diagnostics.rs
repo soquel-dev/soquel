@@ -63,7 +63,7 @@ impl DiagnosticsView {
   fn open_folder(&mut self, cx: &mut Context<Self>) {
     match core::open_log_folder(&self.state) {
       Ok(_) => self.error = None,
-      Err(error) => self.error = Some(error.to_string().into()),
+      Err(error) => self.error = Some(crate::status::message(&error)),
     }
     cx.notify();
   }

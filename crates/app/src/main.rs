@@ -23,6 +23,7 @@ mod licence;
 mod mcp;
 mod mcp_approval;
 mod staged;
+mod status;
 mod tabs;
 #[cfg(test)]
 mod test_support;

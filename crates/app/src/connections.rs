@@ -639,7 +639,7 @@ impl ConnectionsView {
               move |view: &mut Self, result, cx| match result {
                 Ok(()) => view.connect(id.clone(), cx),
                 Err(error) => {
-                  view.status = format!("error: {error}").into();
+                  view.status = crate::status::error(&error);
                   cx.notify();
                 }
               },
@@ -669,14 +669,14 @@ impl ConnectionsView {
               move |view: &mut Self, result, cx| match result {
                 Ok(()) => view.connect(id.clone(), cx),
                 Err(error) => {
-                  view.status = format!("error: {error}").into();
+                  view.status = crate::status::error(&error);
                   cx.notify();
                 }
               },
             );
           }
           Err(error) => {
-            this.status = format!("error: {error}").into();
+            this.status = crate::status::error(&error);
           }
         }
         cx.notify();
@@ -1310,13 +1310,13 @@ impl ConnectionsView {
               |view: &mut Self, result, cx| match result {
                 Ok(()) => view.test_form(cx),
                 Err(error) => {
-                  view.status = format!("error: {error}").into();
+                  view.status = crate::status::error(&error);
                   cx.notify();
                 }
               },
             );
           }
-          Err(error) => this.status = format!("error: {error}").into(),
+          Err(error) => this.status = crate::status::error(&error),
         }
         cx.notify();
       });
@@ -1338,7 +1338,7 @@ impl ConnectionsView {
       let _ = this.update(cx, |this, cx| {
         match result {
           Ok(_) => this.refresh(cx),
-          Err(error) => this.status = format!("error: {error}").into(),
+          Err(error) => this.status = crate::status::error(&error),
         }
         cx.notify();
       });
@@ -1365,7 +1365,7 @@ impl ConnectionsView {
       }
       Err(error) => {
         let _ = this.update(cx, |this, cx| {
-          this.status = format!("error: {error}").into();
+          this.status = crate::status::error(&error);
           cx.notify();
         });
       }
@@ -1460,7 +1460,7 @@ impl ConnectionsView {
         Ok(Ok(None)) => return,
         Ok(Err(error)) => {
           let _ = this.update(cx, |this, cx| {
-            this.export_error = Some(format!("{error}").into());
+            this.export_error = Some(crate::status::message(&error));
             cx.notify();
           });
           return;
@@ -1478,7 +1478,7 @@ impl ConnectionsView {
         this.export_busy = false;
         match result {
           Ok(summary) => done = Some(transfer::export_summary_message(&summary)),
-          Err(error) => this.export_error = Some(format!("{error}").into()),
+          Err(error) => this.export_error = Some(crate::status::message(&error)),
         }
         cx.notify();
       });
@@ -1511,7 +1511,8 @@ impl ConnectionsView {
         // No portal (WSLg): the drop path still works.
         Ok(Err(error)) => {
           let _ = this.update(cx, |this, cx| {
-            this.status = format!("error: {error}; drop the file on the window instead").into();
+            this.status =
+              crate::status::error(&format!("{error}; drop the file on the window instead"));
             cx.notify();
           });
         }
@@ -1567,7 +1568,7 @@ impl ConnectionsView {
           // The lock stays as it was: a rejected passphrase keeps its field.
           Err(error) => {
             this.import_preview = None;
-            this.import_error = Some(format!("{error}").into());
+            this.import_error = Some(crate::status::message(&error));
           }
         }
         cx.notify();
@@ -1620,7 +1621,7 @@ impl ConnectionsView {
               .tunnels_section
               .update(cx, |tunnels, cx| tunnels.refresh(cx));
           }
-          Err(error) => this.import_error = Some(format!("{error}").into()),
+          Err(error) => this.import_error = Some(crate::status::message(&error)),
         }
         cx.notify();
       });
@@ -1641,7 +1642,7 @@ impl ConnectionsView {
       let result = task.await;
       let _ = this.update(cx, |this, cx| {
         if let Err(error) = result {
-          this.status = format!("error: {error}").into();
+          this.status = crate::status::error(&error);
         }
         this.refresh(cx);
       });

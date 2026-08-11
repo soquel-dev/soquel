@@ -712,7 +712,7 @@ impl Workspace {
         Err(error) => {
           // Staging is kept: the transaction rolled back server-side.
           table.update(cx, |table, cx| {
-            table.delegate_mut().status = format!("error: {error}").into();
+            table.delegate_mut().status = crate::status::error(&error);
             cx.notify();
           });
         }
@@ -804,7 +804,7 @@ impl Workspace {
             });
             session
           }
-          _ => {
+          Err(error) => {
             let _ = this.update(cx, |this, cx| {
               if let Some(TabContent::Sql { running, .. }) = this.contents.get_mut(&id) {
                 *running = false;
@@ -812,7 +812,7 @@ impl Workspace {
               cx.notify();
             });
             results.update(cx, |table, cx| {
-              table.delegate_mut().status = "error: could not open a session".into();
+              table.delegate_mut().status = crate::status::error(&error);
               cx.notify();
             });
             return;
@@ -905,7 +905,7 @@ impl Workspace {
               }
             }
             Err(error) => {
-              delegate.status = format!("error: {error}").into();
+              delegate.status = crate::status::error(&error);
             }
           }
         }
@@ -1325,7 +1325,7 @@ impl Workspace {
         self.status = format!("copied {count} rows as {}", format_label(format)).into();
       }
       Err(error) => {
-        self.status = format!("error: {error}").into();
+        self.status = crate::status::error(&error);
       }
     }
     cx.notify();
@@ -1408,7 +1408,7 @@ impl Workspace {
                       summary.rows, summary.duration_ms
                     )
                     .into(),
-                    Err(error) => format!("error: {error}").into(),
+                    Err(error) => crate::status::error(&error),
                   };
                   cx.notify();
                 });
@@ -1427,7 +1427,7 @@ impl Workspace {
           let _ = this.update(cx, |this, cx| {
             this.status = match result {
               Ok(()) => format!("exported {count} rows").into(),
-              Err(error) => format!("error: {error}").into(),
+              Err(error) => crate::status::error(&error),
             };
             cx.notify();
           });

@@ -268,7 +268,7 @@ impl KvWorkspace {
           Err(error) => {
             let _ = this.update(cx, |this, cx| {
               this.scanning = false;
-              this.status = format!("error: {error}").into();
+              this.status = crate::status::error(&error);
               cx.notify();
             });
             return;
@@ -296,7 +296,7 @@ impl KvWorkspace {
     let task = core::kv_databases(&self.db, cx);
     let db_select = self.db_select.clone();
     cx.spawn(async move |this, cx| {
-      let Ok(databases) = task.await else {
+      let Some(databases) = crate::status::ok_or_log(task.await) else {
         return;
       };
       let Some(handle) = cx.update(|cx| cx.active_window()) else {
@@ -358,7 +358,7 @@ impl KvWorkspace {
       }
       Err(error) => {
         let _ = this.update(cx, |this, cx| {
-          this.status = format!("error: {error}").into();
+          this.status = crate::status::error(&error);
           cx.notify();
         });
       }
@@ -410,7 +410,7 @@ impl KvWorkspace {
           Err(error) => {
             this
               .update(cx, |this, cx| {
-                this.status = format!("error: {error}").into();
+                this.status = crate::status::error(&error);
                 cx.notify();
               })
               .ok();
@@ -504,7 +504,7 @@ impl KvWorkspace {
             this.scan(true, cx);
             this.load_databases(cx);
           }
-          Err(error) => this.status = format!("error: {error}").into(),
+          Err(error) => this.status = crate::status::error(&error),
         }
         cx.notify();
       });
@@ -531,7 +531,7 @@ impl KvWorkspace {
             this.select_key(key.clone(), window, cx);
           }
           Err(error) => {
-            this.status = format!("error: {error}").into();
+            this.status = crate::status::error(&error);
             cx.notify();
           }
         });
