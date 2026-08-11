@@ -80,8 +80,11 @@ Four layers, from cheapest to heaviest. The first two exist today.
    Input-simulation started with the approval round: `test_support.rs` roots
    the test window on `Root` + a `Shell` that renders the dialog layer,
    buttons carry `debug_selector` tags for `debug_bounds` + `simulate_click`,
-   and `wait_until` polls across the core's private tokio runtime. Still to
-   grow: import and licence dialogs.
+   and `wait_until` polls across the core's private tokio runtime. The
+   transfer round added the platform seams: native pickers are simulated via
+   `simulate_new_path_selection` / `simulate_path_prompt_response`, file
+   drops via `FileDropEvent` Entered/Submit/Exited. Still to grow: the
+   licence dialog.
 
 ## Parity checklist
 
@@ -119,8 +122,13 @@ deleted. Each panel lands with its layer-3 tests; each flow with layer 4.
 - [x] Host key trust dialog + panel (dialog only: gpui dialogs stack in
       `Root.active_dialogs`, so the form-inline panel the Vue focus trap
       forced has no reason to exist)
-- [ ] Import dialog (preview, duplicates, passphrase, `.soquel` open/drop)
-- [ ] Export dialog (secrets opt-in, encryption)
+- [x] Import dialog (`transfer.rs` ports `lib/transfer.ts` with its tests;
+      native picker + a `.soquel` drop on the connections screen replace the
+      tauri `importFileRequested` event, which had no production caller;
+      sticky passphrase step; RadioGroup's first use for the duplicates)
+- [x] Export dialog (passphrase validated before the picker opens; gpui
+      pickers have no extension filters, so a bare name gets `.soquel`
+      appended after the pick)
 
 ### SQL workspace
 
@@ -170,7 +178,9 @@ deleted. Each panel lands with its layer-3 tests; each flow with layer 4.
       (candidate: cargo-packager; **verify the existing updater signing key
       and manifest format carry over**, the key is not rotatable and a format
       break orphans every installed client)
-- [ ] File dialogs (rfd), opener, logging (fern/tracing to the same log files)
+- [ ] File dialogs (gpui's own `prompt_for_paths`/`prompt_for_new_path` cover
+      import/export - no filters, extension appended by hand; rfd likely
+      unneeded), opener, logging (fern/tracing to the same log files)
 - [ ] Data dir + keychain service names unchanged (installed apps must not
       lose their connections or secrets on the switch)
 - [ ] MCP autostart parity

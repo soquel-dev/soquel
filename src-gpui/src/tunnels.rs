@@ -308,7 +308,7 @@ impl TunnelsView {
     }
   }
 
-  fn refresh(&mut self, cx: &mut Context<Self>) {
+  pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
     self.tunnels = core::list_tunnels(&self.state);
     cx.notify();
   }

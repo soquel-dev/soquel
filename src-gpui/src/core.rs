@@ -204,6 +204,62 @@ pub fn default_ssh_keys() -> Vec<String> {
   soquel_core::ssh::default_key_paths()
 }
 
+/// Off the UI thread: exporting reads the keychain.
+pub fn export_connections(
+  state: Arc<AppState>,
+  path: std::path::PathBuf,
+  include_secrets: bool,
+  passphrase: Option<String>,
+) -> oneshot::Receiver<Result<soquel_core::transfer::ExportSummary, Error>> {
+  let (tx, rx) = oneshot::channel();
+  runtime().spawn(async move {
+    let _ = tx.send(soquel_core::transfer::export(
+      &state,
+      &path,
+      include_secrets,
+      passphrase.as_deref(),
+    ));
+  });
+  rx
+}
+
+/// Off the UI thread: an encrypted file derives an argon2 key to open.
+pub fn preview_import(
+  state: Arc<AppState>,
+  path: std::path::PathBuf,
+  passphrase: Option<String>,
+) -> oneshot::Receiver<Result<soquel_core::transfer::ImportPreview, Error>> {
+  let (tx, rx) = oneshot::channel();
+  runtime().spawn(async move {
+    let _ = tx.send(soquel_core::transfer::preview_file(
+      &state,
+      &path,
+      passphrase.as_deref(),
+    ));
+  });
+  rx
+}
+
+pub fn import_connections(
+  state: Arc<AppState>,
+  path: std::path::PathBuf,
+  passphrase: Option<String>,
+  with_secrets: bool,
+  strategy: soquel_core::transfer::DuplicateStrategy,
+) -> oneshot::Receiver<Result<soquel_core::transfer::ImportOutcome, Error>> {
+  let (tx, rx) = oneshot::channel();
+  runtime().spawn(async move {
+    let _ = tx.send(soquel_core::transfer::import_file(
+      &state,
+      &path,
+      passphrase.as_deref(),
+      with_secrets,
+      strategy,
+    ));
+  });
+  rx
+}
+
 /// Test-only direct connect, bypassing the stores.
 #[cfg(test)]
 pub fn connect_with(
