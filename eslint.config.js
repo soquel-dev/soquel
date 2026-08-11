@@ -1,14 +1,14 @@
 import antfu from '@antfu/eslint-config'
 
 export default antfu({
-  vue: true,
   typescript: true,
+  // cargo fmt owns Cargo.toml; eslint has no Rust TOML to lint.
+  toml: false,
   ignores: [
     '**/dist/**',
     '**/node_modules/**',
-    'src-tauri/target/**',
-    'src-tauri/gen/**',
-    'packages/app/src/lib/bindings.ts',
+    // A mongosh script: its own globals (db, ObjectId), not Node.
+    'scripts/dev-seed/mongo.js',
     // Own workspace, own lockfile, own lint and CI job.
     'landing/**',
   ],
