@@ -47,14 +47,23 @@ pub fn open_command_approval_dialog<V: 'static>(
           .on_click({
             let prompt = prompt.clone();
             move |_, window, cx| {
-              let result =
-                core::approve_credential_command(&state, prompt.subject, prompt.target_id.clone());
+              let task = core::approve_credential_command(
+                state.clone(),
+                prompt.subject,
+                prompt.target_id.clone(),
+                cx,
+              );
               // Popped before the retry so a fresh failure can stack cleanly.
               window.close_dialog(cx);
+              let this = this.clone();
               let on_approved = on_approved.clone();
-              this
-                .update(cx, move |view, cx| on_approved(view, result, cx))
-                .ok();
+              cx.spawn(async move |cx| {
+                let result = task.await;
+                this
+                  .update(cx, move |view, cx| on_approved(view, result, cx))
+                  .ok();
+              })
+              .detach();
             }
           });
         dialog

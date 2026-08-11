@@ -1533,16 +1533,24 @@ impl ConnectionsView {
     window: &mut Window,
     cx: &mut Context<Self>,
   ) {
-    match core::revoke_credential_command(&self.state, subject, id) {
-      Ok(()) => window.push_notification(
-        Notification::info("The command will ask before running again"),
-        cx,
-      ),
-      Err(error) => {
-        self.status = format!("error: {error}").into();
-        cx.notify();
+    let task = core::revoke_credential_command(self.state.clone(), subject, id, cx);
+    let handle = window.window_handle();
+    self._task = cx.spawn(async move |this, cx| match task.await {
+      Ok(()) => {
+        let _ = cx.update_window(handle, |_, window, cx| {
+          window.push_notification(
+            Notification::info("The command will ask before running again"),
+            cx,
+          );
+        });
       }
-    }
+      Err(error) => {
+        let _ = this.update(cx, |this, cx| {
+          this.status = format!("error: {error}").into();
+          cx.notify();
+        });
+      }
+    });
   }
 
   pub(crate) fn open_export_dialog(&mut self, cx: &mut Context<Self>) {
@@ -3025,7 +3033,12 @@ mod tests {
     let line = "echo swordfish";
     let profile = soquel_core::ops::create_connection(&state, &command_input(line)).unwrap();
     // Imported shape: the command sits in the store with no approval.
-    core::revoke_credential_command(&state, SecretSubject::Connection, profile.id.clone()).unwrap();
+    soquel_core::ops::revoke_credential_command(
+      &state,
+      SecretSubject::Connection,
+      profile.id.clone(),
+    )
+    .unwrap();
 
     let (view, cx) = crate::test_support::shell_window(cx, {
       let state = state.clone();
@@ -3067,7 +3080,12 @@ mod tests {
     let (_dir, state) = test_state();
     let line = "echo swordfish";
     let profile = soquel_core::ops::create_connection(&state, &command_input(line)).unwrap();
-    core::revoke_credential_command(&state, SecretSubject::Connection, profile.id.clone()).unwrap();
+    soquel_core::ops::revoke_credential_command(
+      &state,
+      SecretSubject::Connection,
+      profile.id.clone(),
+    )
+    .unwrap();
 
     let (view, cx) = crate::test_support::shell_window(cx, {
       let state = state.clone();
@@ -3873,7 +3891,8 @@ mod tests {
       },
     )
     .unwrap();
-    core::revoke_credential_command(&state, SecretSubject::Tunnel, tunnel.id.clone()).unwrap();
+    soquel_core::ops::revoke_credential_command(&state, SecretSubject::Tunnel, tunnel.id.clone())
+      .unwrap();
     let mut riding = plain_input("through it", "127.0.0.1");
     riding.params.set_tunnel_id(Some(tunnel.id.clone()));
     riding.password = Some("pw".to_string());

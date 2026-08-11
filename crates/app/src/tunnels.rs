@@ -397,7 +397,17 @@ impl TunnelsView {
   pub fn open_form(&mut self, editing: Option<TunnelProfile>, cx: &mut Context<Self>) {
     self.editing = editing.as_ref().map(|t| t.id.clone());
     self.status = SharedString::default();
-    self.default_keys = core::default_ssh_keys();
+    let keys = core::default_ssh_keys(cx);
+    cx.spawn(async move |this, cx| {
+      let keys = keys.await;
+      this
+        .update(cx, |this, cx| {
+          this.default_keys = keys;
+          cx.notify();
+        })
+        .ok();
+    })
+    .detach();
     let this = cx.entity().downgrade();
     dialogs::defer_on_active_window(cx, move |window, cx| {
       let _ = this.update(cx, |view, cx| {
@@ -717,16 +727,24 @@ impl TunnelsView {
   }
 
   fn revoke_command(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
-    match core::revoke_credential_command(&self.state, SecretSubject::Tunnel, id) {
-      Ok(()) => window.push_notification(
-        Notification::info("The command will ask before running again"),
-        cx,
-      ),
-      Err(error) => {
-        self.status = format!("error: {error}").into();
-        cx.notify();
+    let task = core::revoke_credential_command(self.state.clone(), SecretSubject::Tunnel, id, cx);
+    let handle = window.window_handle();
+    self._task = cx.spawn(async move |this, cx| match task.await {
+      Ok(()) => {
+        let _ = cx.update_window(handle, |_, window, cx| {
+          window.push_notification(
+            Notification::info("The command will ask before running again"),
+            cx,
+          );
+        });
       }
-    }
+      Err(error) => {
+        let _ = this.update(cx, |this, cx| {
+          this.status = format!("error: {error}").into();
+          cx.notify();
+        });
+      }
+    });
   }
 
   fn delete(&mut self, id: String, cx: &mut Context<Self>) {

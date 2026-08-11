@@ -335,6 +335,7 @@ impl App {
     match &self.screen {
       Screen::Connections(view) => {
         let profiles = core::list_connections(&self.state);
+        let has_connections = !profiles.is_empty();
         for (group, profiles) in group_connections(&profiles) {
           for profile in profiles {
             let id = profile.id.clone();
@@ -357,7 +358,6 @@ impl App {
             });
           }
         }
-        let has_connections = !core::list_connections(&self.state).is_empty();
         let new_view = view.downgrade();
         items.push(PaletteItem {
           label: "New connection".into(),

@@ -133,6 +133,8 @@ pub struct McpPanel {
   make_approver: core::ApproverFactory,
   status: Option<McpStatus>,
   windows: Vec<TrustWindowInfo>,
+  /// (exposed, write-with-approval) profile counts, recounted on refresh.
+  agent_counts: (usize, usize),
   port_input: Entity<InputState>,
   busy: bool,
   problem: Option<SharedString>,
@@ -171,6 +173,7 @@ impl McpPanel {
       make_approver,
       status: None,
       windows: Vec::new(),
+      agent_counts: (0, 0),
       port_input,
       busy: false,
       problem: None,
@@ -183,6 +186,18 @@ impl McpPanel {
   }
 
   fn refresh(&mut self, cx: &mut Context<Self>) {
+    // Counted here, not per frame in render: refresh runs on every panel event.
+    let profiles = core::list_connections(&self.state);
+    self.agent_counts = (
+      profiles
+        .iter()
+        .filter(|p| p.agent_access != AgentAccess::None)
+        .count(),
+      profiles
+        .iter()
+        .filter(|p| p.agent_access == AgentAccess::WriteWithApproval)
+        .count(),
+    );
     let status_task = core::mcp_status(self.state.clone(), cx);
     let windows_task = core::mcp_trust_windows(self.state.clone(), cx);
     self._task = cx.spawn(async move |this, cx| {
@@ -418,15 +433,7 @@ impl Render for McpPanel {
 impl McpPanel {
   fn running_block(&self, cx: &mut Context<Self>) -> impl IntoElement {
     let status = self.status.clone().expect("running block needs a status");
-    let profiles = core::list_connections(&self.state);
-    let exposed = profiles
-      .iter()
-      .filter(|p| p.agent_access != AgentAccess::None)
-      .count();
-    let writable = profiles
-      .iter()
-      .filter(|p| p.agent_access == AgentAccess::WriteWithApproval)
-      .count();
+    let (exposed, writable) = self.agent_counts;
     let masked = setup_command(&status.server_name, &status.endpoint, "••••••••");
     let windows = self.live_windows();
 
@@ -549,18 +556,33 @@ impl McpPanel {
 const AUDIT_LIMIT: usize = 200;
 
 pub struct McpAuditView {
-  entries: Vec<AuditEntry>,
+  /// None while the log file loads; Some(empty) is a genuinely empty log.
+  entries: Option<Vec<AuditEntry>>,
   names: HashMap<String, String>,
+  _task: Task<()>,
 }
 
 impl McpAuditView {
-  pub fn new(state: Arc<AppState>, _: &mut Context<Self>) -> Self {
-    let entries = core::mcp_audit_log(&state, AUDIT_LIMIT).unwrap_or_default();
+  pub fn new(state: Arc<AppState>, cx: &mut Context<Self>) -> Self {
     let names = core::list_connections(&state)
       .into_iter()
       .map(|p| (p.id, p.name))
       .collect();
-    Self { entries, names }
+    let task = core::mcp_audit_log(state, AUDIT_LIMIT, cx);
+    let _task = cx.spawn(async move |this, cx| {
+      let entries = task.await.unwrap_or_default();
+      this
+        .update(cx, |this, cx| {
+          this.entries = Some(entries);
+          cx.notify();
+        })
+        .ok();
+    });
+    Self {
+      entries: None,
+      names,
+      _task,
+    }
   }
 
   fn target(&self, entry: &AuditEntry) -> String {
@@ -580,18 +602,23 @@ fn clock(ts_ms: f64) -> String {
 
 impl Render for McpAuditView {
   fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-    if self.entries.is_empty() {
-      return v_flex().w_full().child(
+    let quiet = |text: &'static str| {
+      v_flex().w_full().child(
         div()
           .py_8()
           .text_center()
           .text_sm()
           .text_color(cx.theme().muted_foreground)
-          .child("Nothing yet. Calls appear here as agents use your connections."),
-      );
+          .child(text),
+      )
+    };
+    let Some(entries) = &self.entries else {
+      return quiet("Loading…");
+    };
+    if entries.is_empty() {
+      return quiet("Nothing yet. Calls appear here as agents use your connections.");
     }
-    let rows: Vec<AnyElement> = self
-      .entries
+    let rows: Vec<AnyElement> = entries
       .iter()
       .map(|entry| {
         let dot = if entry.ok {

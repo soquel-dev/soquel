@@ -267,29 +267,44 @@ pub fn test_tunnel(
   })
 }
 
-/// Sync like `list_connections`: a mutex and a small JSON write.
-pub fn trust_host_key(state: &AppState, host: &str, port: u16, key: &str) -> Result<(), Error> {
-  soquel_core::ops::trust_host_key(state, host, port, key)
+/// A small JSON write, but still disk: off the frame thread like every write.
+pub fn trust_host_key(
+  state: Arc<AppState>,
+  host: String,
+  port: u16,
+  key: String,
+  cx: &impl AppContext,
+) -> Task<Result<(), Error>> {
+  bridge(cx, async move {
+    soquel_core::ops::trust_host_key(&state, &host, port, &key)
+  })
 }
 
 pub fn approve_credential_command(
-  state: &AppState,
+  state: Arc<AppState>,
   subject: SecretSubject,
   id: String,
-) -> Result<(), Error> {
-  soquel_core::ops::approve_credential_command(state, subject, id)
+  cx: &impl AppContext,
+) -> Task<Result<(), Error>> {
+  bridge(cx, async move {
+    soquel_core::ops::approve_credential_command(&state, subject, id)
+  })
 }
 
 pub fn revoke_credential_command(
-  state: &AppState,
+  state: Arc<AppState>,
   subject: SecretSubject,
   id: String,
-) -> Result<(), Error> {
-  soquel_core::ops::revoke_credential_command(state, subject, id)
+  cx: &impl AppContext,
+) -> Task<Result<(), Error>> {
+  bridge(cx, async move {
+    soquel_core::ops::revoke_credential_command(&state, subject, id)
+  })
 }
 
-pub fn default_ssh_keys() -> Vec<String> {
-  soquel_core::ssh::default_key_paths()
+/// Stats a handful of ~/.ssh paths: cheap, but a slow home dir is disk too.
+pub fn default_ssh_keys(cx: &impl AppContext) -> Task<Vec<String>> {
+  bridge(cx, async move { soquel_core::ssh::default_key_paths() })
 }
 
 /// Each frontend injects how a blocked write gets its yes; gpui sends it through
@@ -352,10 +367,14 @@ pub fn mcp_regenerate_token(
 }
 
 pub fn mcp_audit_log(
-  state: &AppState,
+  state: Arc<AppState>,
   limit: usize,
-) -> Result<Vec<soquel_core::mcp::AuditEntry>, Error> {
-  soquel_core::mcp::audit_log(state, limit)
+  cx: &impl AppContext,
+) -> Task<Result<Vec<soquel_core::mcp::AuditEntry>, Error>> {
+  bridge(
+    cx,
+    async move { soquel_core::mcp::audit_log(&state, limit) },
+  )
 }
 
 /// Fires the oneshot the server thread is parked on; NotFound (already expired)
@@ -1325,7 +1344,9 @@ mod tests {
     assert!(fingerprint.starts_with("SHA256:"));
 
     // The exact call the trust button makes, then the same retry.
-    trust_host_key(&state, &host, port, &key).unwrap();
+    trust_host_key(state.clone(), host.clone(), port, key.clone(), cx)
+      .await
+      .unwrap();
     let db = connect_id(state.clone(), profile.id.clone(), cx)
       .await
       .expect("connects through the tunnel once trusted");

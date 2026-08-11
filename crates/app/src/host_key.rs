@@ -61,13 +61,24 @@ pub fn open_host_key_dialog<V: 'static>(
           .label("Trust and retry")
           .debug_selector(|| "trust-host-key".into())
           .on_click(move |_, window, cx| {
-            let result = core::trust_host_key(&state, &prompt.host, prompt.port, &prompt.key);
+            let task = core::trust_host_key(
+              state.clone(),
+              prompt.host.clone(),
+              prompt.port,
+              prompt.key.clone(),
+              cx,
+            );
             // Popped before the retry so a fresh failure can stack cleanly.
             window.close_dialog(cx);
+            let this = this.clone();
             let on_done = on_done.clone();
-            this
-              .update(cx, move |view, cx| on_done(view, result, cx))
-              .ok();
+            cx.spawn(async move |cx| {
+              let result = task.await;
+              this
+                .update(cx, move |view, cx| on_done(view, result, cx))
+                .ok();
+            })
+            .detach();
           });
         dialog
           .title(title)
