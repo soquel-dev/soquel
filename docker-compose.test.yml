@@ -148,8 +148,8 @@ services:
       retries: 15
 
   mongo:
-    # 8.0 = the LTS major deployments actually run; the bare `8` tag tracks rapid releases.
-    image: mongo:8.0
+    # 8.2 avoids the 8.0 startup guard that rejects Docker Desktop's Linux 6.19+ kernel.
+    image: mongo:8.2
     ports:
       - '5464:27017'
     environment:

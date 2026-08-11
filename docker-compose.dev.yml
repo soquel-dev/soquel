@@ -54,7 +54,8 @@ services:
       retries: 15
 
   mongo:
-    image: mongo:8.0
+    # 8.2 avoids the 8.0 startup guard that rejects Docker Desktop's Linux 6.19+ kernel.
+    image: mongo:8.2
     ports:
       - '5473:27017'
     environment:
