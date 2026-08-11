@@ -40,7 +40,7 @@ pub trait SecretStore: Send + Sync {
   }
 }
 
-/// What the webview needs to know about secret storage.
+/// What the frontend needs to know about secret storage.
 #[derive(Debug, Clone, serde::Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct SecretsStatus {

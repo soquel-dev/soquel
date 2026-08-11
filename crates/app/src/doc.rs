@@ -1,6 +1,5 @@
 //! The mongo document browser: a whole workspace of its own, mounted when a
-//! connection browses documents. Pure logic ported from the webview's
-//! lib/docs.ts.
+//! connection browses documents.
 
 use std::sync::Arc;
 
@@ -1306,7 +1305,7 @@ mod tests {
   }
 
   #[test]
-  fn counts_and_bytes_format_like_the_webview() {
+  fn counts_and_bytes_format_compactly() {
     assert_eq!(format_doc_count(1.0, true), "1 doc");
     assert_eq!(format_doc_count(100.0, true), "100 docs");
     assert_eq!(format_doc_count(52400.0, false), "~52.4k docs");

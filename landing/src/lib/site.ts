@@ -18,7 +18,7 @@ export const ANALYTICS = {
 /// Set a url and the button goes live: the section reads as pre-release for as
 /// long as they are all null, so the page is honest in both states.
 /// Formats follow the packaging plan: universal dmg, NSIS installer, AppImage
-/// (the only Linux format the Tauri updater can replace) and a deb that cannot.
+/// (the only Linux format an updater can replace) and a deb that cannot.
 export const DOWNLOADS = [
   {
     platform: 'macOS',

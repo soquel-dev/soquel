@@ -1,5 +1,4 @@
-//! SSH tunnels: the list section, the form dialog, and the form logic ported
-//! from the webview's lib/tunnels.ts.
+//! SSH tunnels: the list section, the form dialog, and the form logic.
 
 use std::sync::Arc;
 
@@ -131,8 +130,7 @@ pub struct TunnelFormValues {
   pub credential_command: String,
 }
 
-/// Validation and mapping in one pass; the messages match the webview's zod
-/// schema so both frontends refuse with the same words.
+/// Validation and mapping in one pass.
 pub fn to_tunnel_input(values: &TunnelFormValues) -> Result<TunnelInput, String> {
   let name = values.name.trim().to_string();
   if name.is_empty() {

@@ -1,4 +1,4 @@
-//! Import/export: the pure logic ported from the webview's lib/transfer.ts.
+//! Import/export: the pure logic behind the transfer dialogs.
 
 use std::path::PathBuf;
 
@@ -273,7 +273,7 @@ mod tests {
   }
 
   #[test]
-  fn strategies_keep_the_webview_order_and_copy() {
+  fn strategies_keep_their_order_and_copy() {
     assert_eq!(
       DUPLICATE_STRATEGIES,
       [

@@ -72,8 +72,8 @@ impl Db {
   }
 }
 
-/// Same data layout as the tauri app: dev builds share its /dev subtree so the
-/// two frontends see the same connections while both exist.
+/// The identifier is already on installed disks: keep it stable. Debug builds
+/// get a /dev subtree so a dev run never touches real data.
 pub fn resolve_data_dir(
   override_dir: Option<&str>,
   xdg_data_home: Option<&std::path::Path>,
@@ -119,10 +119,10 @@ fn over_size_cap(len: u64) -> bool {
   len > MAX_LOG_SIZE
 }
 
-/// A file logger to `<data dir>/logs/soquel[-dev].log`, mirroring the tauri
-/// build's levels: Warn everywhere, Info for our own crates, so our lines are
-/// not buried under russh, hyper and rustls. Call before `init_state` so the
-/// keyring probe is captured. Failures are non-fatal: the app runs without logs.
+/// A file logger to `<data dir>/logs/soquel[-dev].log`: Warn everywhere, Info
+/// for our own crates, so our lines are not buried under russh, hyper and
+/// rustls. Call before `init_state` so the keyring probe is captured.
+/// Failures are non-fatal: the app runs without logs.
 pub fn init_logging() {
   let dir = data_dir_from_env().join("logs");
   if std::fs::create_dir_all(&dir).is_err() {
@@ -983,7 +983,7 @@ mod tests {
       resolve_data_dir(Some("/custom"), Some(Path::new("/xdg")), None, true),
       PathBuf::from("/custom")
     );
-    // The tauri identifier and the /dev split must match the installed app.
+    // The identifier and the /dev split must match what installs have on disk.
     assert_eq!(
       resolve_data_dir(None, Some(Path::new("/xdg")), None, true),
       PathBuf::from("/xdg/dev.soquel.app/dev")

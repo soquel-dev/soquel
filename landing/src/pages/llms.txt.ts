@@ -11,7 +11,7 @@ export const GET: APIRoute = () => {
 
 Pre-release: the source is available under FSL-1.1-MIT and there are no published builds yet.
 
-Soquel is a Tauri 2 desktop app. The Rust core owns the database drivers, SSH tunnels, connection pools and credentials; the Vue webview is a thin client that never sees a password. What separates it from other database clients is that it can lend a coding agent access to a database without handing over the connection string.
+Soquel is a native desktop app. The Rust core owns the database drivers, SSH tunnels, connection pools and credentials; the frontend is a thin client that never sees a password. What separates it from other database clients is that it can lend a coding agent access to a database without handing over the connection string.
 
 ## Engines
 

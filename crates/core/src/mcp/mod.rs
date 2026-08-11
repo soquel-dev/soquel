@@ -2283,7 +2283,7 @@ mod tests {
     let dir = tempfile::tempdir().unwrap();
     let state = bare_state(&dir);
     let receiver = register_approval(&state, "req-gone").await;
-    // Dropping the sender is what a vanished webview looks like.
+    // Dropping the sender is what a vanished frontend looks like.
     state.approvals.lock().await.remove("req-gone");
 
     assert_eq!(

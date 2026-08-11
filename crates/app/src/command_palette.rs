@@ -12,14 +12,14 @@ pub type PaletteRun = Rc<dyn Fn(&mut Window, &mut App)>;
 
 pub struct PaletteItem {
   pub label: SharedString,
-  /// Right-aligned detail (a connection's target), like the webview.
+  /// Right-aligned detail (a connection's target).
   pub hint: Option<SharedString>,
-  /// Lowercased haystack; mirrors the webview's per-entry `value` strings.
+  /// Lowercased haystack the filter searches.
   pub keywords: String,
   pub run: PaletteRun,
 }
 
-/// Case-insensitive substring, matching the webview's `contains` filter.
+/// Case-insensitive substring filter.
 pub fn palette_matches(keywords: &str, query: &str) -> bool {
   let query = query.trim().to_lowercase();
   query.is_empty() || keywords.to_lowercase().contains(&query)

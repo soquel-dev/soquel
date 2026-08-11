@@ -1,6 +1,5 @@
-//! The redis / key-value browser: a whole workspace of its own, mounted when a
-//! connection browses keys instead of the SQL shell. Pure logic ported from
-//! the webview's lib/kv.ts.
+//! The redis / key-value browser: a whole workspace of its own, mounted when
+//! a connection browses keys instead of the SQL shell.
 
 use std::sync::Arc;
 
@@ -18,7 +17,7 @@ use soquel_core::profiles::ConnectionProfile;
 use crate::actions::{FocusEditor, RefreshSchema};
 use crate::core::{self, Db};
 
-/// Short badge label + colour per redis type (the webview's kv.ts map).
+/// Short badge label + colour per redis type.
 pub fn key_kind_badge(kind: KeyKind, cx: &App) -> (&'static str, Hsla) {
   match kind {
     KeyKind::String => ("str", cx.theme().blue),
@@ -32,7 +31,7 @@ pub fn key_kind_badge(kind: KeyKind, cx: &App) -> (&'static str, Hsla) {
 }
 
 /// A contains-search wrapped into a redis SCAN MATCH glob: escape the glob
-/// specials, wrap in `*...*`. Empty stays empty (the webview shows everything).
+/// specials, wrap in `*...*`. Empty stays empty and matches everything.
 pub fn contains_pattern(text: &str) -> String {
   if text.is_empty() {
     return String::new();

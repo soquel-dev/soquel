@@ -224,8 +224,8 @@ struct SessionSecret {
   one_shot: bool,
 }
 
-/// Passwords typed into the prompt. Memory only: never persisted, never sent
-/// back to the webview.
+/// Passwords typed into the prompt. Memory only: never persisted, never
+/// handed back to the frontend.
 #[derive(Default)]
 pub struct SessionSecrets(Mutex<HashMap<SecretKey, SessionSecret>>);
 

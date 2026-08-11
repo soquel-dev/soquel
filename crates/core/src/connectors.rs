@@ -38,7 +38,7 @@ pub enum ColumnKind {
   Other,
 }
 
-// Deserialize: the export commands take columns back from the webview.
+// Deserialize: the export operations take columns back from the frontend.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryColumn {

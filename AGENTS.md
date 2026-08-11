@@ -3,9 +3,7 @@
 
 ## What this is
 
-Soquel is a desktop database client in the TablePlus mould: a **gpui** app (gpui + gpui-component, the Zed UI stack) over a Rust core. The core owns everything heavy and sensitive (DB drivers, SSH tunnels, connection pools, result streaming, credentials, licence, the MCP server); the gpui frontend is a thin in-process client. It targets Postgres, MySQL/MariaDB, SQLite, Redis and MongoDB behind a capability-based connector trait.
-
-It was a Tauri 2 + Vue webview app until the frontend was migrated to gpui; no IPC boundary survives, so the app calls the core directly.
+Soquel is a desktop database client: a **gpui** app (gpui + gpui-component, the Zed UI stack) over a Rust core. The core owns everything heavy and sensitive (DB drivers, SSH tunnels, connection pools, result streaming, credentials, licence, the MCP server); the gpui frontend is a thin in-process client that calls the core directly. It targets Postgres, MySQL/MariaDB, SQLite, Redis and MongoDB behind a capability-based connector trait.
 
 Two architecture rules that must hold:
 
@@ -82,7 +80,7 @@ Weight: Rust integration against real databases is the core; unit tests for pure
 ## Dev and platform
 
 - Linux needs gpui's system dev libraries (the `$GPUI_DEPS` set in CI: xkbcommon-x11, wayland, xcb, x11-xcb, fontconfig, freetype, gbm; that apt list is a first-pass guess, tune it if a Linux build fails). macOS uses Metal, Windows DirectX.
-- Debug builds are isolated from releases in the core, `cfg`-driven: the data dir gets a `/dev` subtree and the keychain service a `.dev` suffix, so a dev run never touches an installed app's connections or secrets. `SOQUEL_DATA_DIR` overrides the data dir (used by tests). Both frontends' debug builds share the same sandbox by construction, which is why a dev gpui build sees the connections a dev tauri build created while both existed.
+- Debug builds are isolated from releases in the core, `cfg`-driven: the data dir gets a `/dev` subtree and the keychain service a `.dev` suffix, so a dev run never touches an installed app's connections or secrets. `SOQUEL_DATA_DIR` overrides the data dir (used by tests).
 - No remote assets: the app bundles its fonts and icons and must work offline.
 
 ### Licence and the free tier
@@ -111,7 +109,7 @@ The block is built in the core where the facts are. It carries **no connection n
 
 ### Updater and packaging (deferred)
 
-The tauri updater was removed with the shell; a gpui updater and a packaging pipeline are **not built yet** (nothing has shipped, so there is no auto-update to preserve). When they land, one decision is one-time: the old minisign signing keypair is **not rotatable** (it would have been compiled into every binary, so a new key orphans every installed client) - the gpui updater either reuses that keypair (private key + passphrase in 1Password) or mints a fresh one before the first release. The licence key is meant to ride an updater request header so the licence window can be enforced server-side. Only an AppImage is updatable on Linux; `.deb` is not.
+An updater and a packaging pipeline are **not built yet** (nothing has shipped, so there is no auto-update to preserve). When they land, one decision is one-time: the update-signing minisign keypair is **not rotatable** once it ships (it gets compiled into every binary, so a new key orphans every installed client) - either reuse the existing keypair (private key + passphrase in 1Password) or mint a fresh one before the first release. The licence key is meant to ride an updater request header so the licence window can be enforced server-side. Only an AppImage is updatable on Linux; `.deb` is not.
 
 ## UI
 

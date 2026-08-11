@@ -1,5 +1,5 @@
 /// Planner estimate: negative means never analyzed, shown as nothing.
-/// Mirrors the webview's Intl compact notation (12, 1.2K, 1.5M, 2B).
+/// Intl-style compact notation (12, 1.2K, 1.5M, 2B).
 pub fn format_estimated_rows(estimate: f64) -> String {
   if !estimate.is_finite() || estimate < 0. {
     return String::new();
@@ -22,8 +22,8 @@ pub fn format_estimated_rows(estimate: f64) -> String {
   }
 }
 
-/// An RFC 3339 timestamp to a medium day like "Jan 15, 2027"; None when it does
-/// not parse. Mirrors the webview's `formatDay` (Intl medium date).
+/// An RFC 3339 timestamp to a medium day like "Jan 15, 2027"; None when it
+/// does not parse.
 pub fn format_day(raw: &str) -> Option<String> {
   const MONTHS: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",

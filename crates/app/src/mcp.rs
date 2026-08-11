@@ -34,8 +34,8 @@ pub fn agent_access_label(access: AgentAccess) -> &'static str {
   }
 }
 
-/// Mirrors the core floor and the webview's zod messages; a text field never
-/// binds below 1024 (needs root on unix) or above the u16 ceiling.
+/// Mirrors the core floor; a text field never binds below 1024 (needs root
+/// on unix) or above the u16 ceiling.
 pub fn parse_port(input: &str) -> Result<u16, String> {
   let value: i64 = input
     .trim()
@@ -677,7 +677,7 @@ mod tests {
   use crate::test_support;
 
   #[test]
-  fn parse_port_mirrors_the_webview_messages() {
+  fn parse_port_refuses_out_of_range_values() {
     assert_eq!(parse_port("5432"), Ok(5432));
     assert_eq!(parse_port("  8080 "), Ok(8080));
     assert_eq!(

@@ -17,7 +17,7 @@ pub struct PlanNode {
   pub plan_rows: f64,
   /// Per-loop averages; None without ANALYZE.
   pub actual_rows: Option<f64>,
-  /// Kept for parity with the webview model; the tree does not render it yet.
+  /// Parsed but the tree does not render it yet.
   #[allow(dead_code)]
   pub actual_loops: Option<f64>,
   /// Loop-adjusted totals.

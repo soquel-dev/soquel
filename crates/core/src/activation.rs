@@ -1,5 +1,5 @@
-//! Trading a licence key for a signed licence file, kept behind the command layer
-//! like every other capability. The webview never makes this call itself.
+//! Trading a licence key for a signed licence file; the HTTP stays in the
+//! core like every other capability.
 
 use rustls_platform_verifier::BuilderVerifierExt;
 use serde::Deserialize;

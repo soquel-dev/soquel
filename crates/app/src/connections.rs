@@ -339,7 +339,7 @@ pub fn group_connections(
       None => sections.push((key, vec![profile.clone()])),
     }
   }
-  // Option orders None before Some, which is exactly the webview's contract.
+  // Option orders None before Some: ungrouped connections list first.
   sections.sort_by(|a, b| a.0.cmp(&b.0));
   sections
 }

@@ -14,7 +14,7 @@ Pre-release, under active development. The source is available under FSL-1.1-MIT
 
 ## Shape
 
-A Tauri 2 desktop app. The Rust core owns everything heavy and sensitive: database drivers, SSH tunnels, connection pools, result streaming and credentials. The Vue 3 webview is a thin client on top of a typed command layer, which is the only boundary between the two.
+A native desktop app: a gpui frontend over a Rust core. The core owns everything heavy and sensitive: database drivers, SSH tunnels, connection pools, result streaming and credentials. The frontend is a thin in-process client over the core's operations.
 
 ## Engines
 
@@ -61,8 +61,8 @@ Building from source stays free under FSL-1.1-MIT, with no feature held back and
 
 ## Design commitments
 
-- Secrets never reach the webview. They live in the Rust core and the OS keychain.
-- A typed command layer is the only IPC boundary. Every operation is a Tauri command with a normalised error shape, and the TypeScript bindings are generated from the Rust types. The MCP tools are that same layer with a second client.
+- Secrets never leave the Rust core and the OS keychain; the UI never holds one beyond a typed prompt.
+- Every operation is a pure function on the core with a normalised error shape. The MCP tools are that same surface with a second client.
 - Offline by design: no remote assets and a strict CSP. The application makes exactly two network requests, both to the same endpoint: the update check, at startup or when asked, and licence activation, once, if a key is pasted. Nothing else leaves the machine.
 
 ## Links

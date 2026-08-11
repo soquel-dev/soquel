@@ -728,7 +728,7 @@ mod tests {
       .create(&input(command(line), None))
       .unwrap();
 
-    // The webview only names a target: the command comes off the profile, so
+    // The caller only names a target: the command comes off the profile, so
     // it cannot approve one thing and run another.
     let stored = current_command(&state, &key(&profile.id)).unwrap();
     assert_eq!(stored, line);
