@@ -81,6 +81,25 @@ pub const CREDENTIAL_MODES: [CredentialMode; 3] = [
   CredentialMode::Command,
 ];
 
+/// The modes a form may offer: a keyring-less session has nothing to save into,
+/// so keychain drops out of the picker entirely.
+pub fn available_credential_modes(keychain: bool) -> Vec<CredentialMode> {
+  CREDENTIAL_MODES
+    .into_iter()
+    .filter(|mode| keychain || *mode != CredentialMode::Keychain)
+    .collect()
+}
+
+/// What a new profile opens on: keychain when it works, else ask-every-time. A
+/// new profile must not open on a mode that cannot store anything.
+pub fn default_credential_mode(keychain: bool) -> CredentialMode {
+  if keychain {
+    CredentialMode::Keychain
+  } else {
+    CredentialMode::Prompt
+  }
+}
+
 pub fn credential_mode_label(mode: CredentialMode) -> &'static str {
   match mode {
     CredentialMode::Keychain => "Saved in the keychain",
@@ -221,6 +240,8 @@ pub struct TunnelsView {
   form_secret: Entity<InputState>,
   form_credential: Entity<SelectState<Vec<String>>>,
   form_command: Entity<InputState>,
+  /// Probed once at load; false hides keychain from the credential picker.
+  keychain_available: bool,
   _subscriptions: Vec<Subscription>,
   _task: Task<()>,
 }
@@ -250,9 +271,10 @@ impl TunnelsView {
         cx,
       )
     });
+    let keychain_available = state.secrets_problem.is_none();
     let form_credential = cx.new(|cx| {
       SelectState::new(
-        CREDENTIAL_MODES
+        available_credential_modes(keychain_available)
           .iter()
           .map(|m| credential_mode_label(*m).to_string())
           .collect::<Vec<_>>(),
@@ -303,6 +325,7 @@ impl TunnelsView {
       form_secret,
       form_credential,
       form_command,
+      keychain_available,
       _subscriptions: subscriptions,
       _task: Task::ready(()),
     }
@@ -328,7 +351,10 @@ impl TunnelsView {
       .read(cx)
       .selected_index(cx)
       .map_or(0, |ix| ix.row);
-    CREDENTIAL_MODES.get(ix).copied().unwrap_or_default()
+    available_credential_modes(self.keychain_available)
+      .get(ix)
+      .copied()
+      .unwrap_or(CredentialMode::Prompt)
   }
 
   pub fn read_values(&self, cx: &App) -> TunnelFormValues {
@@ -376,6 +402,7 @@ impl TunnelsView {
             .map(form_values)
             .unwrap_or(TunnelFormValues {
               port: "22".to_string(),
+              credential_mode: default_credential_mode(view.keychain_available),
               ..Default::default()
             });
           view
@@ -403,7 +430,7 @@ impl TunnelsView {
             .iter()
             .position(|m| *m == values.method)
             .unwrap_or(0);
-          let mode_ix = CREDENTIAL_MODES
+          let mode_ix = available_credential_modes(view.keychain_available)
             .iter()
             .position(|m| *m == values.credential_mode)
             .unwrap_or(0);
@@ -518,6 +545,17 @@ impl TunnelsView {
                       .child(Select::new(&view.form_credential)),
                   )
                 })
+                .when_some(
+                  needs.then(|| view.state.secrets_problem.clone()).flatten(),
+                  |form, problem| {
+                    // Amber, not destructive: one mode is gone, nothing is broken.
+                    form.child(
+                      field()
+                        .label("")
+                        .child(div().text_xs().text_color(cx.theme().yellow).child(problem)),
+                    )
+                  },
+                )
                 .when(needs && mode != CredentialMode::Command, |form| {
                   form
                     .child(
@@ -875,6 +913,25 @@ mod tests {
   use gpui::TestAppContext;
 
   use super::*;
+
+  #[test]
+  fn a_keyring_less_session_drops_keychain_and_defaults_to_prompt() {
+    assert_eq!(
+      available_credential_modes(true),
+      vec![
+        CredentialMode::Keychain,
+        CredentialMode::Prompt,
+        CredentialMode::Command
+      ]
+    );
+    assert_eq!(
+      available_credential_modes(false),
+      vec![CredentialMode::Prompt, CredentialMode::Command],
+      "keychain drops out when there is no keyring"
+    );
+    assert_eq!(default_credential_mode(true), CredentialMode::Keychain);
+    assert_eq!(default_credential_mode(false), CredentialMode::Prompt);
+  }
 
   fn valid() -> TunnelFormValues {
     TunnelFormValues {
