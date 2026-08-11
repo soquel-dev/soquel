@@ -330,8 +330,12 @@ multi-kind surface of `lib/connections.ts`, which is the one deletion blocker
    skips Windows (gpui link there unverified; clippy compiles the workspace on
    all three). The `$GPUI_DEPS` apt set is a best-effort guess to confirm on the
    first CI run.
-5. **Restore the lost coverage**: `integration_flow_mysql` + `integration_flow_
-   sqlite` (the only real e2e gap, unblocked now that the form creates them). TODO.
+5. **Restore the lost coverage**: DONE. `integration_flow_mysql` (compose mysql
+   5456, schema = the database) + `integration_flow_sqlite` (a fresh empty file
+   the test makes, since the connector never mints one; gated on
+   `SOQUEL_TEST_SQLITE=1`) join the flow family in `crates/app/src/core.rs`,
+   wired into the gpui leg of `test-integration.sh`. The browse -> stage -> apply
+   -> reread path now has a real-DB flow test on every SQL engine.
 
 Still stale after this PR: **`AGENTS.md`** describes the tauri command layer and
 the detached workspaces - it needs a rewrite for the gpui-only, root-workspace
