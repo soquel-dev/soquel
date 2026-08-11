@@ -1121,6 +1121,193 @@ mod tests {
     close_session(session);
   }
 
+  /// The same grid path against a real mysql/mariadb; the schema is the database.
+  /// Skipped silently without SOQUEL_TEST_MYSQL.
+  #[tokio::test]
+  async fn integration_flow_mysql() {
+    let Ok(addr) = std::env::var("SOQUEL_TEST_MYSQL") else {
+      return;
+    };
+    let (host, port) = addr
+      .split_once(':')
+      .expect("SOQUEL_TEST_MYSQL is host:port");
+    let database = "soquel_test";
+    let profile = ConnectionProfile {
+      id: "flow-mysql".to_string(),
+      name: "flow mysql".to_string(),
+      env: Env::Dev,
+      group: None,
+      agent_access: AgentAccess::None,
+      credential: CredentialSource::Prompt,
+      params: ConnectorParams::Mysql(SqlServerParams {
+        host: host.to_string(),
+        port: port.parse().unwrap(),
+        database: database.to_string(),
+        user: "soquel".to_string(),
+        ssl_mode: Default::default(),
+        ssl_root_cert: None,
+        tunnel_id: None,
+      }),
+    };
+    let db = connect_with(profile, Credentials::fixed(Some("soquel".to_string())))
+      .await
+      .expect("channel")
+      .expect("connects to the compose mysql");
+
+    let table = format!("gpui_flow_{}", std::process::id());
+    let session = open_session(&db).await.expect("channel").expect("session");
+    run_session_query(
+      &session,
+      format!("create table {table} (id int primary key, name text)"),
+    )
+    .await
+    .expect("channel")
+    .expect("create");
+    run_session_query(
+      &session,
+      format!("insert into {table} values (1, 'Ada'), (2, 'Alan')"),
+    )
+    .await
+    .expect("channel")
+    .expect("insert");
+
+    let sorted = |offset| {
+      let mut request = page_request(database, &table, offset, 10);
+      request.sort = Some(soquel_core::connectors::SortSpec {
+        column: "id".to_string(),
+        direction: soquel_core::connectors::SortDirection::Asc,
+      });
+      request
+    };
+    let page = fetch_rows(&db, sorted(0))
+      .await
+      .expect("channel")
+      .expect("fetch");
+    let statement = &page.statements[0];
+    assert_eq!(statement.rows.len(), 2);
+
+    let mut staged = StagedChanges::default();
+    staged.edits.insert(
+      0,
+      [("name".to_string(), Some("Ada II".to_string()))]
+        .into_iter()
+        .collect(),
+    );
+    let changes = crate::staged::build_table_changes(
+      &staged,
+      &statement.rows,
+      &statement.columns,
+      &["id".to_string()],
+      database,
+      &table,
+    );
+    let applied = apply_changes(&db, changes)
+      .await
+      .expect("channel")
+      .expect("apply");
+    assert_eq!(applied.updated, 1);
+
+    let page = fetch_rows(&db, sorted(0))
+      .await
+      .expect("channel")
+      .expect("refetch");
+    assert_eq!(page.statements[0].rows[0][1], Some("Ada II".to_string()));
+
+    let _ = run_session_query(&session, format!("drop table {table}"))
+      .await
+      .expect("channel");
+    close_session(session);
+  }
+
+  /// The same grid path against a fresh sqlite file (no server). Gated on
+  /// SOQUEL_TEST_SQLITE so it runs in the integration leg, not the unit suite.
+  #[tokio::test]
+  async fn integration_flow_sqlite() {
+    if std::env::var("SOQUEL_TEST_SQLITE").is_err() {
+      return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("flow.db");
+    // The connector never mints a file (a typo'd path must error); a real user
+    // browses to an existing db, so the test opens an empty one it made.
+    std::fs::File::create(&path).unwrap();
+    let profile = ConnectionProfile {
+      id: "flow-sqlite".to_string(),
+      name: "flow sqlite".to_string(),
+      env: Env::Dev,
+      group: None,
+      agent_access: AgentAccess::None,
+      credential: CredentialSource::Keychain,
+      params: ConnectorParams::Sqlite {
+        path: path.to_string_lossy().into_owned(),
+      },
+    };
+    let db = connect_with(profile, Credentials::fixed(None))
+      .await
+      .expect("channel")
+      .expect("opens the sqlite file");
+
+    let session = open_session(&db).await.expect("channel").expect("session");
+    run_session_query(
+      &session,
+      "create table t (id integer primary key, name text)".to_string(),
+    )
+    .await
+    .expect("channel")
+    .expect("create");
+    run_session_query(
+      &session,
+      "insert into t values (1, 'Ada'), (2, 'Alan')".to_string(),
+    )
+    .await
+    .expect("channel")
+    .expect("insert");
+
+    // sqlite's schema is "main".
+    let sorted = |offset| {
+      let mut request = page_request("main", "t", offset, 10);
+      request.sort = Some(soquel_core::connectors::SortSpec {
+        column: "id".to_string(),
+        direction: soquel_core::connectors::SortDirection::Asc,
+      });
+      request
+    };
+    let page = fetch_rows(&db, sorted(0))
+      .await
+      .expect("channel")
+      .expect("fetch");
+    let statement = &page.statements[0];
+    assert_eq!(statement.rows.len(), 2);
+
+    let mut staged = StagedChanges::default();
+    staged.edits.insert(
+      0,
+      [("name".to_string(), Some("Ada II".to_string()))]
+        .into_iter()
+        .collect(),
+    );
+    let changes = crate::staged::build_table_changes(
+      &staged,
+      &statement.rows,
+      &statement.columns,
+      &["id".to_string()],
+      "main",
+      "t",
+    );
+    let applied = apply_changes(&db, changes)
+      .await
+      .expect("channel")
+      .expect("apply");
+    assert_eq!(applied.updated, 1);
+
+    let page = fetch_rows(&db, sorted(0))
+      .await
+      .expect("channel")
+      .expect("refetch");
+    assert_eq!(page.statements[0].rows[0][1], Some("Ada II".to_string()));
+    close_session(session);
+  }
+
   /// The tunnel round end to end: TOFU refusal, the trust the dialog writes,
   /// then a query through the forward. Skipped silently without SOQUEL_TEST_SSH.
   #[tokio::test]
