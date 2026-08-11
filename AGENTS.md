@@ -21,9 +21,9 @@ Root **cargo workspace** (`Cargo.toml`, `resolver = "2"`), one committed `Cargo.
 
 - `crates/core` - the Rust core, UI-agnostic: connectors, SSH tunnels, credentials, secrets, licence, activation, MCP server + tools, diagnostics block, import/export. `src/error.rs` holds the normalized `Error` enum, `src/lib.rs` the `AppState`, `src/ops.rs` the connection lifecycle. `build.rs` stamps `SOQUEL_BUILD_DATE`.
 - `crates/app` - the gpui binary (`soquel-app`). `src/core.rs` bridges the core's private tokio runtime to gpui (futures oneshot/mpsc channels) and holds `init_state`/`init_logging`; `src/app.rs` is the window root (branches screens on connector capability); one view module per surface (`connections`, `workspace`, `tunnels`, `kv`, `doc`, `mcp`, `licence`, `diagnostics`, `grid`, ...). gpui + gpui-component are git-pinned via the committed root `Cargo.lock` (gpui follows gpui-component's pin; never rev-pinned in a manifest).
-- `landing` - Astro + Tailwind v4 for soquel.dev. **Its own workspace**: own `pnpm-workspace.yaml`, own lockfile, own eslint, own CI job, and the root lint ignores it. Run its commands from `landing/`. Its palette is the app's tokens verbatim, and the only colour on the page is the one the app gives data (syntax tokens plus the destructive action): soquel has no brand hue.
+- `landing` - Astro + Tailwind v4 for soquel.dev. **Its own workspace**: own `pnpm-workspace.yaml`, own lockfile, own eslint, own CI job. Run its commands from `landing/`. Its palette is the app's tokens verbatim, and the only colour on the page is the one the app gives data (syntax tokens plus the destructive action): soquel has no brand hue.
 
-The root `package.json` is a thin script holder (cargo + docker wrappers) plus eslint for the scripts and configs; there is no TypeScript app any more.
+The root has no node stack: a `Justfile` holds the cargo + docker shortcuts, and `landing/` is the only node project. Clippy owns the Rust, `landing/` lints itself.
 
 ### The core surface and the gpui bridges
 
@@ -43,15 +43,14 @@ Exports carry `.soquel`, so the OS can associate the format later. Not `.soquel.
 
 ## Commands
 
-Run from the repo root.
+Run from the repo root. Shortcuts are a `Justfile` (`just`), not npm; Rust is plain cargo.
 
 ```bash
-pnpm install       # only the root eslint tooling; the app is cargo
-pnpm dev           # cargo run -p soquel-app
-pnpm dev:wsl       # same with file-backed plaintext secrets (WSL has no OS keychain); dev only
-pnpm build         # cargo build -p soquel-app
-pnpm lint          # eslint . over scripts + configs (lint:fix to autofix)
-pnpm test          # cargo test --workspace (unit; integration_* skip without their env vars)
+just dev               # cargo run -p soquel-app
+just dev-wsl           # same with file-backed plaintext secrets (WSL has no OS keychain); dev only
+just build             # cargo build -p soquel-app
+just test              # cargo test --workspace (unit; integration_* skip without their env vars)
+just --list            # every recipe
 
 cargo check --workspace                          # fast validation
 cargo clippy --workspace --all-targets -- -D warnings
@@ -59,20 +58,18 @@ cargo fmt --all --check
 cargo test -p soquel-app        # gpui view + logic tests
 cargo test -p soquel-core       # connector + mcp + core suites
 
-pnpm db:test           # start the test databases (docker-compose.test.yml), seeded + throwaway
-pnpm test:integration  # cargo integration_* tests against them
-pnpm db:test:down
+just db-test           # start the test databases (docker-compose.test.yml), seeded + throwaway
+just test-integration  # cargo integration_* tests against them
+just db-test-down
 
-pnpm db:dev            # dev postgres 5470 + mysql 5471 + redis 5472 + mongo 5473 (docker-compose.dev.yml), persistent volumes
+just db-dev            # dev postgres 5470 + mysql 5471 + redis 5472 + mongo 5473 (docker-compose.dev.yml), persistent volumes
                        # dev stays out of 5455-5464: that whole range belongs to docker-compose.test.yml
-pnpm db:dev:seed:pg    # (re)seed the dev postgres: ~1.5M rows across a SaaS-shaped app schema
-pnpm db:dev:seed:mysql # same shape for the dev mysql (soquel_dev)
-pnpm db:dev:seed:redis # SaaS-shaped keys for the key browser (~16k: sessions, cache, queues, stream)
-pnpm db:dev:seed:mongo # SaaS-shaped documents for the doc browser (~85k: users, orders, events, sessions)
-pnpm db:dev:down
+just db-dev-seed       # (re)seed every dev database; `just db-dev-seed pg` for one
+                       #   pg ~1.5M rows / mysql soquel_dev / redis ~16k keys / mongo ~85k docs, SaaS-shaped
+just db-dev-down
 ```
 
-Don't start `pnpm dev` yourself: it opens a window Joris watches. Verify with `cargo check`/`clippy`/tests, or ask him to run it. Under WSL the app runs via WSLg (software rendering, `libEGL` warnings are noise); Joris validates the look on his Mac (Metal).
+Don't start `just dev` yourself: it opens a window Joris watches. Verify with `cargo check`/`clippy`/tests, or ask him to run it. Under WSL the app runs via WSLg (software rendering, `libEGL` warnings are noise); Joris validates the look on his Mac (Metal).
 
 ## Testing
 
