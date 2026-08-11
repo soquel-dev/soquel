@@ -616,38 +616,44 @@ impl KvWorkspace {
           ),
       )
       .child(
-        v_flex()
-          .id("kv-keys")
-          .flex_1()
-          .min_h_0()
-          .overflow_y_scroll()
-          .children(self.keys.clone().into_iter().map(|entry| {
-            let key = entry.key.clone();
-            let selected = self.selected_key.as_deref() == Some(entry.key.as_str());
-            h_flex()
-              .id(SharedString::from(format!("key-{}", entry.key)))
-              .px_2()
-              .py_1()
-              .gap_2()
-              .items_center()
-              .cursor_default()
-              .text_xs()
-              .font_family("IBM Plex Mono")
-              .when(selected, |row| row.bg(cx.theme().accent))
-              .hover(|row| row.bg(cx.theme().accent.opacity(0.5)))
-              .on_click(cx.listener(move |this, _, window, cx| {
-                this.select_key(key.clone(), window, cx);
-              }))
-              .child(self.type_badge(entry.kind, false, cx))
-              .child(div().flex_1().min_w_0().truncate().child(entry.key.clone()))
-              .when_some(entry.ttl_ms, |row, ttl| {
-                row.child(
-                  div()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(format_ttl(ttl)),
-                )
+        uniform_list(
+          "kv-keys",
+          self.keys.len(),
+          cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
+            range
+              .map(|ix| {
+                let entry = &this.keys[ix];
+                let key = entry.key.clone();
+                let selected = this.selected_key.as_deref() == Some(entry.key.as_str());
+                h_flex()
+                  .id(ix)
+                  .px_2()
+                  .py_1()
+                  .gap_2()
+                  .items_center()
+                  .cursor_default()
+                  .text_xs()
+                  .font_family("IBM Plex Mono")
+                  .when(selected, |row| row.bg(cx.theme().accent))
+                  .hover(|row| row.bg(cx.theme().accent.opacity(0.5)))
+                  .on_click(cx.listener(move |this, _, window, cx| {
+                    this.select_key(key.clone(), window, cx);
+                  }))
+                  .child(this.type_badge(entry.kind, false, cx))
+                  .child(div().flex_1().min_w_0().truncate().child(entry.key.clone()))
+                  .when_some(entry.ttl_ms, |row, ttl| {
+                    row.child(
+                      div()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(format_ttl(ttl)),
+                    )
+                  })
               })
-          })),
+              .collect::<Vec<_>>()
+          }),
+        )
+        .flex_1()
+        .min_h_0(),
       )
       .child(if self.cursor.is_some() {
         h_flex().p_1().child(

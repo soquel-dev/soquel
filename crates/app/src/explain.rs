@@ -504,6 +504,23 @@ fn finalize_sqlite_plan(node: &mut PlanNode, id: String, depth: usize) {
   node.id = id;
 }
 
+/// The flat (plan, node) rows the explain view draws: pre-order, collapsed
+/// subtrees dropped.
+pub fn visible_plan_nodes<'a>(
+  plans: &'a [ExplainPlan],
+  collapsed: &HashSet<String>,
+) -> Vec<(&'a ExplainPlan, &'a PlanNode)> {
+  let mut nodes = Vec::new();
+  for plan in plans {
+    for node in flatten_plan(&plan.root) {
+      if !hidden_by_collapse(&node.id, collapsed) {
+        nodes.push((plan, node));
+      }
+    }
+  }
+  nodes
+}
+
 /// Pre-order flatten for flat rendering with indent guides.
 pub fn flatten_plan(root: &PlanNode) -> Vec<&PlanNode> {
   let mut rows = Vec::new();

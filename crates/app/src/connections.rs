@@ -400,7 +400,8 @@ impl EventEmitter<ConnectionsEvent> for ConnectionsView {}
 
 impl ConnectionsView {
   pub fn new(state: Arc<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-    let profiles = core::list_connections(&state);
+    let mut profiles = core::list_connections(&state);
+    profiles.sort_by(|a, b| a.name.cmp(&b.name));
     let mut text = |cx: &mut Context<Self>, placeholder: &str| -> Entity<InputState> {
       let placeholder = placeholder.to_string();
       cx.new(|cx| InputState::new(window, cx).placeholder(placeholder))
@@ -574,6 +575,7 @@ impl ConnectionsView {
 
   fn refresh(&mut self, cx: &mut Context<Self>) {
     self.profiles = core::list_connections(&self.state);
+    self.profiles.sort_by(|a, b| a.name.cmp(&b.name));
     cx.notify();
   }
 
@@ -2204,9 +2206,8 @@ fn import_dialog(
 
 impl Render for ConnectionsView {
   fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-    let mut sorted = self.profiles.clone();
-    sorted.sort_by(|a, b| a.name.cmp(&b.name));
-    let groups = group_connections(&sorted);
+    // Kept sorted by `refresh`; grouping borrows, nothing clones per frame.
+    let groups = group_connections(&self.profiles);
 
     let connecting = self.connecting.clone();
 

@@ -832,36 +832,42 @@ impl DocWorkspace {
           }),
       )
       .child(
-        v_flex()
-          .id("doc-rows")
-          .flex_1()
-          .min_h_0()
-          .overflow_y_scroll()
-          .children(self.docs.iter().enumerate().map(|(ix, entry)| {
-            let selected = self.selected == Some(ix);
-            h_flex()
-              .id(SharedString::from(format!("doc-row-{ix}")))
-              .px_2()
-              .py_1()
-              .cursor_default()
-              .when(selected, |row| row.bg(cx.theme().accent))
-              .hover(|row| row.bg(cx.theme().accent.opacity(0.5)))
-              .on_click(cx.listener(move |this, _, _, cx| this.select_doc(ix, cx)))
-              .child(
-                v_flex()
-                  .flex_1()
-                  .min_w_0()
-                  .text_xs()
-                  .font_family("IBM Plex Mono")
-                  .child(div().truncate().child(doc_id_label(entry.id.as_deref())))
+        uniform_list(
+          "doc-rows",
+          self.docs.len(),
+          cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
+            range
+              .map(|ix| {
+                let entry = &this.docs[ix];
+                let selected = this.selected == Some(ix);
+                h_flex()
+                  .id(ix)
+                  .px_2()
+                  .py_1()
+                  .cursor_default()
+                  .when(selected, |row| row.bg(cx.theme().accent))
+                  .hover(|row| row.bg(cx.theme().accent.opacity(0.5)))
+                  .on_click(cx.listener(move |this, _, _, cx| this.select_doc(ix, cx)))
                   .child(
-                    div()
-                      .truncate()
-                      .text_color(cx.theme().muted_foreground)
-                      .child(doc_preview(&entry.doc, 140)),
-                  ),
-              )
-          })),
+                    v_flex()
+                      .flex_1()
+                      .min_w_0()
+                      .text_xs()
+                      .font_family("IBM Plex Mono")
+                      .child(div().truncate().child(doc_id_label(entry.id.as_deref())))
+                      .child(
+                        div()
+                          .truncate()
+                          .text_color(cx.theme().muted_foreground)
+                          .child(doc_preview(&entry.doc, 140)),
+                      ),
+                  )
+              })
+              .collect::<Vec<_>>()
+          }),
+        )
+        .flex_1()
+        .min_h_0(),
       )
       .child(if self.doc_cursor.is_some() {
         h_flex().p_1().child(

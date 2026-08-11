@@ -29,7 +29,7 @@ use crate::actions::{
 use crate::completion::{SchemaEntries, SqlCompletionProvider};
 use crate::core::{self, Db};
 use crate::explain::{
-  ExplainPlan, explain_sql, flatten_plan, format_ms, format_rows, hidden_by_collapse, parse_explain,
+  ExplainPlan, explain_sql, format_ms, format_rows, parse_explain, visible_plan_nodes,
 };
 use crate::export::{EXPORT_FORMATS, format_extension, format_label};
 use crate::filters::{filter_label, op_label, op_needs_value, ops_for_kind};
@@ -1104,12 +1104,15 @@ impl Workspace {
     }
   }
 
-  fn render_explain(
-    &self,
-    plans: &[ExplainPlan],
-    collapsed: &HashSet<String>,
-    cx: &mut Context<Self>,
-  ) -> impl IntoElement {
+  fn render_explain(&self, id: &str, cx: &mut Context<Self>) -> AnyElement {
+    let Some(TabContent::Sql {
+      explain: Some((plans, _)),
+      explain_collapsed: collapsed,
+      ..
+    }) = self.contents.get(id)
+    else {
+      return div().into_any_element();
+    };
     let mut header: Vec<String> = Vec::new();
     for plan in plans {
       if let Some(ms) = plan.planning_ms {
@@ -1130,44 +1133,52 @@ impl Workspace {
       }
     }
 
-    let mut rows = Vec::new();
-    for plan in plans {
-      for node in flatten_plan(&plan.root) {
-        if hidden_by_collapse(&node.id, collapsed) {
-          continue;
-        }
-        let heat_color = if node.heat >= 0.4 {
-          cx.theme().red
-        } else if node.heat >= 0.1 {
-          cx.theme().yellow
-        } else {
-          cx.theme().muted_foreground
-        };
-        let timing = if !plan.analyzed {
-          if node.total_cost > 0. {
-            format!(
-              "cost {:.*}",
-              if node.total_cost >= 100. { 0 } else { 2 },
-              node.total_cost
-            )
+    let row_count = visible_plan_nodes(plans, collapsed).len();
+    let tab_id = id.to_string();
+    let rows = cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
+      let Some(TabContent::Sql {
+        explain: Some((plans, _)),
+        explain_collapsed: collapsed,
+        ..
+      }) = this.contents.get(&tab_id)
+      else {
+        return Vec::new();
+      };
+      let nodes = visible_plan_nodes(plans, collapsed);
+      nodes[range]
+        .iter()
+        .map(|&(plan, node)| {
+          let heat_color = if node.heat >= 0.4 {
+            cx.theme().red
+          } else if node.heat >= 0.1 {
+            cx.theme().yellow
           } else {
-            String::new()
-          }
-        } else {
-          node.inclusive_ms.map(format_ms).unwrap_or_default()
-        };
-        let rows_label = if node.plan_rows > 0. || node.actual_rows.is_some() {
-          let mut label = format!("rows {}", format_rows(node.plan_rows));
-          if let Some(actual) = node.actual_rows {
-            label.push_str(&format!(" -> {}", format_rows(actual)));
-          }
-          Some(label)
-        } else {
-          None
-        };
-        let node_id = node.id.clone();
-        let is_collapsed = collapsed.contains(&node.id);
-        rows.push(
+            cx.theme().muted_foreground
+          };
+          let timing = if !plan.analyzed {
+            if node.total_cost > 0. {
+              format!(
+                "cost {:.*}",
+                if node.total_cost >= 100. { 0 } else { 2 },
+                node.total_cost
+              )
+            } else {
+              String::new()
+            }
+          } else {
+            node.inclusive_ms.map(format_ms).unwrap_or_default()
+          };
+          let rows_label = if node.plan_rows > 0. || node.actual_rows.is_some() {
+            let mut label = format!("rows {}", format_rows(node.plan_rows));
+            if let Some(actual) = node.actual_rows {
+              label.push_str(&format!(" -> {}", format_rows(actual)));
+            }
+            Some(label)
+          } else {
+            None
+          };
+          let node_id = node.id.clone();
+          let is_collapsed = collapsed.contains(&node.id);
           h_flex()
             .px_3()
             .py_0p5()
@@ -1240,10 +1251,10 @@ impl Workspace {
                 .child(div().h_full().rounded_full().bg(heat_color).w(relative(
                   (node.heat as f32).max(if node.heat > 0. { 0.04 } else { 0. }),
                 ))),
-            ),
-        );
-      }
-    }
+            )
+        })
+        .collect::<Vec<_>>()
+    });
 
     v_flex()
       .size_full()
@@ -1260,14 +1271,12 @@ impl Workspace {
           .children(header.into_iter().map(|part| div().child(part))),
       )
       .child(
-        v_flex()
-          .id("explain-rows")
+        uniform_list("explain-rows", row_count, rows)
           .flex_1()
           .min_h_0()
-          .overflow_y_scroll()
-          .py_1()
-          .children(rows),
+          .py_1(),
       )
+      .into_any_element()
   }
 
   /// The grid whose rows exports read: the table tab's, or the sql results.
@@ -2093,7 +2102,6 @@ impl Workspace {
         split,
         running,
         explain,
-        explain_collapsed,
         ..
       }) => v_flex()
         .flex_1()
@@ -2165,14 +2173,10 @@ impl Workspace {
               )
               .child(
                 resizable_panel().child(match explain {
-                  Some((plans, _)) => {
-                    let plans = plans.clone();
-                    let collapsed = explain_collapsed.clone();
-                    v_flex()
-                      .size_full()
-                      .child(self.render_explain(&plans, &collapsed, cx))
-                      .into_any_element()
-                  }
+                  Some(_) => v_flex()
+                    .size_full()
+                    .child(self.render_explain(&id, cx))
+                    .into_any_element(),
                   None => v_flex()
                     .size_full()
                     .p_1()
