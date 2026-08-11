@@ -2186,7 +2186,11 @@ impl Workspace {
       .map(|grid| grid.read(cx).delegate().status.clone())
       .unwrap_or_else(|| self.status.clone());
     let connection = match &self.server_version {
-      Some(version) => format!("{} - PostgreSQL {version}", self.profile.name),
+      Some(version) => {
+        let (engine, version) =
+          crate::connections::server_badge(self.profile.params.kind(), version);
+        format!("{} - {engine} {version}", self.profile.name)
+      }
       None => self.profile.name.clone(),
     };
     h_flex()

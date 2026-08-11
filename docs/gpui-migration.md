@@ -119,18 +119,19 @@ deleted. Each panel lands with its layer-3 tests; each flow with layer 4.
 - [x] Connections page: list, groups, env badges, connect/edit/delete (the
       startup screen; connects through core::ops against the same data dir as
       the tauri dev app)
-- [~] Connection form: postgres done (fields, test connection, keychain/prompt/
-      command credential modes with the argv preview; agent-access select
-      (Off / Read-only / Writes need approval) maps into `ConnectionInput` and
-      an "agent" badge marks opted-in rows). **Multi-kind is NOT done and it is
-      the one deletion blocker** (see "Removing tauri"): the form hardcodes
-      `ConnectorParams::Postgres`, so mysql/mariadb/sqlite/redis/mongo cannot be
-      created in gpui - today those profiles come from the tauri webview via the
-      shared dev data dir. Porting `lib/connections.ts`'s multi-kind surface
-      (engine selector, per-kind fields/params, `prefill_form` per kind,
-      `portForKindChange`, `parseConnectionUrl` URL prefill, `serverBadge` with
-      mariadb/valkey detection, per-kind dsn/target, `ssl_root_cert`) is the
-      first phase of that PR. Small-screen dialog height still to do
+- [x] Connection form, all kinds (fields, test connection, keychain/prompt/
+      command credential modes with the argv preview; agent-access select maps
+      into `ConnectionInput` and an "agent" badge marks opted-in rows).
+      Multi-kind landed as phase 1 of the tauri-removal PR: an engine select
+      (`ENGINE_CHOICES`, MariaDB a display entry riding the mysql kind),
+      kind-conditional fields (sqlite=path, redis=host/port/db-index/tls/user,
+      mongo=host/port/database/auth-source/tls/user, pg+mysql=host/port/database/
+      user/ssl + CA cert on verify-full), `form_input`/`prefill_form` per kind,
+      `port_for_kind_change` on engine switch, a "From URL" field that prefills
+      via `parse_connection_url` (libpq + mysql ssl-mode maps, percent-decoded
+      userinfo), `server_badge` (mariadb/valkey by version) on the workspace,
+      per-kind `dsn`, redis/mongo credential-command caveats. `lib/connections.ts`
+      is fully ported. Small-screen dialog height still to do
 - [x] Tunnel form + tunnel list (`tunnels.rs` ports `lib/tunnels.ts` with its
       tests; the connection form's picker maps by index since names collide)
 - [x] Secret prompt dialog (SecretRequired -> unlock -> retry, with the

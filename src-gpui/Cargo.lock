@@ -8176,11 +8176,13 @@ dependencies = [
  "log",
  "lsp-types",
  "open",
+ "percent-encoding",
  "rust-embed",
  "serde_json",
  "soquel-core",
  "tempfile",
  "tokio",
+ "url",
  "uuid",
 ]
 
