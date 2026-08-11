@@ -254,9 +254,8 @@ impl KvWorkspace {
       let mut fresh: Vec<KeyEntry> = Vec::new();
       let mut done = false;
       for _ in 0..50 {
-        let rx = core::kv_scan(&db, pattern.clone(), cursor.clone(), SCAN_COUNT);
-        match rx.await {
-          Ok(Ok(page)) => {
+        match core::kv_scan(&db, pattern.clone(), cursor.clone(), SCAN_COUNT, cx).await {
+          Ok(page) => {
             fresh.extend(page.keys);
             cursor = page.cursor.clone();
             if page.cursor.is_none() {
@@ -267,7 +266,7 @@ impl KvWorkspace {
               break;
             }
           }
-          Ok(Err(error)) => {
+          Err(error) => {
             let _ = this.update(cx, |this, cx| {
               this.scanning = false;
               this.status = format!("error: {error}").into();
@@ -275,7 +274,6 @@ impl KvWorkspace {
             });
             return;
           }
-          Err(_) => return,
         }
       }
       let _ = this.update(cx, |this, cx| {
@@ -296,11 +294,11 @@ impl KvWorkspace {
   }
 
   fn load_databases(&mut self, cx: &mut Context<Self>) {
-    let rx = core::kv_databases(&self.db);
+    let task = core::kv_databases(&self.db, cx);
     let this = cx.entity();
     let db_select = self.db_select.clone();
     cx.spawn(async move |_, cx| {
-      let Ok(Ok(databases)) = rx.await else {
+      let Ok(databases) = task.await else {
         return;
       };
       let Some(handle) = cx.update(|cx| cx.active_window()) else {
@@ -347,9 +345,9 @@ impl KvWorkspace {
     if self.databases.as_ref().map(|d| d.current) == Some(db) {
       return;
     }
-    let rx = core::kv_select_db(self.state.clone(), self.connection_id.clone(), db);
-    self._op_task = cx.spawn(async move |this, cx| match rx.await {
-      Ok(Ok(fresh)) => {
+    let task = core::kv_select_db(self.state.clone(), self.connection_id.clone(), db, cx);
+    self._op_task = cx.spawn(async move |this, cx| match task.await {
+      Ok(fresh) => {
         let _ = this.update(cx, |this, cx| {
           this.db = fresh;
           this.selected_key = None;
@@ -358,13 +356,12 @@ impl KvWorkspace {
           this.load_databases(cx);
         });
       }
-      Ok(Err(error)) => {
+      Err(error) => {
         let _ = this.update(cx, |this, cx| {
           this.status = format!("error: {error}").into();
           cx.notify();
         });
       }
-      Err(_) => {}
     });
   }
 
@@ -375,13 +372,13 @@ impl KvWorkspace {
     self.detail_loading = true;
     self.delete_armed = false;
     cx.notify();
-    let rx = core::kv_key_detail(&self.db, key);
+    let task = core::kv_key_detail(&self.db, key, cx);
     let this = cx.entity();
     let string_draft = self.string_draft.clone();
     let ttl_input = self.ttl_input.clone();
     let _ = window;
     self._detail_task = cx.spawn(async move |_, cx| {
-      let result = rx.await;
+      let result = task.await;
       let Some(handle) = cx.update(|cx| cx.active_window()) else {
         return;
       };
@@ -391,7 +388,7 @@ impl KvWorkspace {
           cx.notify();
         });
         match result {
-          Ok(Ok(detail)) => {
+          Ok(detail) => {
             let value = match &detail.value {
               KeyValue::String { value } => value.clone(),
               _ => String::new(),
@@ -407,13 +404,12 @@ impl KvWorkspace {
               cx.notify();
             });
           }
-          Ok(Err(error)) => {
+          Err(error) => {
             this.update(cx, |this, cx| {
               this.status = format!("error: {error}").into();
               cx.notify();
             });
           }
-          Err(_) => {}
         }
       });
     });
@@ -424,27 +420,26 @@ impl KvWorkspace {
     if command.is_empty() {
       return;
     }
-    let rx = core::kv_run_command(&self.db, command.clone());
+    let task = core::kv_run_command(&self.db, command.clone(), cx);
     let this = cx.entity();
     let input = self.console_input.clone();
     self._op_task = cx.spawn(async move |_, cx| {
-      let result = rx.await;
+      let result = task.await;
       let Some(handle) = cx.update(|cx| cx.active_window()) else {
         return;
       };
       let _ = cx.update_window(handle, move |_, window, cx| {
         let entry = match result {
-          Ok(Ok(lines)) => ConsoleEntry {
+          Ok(lines) => ConsoleEntry {
             command: command.clone(),
             lines,
             ok: true,
           },
-          Ok(Err(error)) => ConsoleEntry {
+          Err(error) => ConsoleEntry {
             command: command.clone(),
             lines: vec![format!("{error}")],
             ok: false,
           },
-          Err(_) => return,
         };
         input.update(cx, |input, cx| input.set_value("", window, cx));
         this.update(cx, |this, cx| {
@@ -465,16 +460,16 @@ impl KvWorkspace {
     ) else {
       return;
     };
-    let rx = core::kv_set_string(&self.db, key.clone(), value);
-    self._op_task = self.after_write(rx, key, cx);
+    let task = core::kv_set_string(&self.db, key.clone(), value, cx);
+    self._op_task = self.after_write(task, key, cx);
   }
 
   fn apply_ttl(&mut self, ttl_ms: Option<f64>, cx: &mut Context<Self>) {
     let Some(key) = self.selected_key.clone() else {
       return;
     };
-    let rx = core::kv_set_ttl(&self.db, key.clone(), ttl_ms);
-    self._op_task = self.after_write(rx, key, cx);
+    let task = core::kv_set_ttl(&self.db, key.clone(), ttl_ms, cx);
+    self._op_task = self.after_write(task, key, cx);
   }
 
   fn submit_ttl(&mut self, cx: &mut Context<Self>) {
@@ -491,20 +486,19 @@ impl KvWorkspace {
     let Some(key) = self.selected_key.clone() else {
       return;
     };
-    let rx = core::kv_delete_key(&self.db, key);
+    let task = core::kv_delete_key(&self.db, key, cx);
     self._op_task = cx.spawn(async move |this, cx| {
-      let result = rx.await;
+      let result = task.await;
       let _ = this.update(cx, |this, cx| {
         match result {
-          Ok(Ok(())) => {
+          Ok(()) => {
             this.selected_key = None;
             this.detail = None;
             this.delete_armed = false;
             this.scan(true, cx);
             this.load_databases(cx);
           }
-          Ok(Err(error)) => this.status = format!("error: {error}").into(),
-          Err(_) => {}
+          Err(error) => this.status = format!("error: {error}").into(),
         }
         cx.notify();
       });
@@ -514,27 +508,26 @@ impl KvWorkspace {
   /// A key write reloads its detail and re-scans (ttl/size may have moved).
   fn after_write(
     &self,
-    rx: futures::channel::oneshot::Receiver<Result<(), soquel_core::error::Error>>,
+    task: Task<Result<(), soquel_core::error::Error>>,
     key: String,
     cx: &mut Context<Self>,
   ) -> Task<()> {
     cx.spawn(async move |this, cx| {
-      let result = rx.await;
+      let result = task.await;
       let Some(handle) = cx.update(|cx| cx.active_window()) else {
         return;
       };
       let _ = cx.update_window(handle, move |_, window, cx| {
         let _ = this.update(cx, |this, cx| match result {
-          Ok(Ok(())) => {
+          Ok(()) => {
             this.scan(true, cx);
             this.load_databases(cx);
             this.select_key(key.clone(), window, cx);
           }
-          Ok(Err(error)) => {
+          Err(error) => {
             this.status = format!("error: {error}").into();
             cx.notify();
           }
-          Err(_) => {}
         });
       });
     })
@@ -1109,11 +1102,10 @@ mod tests {
         tunnel_id: None,
       }),
     };
-    let db = futures::executor::block_on(crate::core::connect_with(
+    let db = crate::core::connect_with_blocking(
       profile.clone(),
       soquel_core::credentials::Credentials::fixed(Some("soquel".to_string())),
-    ))
-    .expect("channel")
+    )
     .expect("connects to the compose redis");
 
     // Seed one key this test owns, and a couple more to browse.
@@ -1122,9 +1114,7 @@ mod tests {
       format!("HSET {prefix}:h field1 v1 field2 v2"),
       format!("SET {prefix}:s hello"),
     ] {
-      futures::executor::block_on(crate::core::kv_run_command(&db, line))
-        .expect("channel")
-        .expect("seed");
+      crate::core::kv_run_command_blocking(&db, line).expect("seed");
     }
 
     let dir = tempfile::tempdir().unwrap();
@@ -1188,10 +1178,10 @@ mod tests {
 
     // Cleanup.
     for suffix in ["h", "s"] {
-      let _ = futures::executor::block_on(crate::core::kv_run_command(
+      let _ = crate::core::kv_run_command_blocking(
         &db_handle(&view, cx),
         format!("DEL {prefix}:{suffix}"),
-      ));
+      );
     }
   }
 

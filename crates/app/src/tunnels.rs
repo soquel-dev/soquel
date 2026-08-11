@@ -638,20 +638,20 @@ impl TunnelsView {
     };
     self.status = "testing...".into();
     cx.notify();
-    let rx = core::test_tunnel(self.state.clone(), input, self.editing.clone());
+    let task = core::test_tunnel(self.state.clone(), input, self.editing.clone(), cx);
     self._task = cx.spawn(async move |this, cx| {
-      let result = rx.await;
+      let result = task.await;
       let _ = this.update(cx, |this, cx| {
         match result {
-          Ok(Ok(())) => this.status = "Tunnel OK".into(),
-          Ok(Err(Error::HostKeyUntrusted {
+          Ok(()) => this.status = "Tunnel OK".into(),
+          Err(Error::HostKeyUntrusted {
             host,
             port,
             fingerprint,
             key,
             previously_trusted,
             ..
-          })) => {
+          }) => {
             // The dialog owns this failure; retry re-reads the live form.
             this.status = SharedString::default();
             host_key::open_host_key_dialog(
@@ -674,8 +674,7 @@ impl TunnelsView {
               },
             );
           }
-          Ok(Err(error)) => this.status = format!("error: {error}").into(),
-          Err(_) => {}
+          Err(error) => this.status = format!("error: {error}").into(),
         }
         cx.notify();
       });
@@ -691,17 +690,16 @@ impl TunnelsView {
         return;
       }
     };
-    let rx = core::save_tunnel(self.state.clone(), self.editing.clone(), input);
+    let task = core::save_tunnel(self.state.clone(), self.editing.clone(), input, cx);
     self._task = cx.spawn(async move |this, cx| {
-      let result = rx.await;
+      let result = task.await;
       let _ = this.update(cx, |this, cx| {
         match result {
-          Ok(Ok(_)) => {
+          Ok(_) => {
             this.status = SharedString::default();
             this.refresh(cx);
           }
-          Ok(Err(error)) => this.status = format!("error: {error}").into(),
-          Err(_) => {}
+          Err(error) => this.status = format!("error: {error}").into(),
         }
         cx.notify();
       });
@@ -722,11 +720,11 @@ impl TunnelsView {
   }
 
   fn delete(&mut self, id: String, cx: &mut Context<Self>) {
-    let rx = core::delete_tunnel(self.state.clone(), id);
+    let task = core::delete_tunnel(self.state.clone(), id, cx);
     self._task = cx.spawn(async move |this, cx| {
-      let result = rx.await;
+      let result = task.await;
       let _ = this.update(cx, |this, cx| {
-        if let Ok(Err(error)) = result {
+        if let Err(error) = result {
           this.status = format!("error: {error}").into();
         }
         this.refresh(cx);

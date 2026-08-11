@@ -1,6 +1,7 @@
+use std::future::Future;
 use std::sync::{Arc, OnceLock};
 
-use futures::channel::oneshot;
+use gpui::{AppContext, Task};
 use soquel_core::connectors::{
   Connection, DocCollection, DocCount, DocDatabase, DocDetail, DocFindRequest, DocPage,
   DocQueryResult, IndexInfo, KeyDetail, KeyScanPage, KvDatabases, QueryResult, SchemaSnapshot,
@@ -19,6 +20,43 @@ fn runtime() -> &'static tokio::runtime::Runtime {
       .build()
       .expect("tokio runtime")
   })
+}
+
+/// Runs a core future on the runtime. The returned task only observes
+/// completion: dropping it never aborts the work, so an in-flight write
+/// cannot be cut mid-protocol.
+fn bridge<T>(cx: &impl AppContext, fut: impl Future<Output = T> + Send + 'static) -> Task<T>
+where
+  T: Send + 'static,
+{
+  let handle = runtime().spawn(fut);
+  cx.background_spawn(async move { handle.await.expect("core task panicked") })
+}
+
+/// Same, but dropping the task aborts the work. Only for reads a view
+/// supersedes (scans, fetches, introspection), never for writes.
+fn bridge_abortable<T>(
+  cx: &impl AppContext,
+  fut: impl Future<Output = T> + Send + 'static,
+) -> Task<T>
+where
+  T: Send + 'static,
+{
+  let handle = runtime().spawn(fut);
+  let abort = AbortOnDrop(handle.abort_handle());
+  cx.background_spawn(async move {
+    let result = handle.await;
+    drop(abort);
+    result.expect("core task panicked")
+  })
+}
+
+struct AbortOnDrop(tokio::task::AbortHandle);
+
+impl Drop for AbortOnDrop {
+  fn drop(&mut self) {
+    self.0.abort();
+  }
 }
 
 #[derive(Clone)]
@@ -124,19 +162,17 @@ pub fn list_connections(state: &AppState) -> Vec<ConnectionProfile> {
 }
 
 /// ops::connect fills the state's map; the grid plumbing rides a Db handle.
-pub fn connect_id(state: Arc<AppState>, id: String) -> oneshot::Receiver<Result<Db, Error>> {
-  let (tx, rx) = oneshot::channel();
-  runtime().spawn(async move {
-    let result = async {
-      soquel_core::ops::connect(&state, id.clone()).await?;
-      let kind = state.profiles.lock().unwrap().get(&id)?.params.kind();
-      let connection = soquel_core::ops::active(&state, &id).await?;
-      Ok(Db(connection, kind))
-    }
-    .await;
-    let _ = tx.send(result);
-  });
-  rx
+pub fn connect_id(
+  state: Arc<AppState>,
+  id: String,
+  cx: &impl AppContext,
+) -> Task<Result<Db, Error>> {
+  bridge(cx, async move {
+    soquel_core::ops::connect(&state, id.clone()).await?;
+    let kind = state.profiles.lock().unwrap().get(&id)?.params.kind();
+    let connection = soquel_core::ops::active(&state, &id).await?;
+    Ok(Db(connection, kind))
+  })
 }
 
 pub fn disconnect_id(state: Arc<AppState>, id: String) {
@@ -149,13 +185,11 @@ pub fn test_input(
   state: Arc<AppState>,
   input: ConnectionInput,
   existing_id: Option<String>,
-) -> oneshot::Receiver<Result<(), Error>> {
-  let (tx, rx) = oneshot::channel();
-  runtime().spawn(async move {
-    let result = soquel_core::ops::test_connection(&state, &input, existing_id.as_deref()).await;
-    let _ = tx.send(result);
-  });
-  rx
+  cx: &impl AppContext,
+) -> Task<Result<(), Error>> {
+  bridge(cx, async move {
+    soquel_core::ops::test_connection(&state, &input, existing_id.as_deref()).await
+  })
 }
 
 /// Store writes can touch the OS keychain: off the UI thread like everything else.
@@ -163,24 +197,24 @@ pub fn save_connection(
   state: Arc<AppState>,
   editing: Option<String>,
   input: ConnectionInput,
-) -> oneshot::Receiver<Result<ConnectionProfile, Error>> {
-  let (tx, rx) = oneshot::channel();
-  runtime().spawn(async move {
-    let result = match editing {
+  cx: &impl AppContext,
+) -> Task<Result<ConnectionProfile, Error>> {
+  bridge(cx, async move {
+    match editing {
       Some(id) => soquel_core::ops::update_connection(&state, &id, &input),
       None => soquel_core::ops::create_connection(&state, &input),
-    };
-    let _ = tx.send(result);
-  });
-  rx
+    }
+  })
 }
 
-pub fn delete_connection(state: Arc<AppState>, id: String) -> oneshot::Receiver<Result<(), Error>> {
-  let (tx, rx) = oneshot::channel();
-  runtime().spawn(async move {
-    let _ = tx.send(soquel_core::ops::delete_connection(&state, &id));
-  });
-  rx
+pub fn delete_connection(
+  state: Arc<AppState>,
+  id: String,
+  cx: &impl AppContext,
+) -> Task<Result<(), Error>> {
+  bridge(cx, async move {
+    soquel_core::ops::delete_connection(&state, &id)
+  })
 }
 
 pub fn unlock_secret(
@@ -201,37 +235,36 @@ pub fn save_tunnel(
   state: Arc<AppState>,
   editing: Option<String>,
   input: TunnelInput,
-) -> oneshot::Receiver<Result<TunnelProfile, Error>> {
-  let (tx, rx) = oneshot::channel();
-  runtime().spawn(async move {
-    let result = match editing {
+  cx: &impl AppContext,
+) -> Task<Result<TunnelProfile, Error>> {
+  bridge(cx, async move {
+    match editing {
       Some(id) => soquel_core::ops::update_tunnel(&state, &id, &input),
       None => soquel_core::ops::create_tunnel(&state, &input),
-    };
-    let _ = tx.send(result);
-  });
-  rx
+    }
+  })
 }
 
-pub fn delete_tunnel(state: Arc<AppState>, id: String) -> oneshot::Receiver<Result<(), Error>> {
-  let (tx, rx) = oneshot::channel();
-  runtime().spawn(async move {
-    let _ = tx.send(soquel_core::ops::delete_tunnel(&state, &id));
-  });
-  rx
+pub fn delete_tunnel(
+  state: Arc<AppState>,
+  id: String,
+  cx: &impl AppContext,
+) -> Task<Result<(), Error>> {
+  bridge(
+    cx,
+    async move { soquel_core::ops::delete_tunnel(&state, &id) },
+  )
 }
 
 pub fn test_tunnel(
   state: Arc<AppState>,
   input: TunnelInput,
   existing_id: Option<String>,
-) -> oneshot::Receiver<Result<(), Error>> {
-  let (tx, rx) = oneshot::channel();
-  runtime().spawn(async move {
-    let result = soquel_core::ops::test_tunnel(&state, &input, existing_id.as_deref()).await;
-    let _ = tx.send(result);
-  });
-  rx
+  cx: &impl AppContext,
+) -> Task<Result<(), Error>> {
+  bridge(cx, async move {
+    soquel_core::ops::test_tunnel(&state, &input, existing_id.as_deref()).await
+  })
 }
 
 /// Sync like `list_connections`: a mutex and a small JSON write.
@@ -269,12 +302,9 @@ pub fn mcp_configured_port(state: &AppState) -> u16 {
 
 pub fn mcp_status(
   state: Arc<AppState>,
-) -> oneshot::Receiver<Result<soquel_core::mcp::McpStatus, Error>> {
-  let (tx, rx) = oneshot::channel();
-  runtime().spawn(async move {
-    let _ = tx.send(soquel_core::mcp::status(&state).await);
-  });
-  rx
+  cx: &impl AppContext,
+) -> Task<Result<soquel_core::mcp::McpStatus, Error>> {
+  bridge(cx, async move { soquel_core::mcp::status(&state).await })
 }
 
 /// The server runs on `runtime()`, off the UI thread; `make_approver` is the
@@ -283,12 +313,11 @@ pub fn mcp_start(
   state: Arc<AppState>,
   port: u16,
   make_approver: ApproverFactory,
-) -> oneshot::Receiver<Result<(), Error>> {
-  let (tx, rx) = oneshot::channel();
-  runtime().spawn(async move {
-    let _ = tx.send(soquel_core::mcp::start(state, port, make_approver).await);
-  });
-  rx
+  cx: &impl AppContext,
+) -> Task<Result<(), Error>> {
+  bridge(cx, async move {
+    soquel_core::mcp::start(state, port, make_approver).await
+  })
 }
 
 /// Fire-and-forget: launch reads the persisted toggle and brings the server back.
@@ -298,28 +327,28 @@ pub fn mcp_autostart(state: Arc<AppState>, make_approver: ApproverFactory) {
   });
 }
 
-pub fn mcp_stop(state: Arc<AppState>) -> oneshot::Receiver<Result<(), Error>> {
-  let (tx, rx) = oneshot::channel();
-  runtime().spawn(async move {
-    let _ = tx.send(soquel_core::mcp::stop(&state).await);
-  });
-  rx
+pub fn mcp_stop(state: Arc<AppState>, cx: &impl AppContext) -> Task<Result<(), Error>> {
+  bridge(cx, async move { soquel_core::mcp::stop(&state).await })
 }
 
-pub fn mcp_set_port(state: Arc<AppState>, port: u16) -> oneshot::Receiver<Result<(), Error>> {
-  let (tx, rx) = oneshot::channel();
-  runtime().spawn(async move {
-    let _ = tx.send(soquel_core::mcp::set_port(&state, port).await);
-  });
-  rx
+pub fn mcp_set_port(
+  state: Arc<AppState>,
+  port: u16,
+  cx: &impl AppContext,
+) -> Task<Result<(), Error>> {
+  bridge(
+    cx,
+    async move { soquel_core::mcp::set_port(&state, port).await },
+  )
 }
 
-pub fn mcp_regenerate_token(state: Arc<AppState>) -> oneshot::Receiver<Result<String, Error>> {
-  let (tx, rx) = oneshot::channel();
-  runtime().spawn(async move {
-    let _ = tx.send(soquel_core::mcp::regenerate_token(&state).await);
-  });
-  rx
+pub fn mcp_regenerate_token(
+  state: Arc<AppState>,
+  cx: &impl AppContext,
+) -> Task<Result<String, Error>> {
+  bridge(cx, async move {
+    soquel_core::mcp::regenerate_token(&state).await
+  })
 }
 
 pub fn mcp_audit_log(
@@ -339,25 +368,23 @@ pub fn mcp_resolve_approval(state: Arc<AppState>, id: String, answer: ApprovalAn
 
 pub fn mcp_trust_windows(
   state: Arc<AppState>,
-) -> oneshot::Receiver<Vec<soquel_core::mcp::TrustWindowInfo>> {
-  let (tx, rx) = oneshot::channel();
-  runtime().spawn(async move {
-    let _ = tx.send(soquel_core::mcp::trust_windows(&state).await);
-  });
-  rx
+  cx: &impl AppContext,
+) -> Task<Vec<soquel_core::mcp::TrustWindowInfo>> {
+  bridge(
+    cx,
+    async move { soquel_core::mcp::trust_windows(&state).await },
+  )
 }
 
 pub fn mcp_revoke_trust(
   state: Arc<AppState>,
   session: String,
   connection_id: String,
-) -> oneshot::Receiver<()> {
-  let (tx, rx) = oneshot::channel();
-  runtime().spawn(async move {
+  cx: &impl AppContext,
+) -> Task<()> {
+  bridge(cx, async move {
     soquel_core::mcp::revoke_trust(&state, &session, &connection_id).await;
-    let _ = tx.send(());
-  });
-  rx
+  })
 }
 
 /// Sync: reads the installed licence file. Called on the dialog opening and per
@@ -370,14 +397,11 @@ pub fn licence_status(state: &AppState) -> soquel_core::licence::LicenceStatus {
 pub fn licence_install(
   state: Arc<AppState>,
   token: String,
-) -> oneshot::Receiver<Result<soquel_core::licence::LicenceStatus, Error>> {
-  let (tx, rx) = oneshot::channel();
-  runtime().spawn(async move {
-    let result =
-      soquel_core::licence::install(&soquel_core::licence::path(&state.data_dir), &token);
-    let _ = tx.send(result);
-  });
-  rx
+  cx: &impl AppContext,
+) -> Task<Result<soquel_core::licence::LicenceStatus, Error>> {
+  bridge(cx, async move {
+    soquel_core::licence::install(&soquel_core::licence::path(&state.data_dir), &token)
+  })
 }
 
 /// The normal path: the key goes out, a signed file comes back and installs
@@ -385,17 +409,12 @@ pub fn licence_install(
 pub fn licence_activate(
   state: Arc<AppState>,
   key: String,
-) -> oneshot::Receiver<Result<soquel_core::licence::LicenceStatus, Error>> {
-  let (tx, rx) = oneshot::channel();
-  runtime().spawn(async move {
-    let result = async {
-      let token = soquel_core::activation::activate(key.trim()).await?;
-      soquel_core::licence::install(&soquel_core::licence::path(&state.data_dir), &token)
-    }
-    .await;
-    let _ = tx.send(result);
-  });
-  rx
+  cx: &impl AppContext,
+) -> Task<Result<soquel_core::licence::LicenceStatus, Error>> {
+  bridge(cx, async move {
+    let token = soquel_core::activation::activate(key.trim()).await?;
+    soquel_core::licence::install(&soquel_core::licence::path(&state.data_dir), &token)
+  })
 }
 
 /// Logs land under the data dir, whether or not SOQUEL_DATA_DIR is set: one
@@ -412,8 +431,7 @@ const LOG_FILE_NAME: &str = if cfg!(debug_assertions) {
 
 /// The pasteable support block, built in the core. Reads state locks, so off the
 /// UI thread; carries no names, hosts or paths beyond the log's own.
-pub fn diagnostics(state: Arc<AppState>) -> oneshot::Receiver<String> {
-  let (tx, rx) = oneshot::channel();
+pub fn diagnostics(state: Arc<AppState>, cx: &impl AppContext) -> Task<String> {
   let log_path = log_dir(&state)
     .join(LOG_FILE_NAME)
     .with_extension("log")
@@ -424,12 +442,9 @@ pub fn diagnostics(state: Arc<AppState>) -> oneshot::Receiver<String> {
   } else {
     "release"
   };
-  runtime().spawn(async move {
-    let block =
-      soquel_core::diagnostics::block(&state, env!("CARGO_PKG_VERSION"), build, &log_path).await;
-    let _ = tx.send(block);
-  });
-  rx
+  bridge(cx, async move {
+    soquel_core::diagnostics::block(&state, env!("CARGO_PKG_VERSION"), build, &log_path).await
+  })
 }
 
 /// Opens the folder, not the file: someone about to attach a log wants the
@@ -450,17 +465,11 @@ pub fn export_connections(
   path: std::path::PathBuf,
   include_secrets: bool,
   passphrase: Option<String>,
-) -> oneshot::Receiver<Result<soquel_core::transfer::ExportSummary, Error>> {
-  let (tx, rx) = oneshot::channel();
-  runtime().spawn(async move {
-    let _ = tx.send(soquel_core::transfer::export(
-      &state,
-      &path,
-      include_secrets,
-      passphrase.as_deref(),
-    ));
-  });
-  rx
+  cx: &impl AppContext,
+) -> Task<Result<soquel_core::transfer::ExportSummary, Error>> {
+  bridge(cx, async move {
+    soquel_core::transfer::export(&state, &path, include_secrets, passphrase.as_deref())
+  })
 }
 
 /// Off the UI thread: an encrypted file derives an argon2 key to open.
@@ -468,16 +477,11 @@ pub fn preview_import(
   state: Arc<AppState>,
   path: std::path::PathBuf,
   passphrase: Option<String>,
-) -> oneshot::Receiver<Result<soquel_core::transfer::ImportPreview, Error>> {
-  let (tx, rx) = oneshot::channel();
-  runtime().spawn(async move {
-    let _ = tx.send(soquel_core::transfer::preview_file(
-      &state,
-      &path,
-      passphrase.as_deref(),
-    ));
-  });
-  rx
+  cx: &impl AppContext,
+) -> Task<Result<soquel_core::transfer::ImportPreview, Error>> {
+  bridge(cx, async move {
+    soquel_core::transfer::preview_file(&state, &path, passphrase.as_deref())
+  })
 }
 
 pub fn import_connections(
@@ -486,18 +490,11 @@ pub fn import_connections(
   passphrase: Option<String>,
   with_secrets: bool,
   strategy: soquel_core::transfer::DuplicateStrategy,
-) -> oneshot::Receiver<Result<soquel_core::transfer::ImportOutcome, Error>> {
-  let (tx, rx) = oneshot::channel();
-  runtime().spawn(async move {
-    let _ = tx.send(soquel_core::transfer::import_file(
-      &state,
-      &path,
-      passphrase.as_deref(),
-      with_secrets,
-      strategy,
-    ));
-  });
-  rx
+  cx: &impl AppContext,
+) -> Task<Result<soquel_core::transfer::ImportOutcome, Error>> {
+  bridge(cx, async move {
+    soquel_core::transfer::import_file(&state, &path, passphrase.as_deref(), with_secrets, strategy)
+  })
 }
 
 /// Test-only direct connect, bypassing the stores.
@@ -505,53 +502,74 @@ pub fn import_connections(
 pub fn connect_with(
   profile: ConnectionProfile,
   secret: Arc<soquel_core::credentials::Credentials>,
-) -> oneshot::Receiver<Result<Db, Error>> {
-  let (tx, rx) = oneshot::channel();
-  runtime().spawn(async move {
+  cx: &impl AppContext,
+) -> Task<Result<Db, Error>> {
+  bridge(cx, async move {
     let kind = profile.params.kind();
-    let result = soquel_core::connectors::connector_for(kind)
+    soquel_core::connectors::connector_for(kind)
       .connect(&profile, secret, None)
       .await
-      .map(|conn| Db(Arc::from(conn), kind));
-    let _ = tx.send(result);
-  });
-  rx
+      .map(|conn| Db(Arc::from(conn), kind))
+  })
+}
+
+/// Test-only sync variants for setup before the executor runs: blocking the
+/// test thread on a gpui task would deadlock the test scheduler.
+#[cfg(test)]
+pub fn connect_with_blocking(
+  profile: ConnectionProfile,
+  secret: Arc<soquel_core::credentials::Credentials>,
+) -> Result<Db, Error> {
+  runtime().block_on(async move {
+    let kind = profile.params.kind();
+    soquel_core::connectors::connector_for(kind)
+      .connect(&profile, secret, None)
+      .await
+      .map(|conn| Db(Arc::from(conn), kind))
+  })
+}
+
+#[cfg(test)]
+pub fn kv_run_command_blocking(db: &Db, command: String) -> Result<Vec<String>, Error> {
+  let conn = db.0.clone();
+  runtime().block_on(async move {
+    match conn.kv() {
+      Some(kv) => kv.run_command(&command).await,
+      None => Err(no_kv()),
+    }
+  })
 }
 
 pub fn fetch_rows(
   db: &Db,
   request: TableRowsRequest,
-) -> oneshot::Receiver<Result<QueryResult, Error>> {
-  let (tx, rx) = oneshot::channel();
+  cx: &impl AppContext,
+) -> Task<Result<QueryResult, Error>> {
   let conn = db.0.clone();
-  runtime().spawn(async move {
-    let result = match conn.sql() {
+  bridge_abortable(cx, async move {
+    match conn.sql() {
       Some(sql) => sql.table_rows(&request).await,
       None => Err(Error::Unsupported {
         message: "connection has no sql surface".to_string(),
       }),
-    };
-    let _ = tx.send(result);
-  });
-  rx
+    }
+  })
 }
 
 pub fn apply_changes(
   db: &Db,
   changes: soquel_core::connectors::TableChanges,
-) -> oneshot::Receiver<Result<soquel_core::connectors::ApplyResult, Error>> {
-  let (tx, rx) = oneshot::channel();
+  cx: &impl AppContext,
+) -> Task<Result<soquel_core::connectors::ApplyResult, Error>> {
   let conn = db.0.clone();
-  runtime().spawn(async move {
-    let result = match conn.sql() {
+  bridge(cx, async move {
+    match conn.sql() {
       Some(surface) => surface.apply_changes(&changes).await,
       None => Err(Error::Unsupported {
         message: "connection has no sql surface".to_string(),
       }),
-    };
-    let _ = tx.send(result);
-  });
-  rx
+    }
+  })
 }
 
 /// A dedicated client outside the pool: SET and transactions stick,
@@ -559,31 +577,25 @@ pub fn apply_changes(
 #[derive(Clone)]
 pub struct Session(Arc<dyn soquel_core::connectors::SqlSession>);
 
-pub fn open_session(db: &Db) -> oneshot::Receiver<Result<Session, Error>> {
-  let (tx, rx) = oneshot::channel();
+pub fn open_session(db: &Db, cx: &impl AppContext) -> Task<Result<Session, Error>> {
   let conn = db.0.clone();
-  runtime().spawn(async move {
-    let result = match conn.sql() {
+  bridge(cx, async move {
+    match conn.sql() {
       Some(surface) => surface.open_session().await.map(|s| Session(Arc::from(s))),
       None => Err(Error::Unsupported {
         message: "connection has no sql surface".to_string(),
       }),
-    };
-    let _ = tx.send(result);
-  });
-  rx
+    }
+  })
 }
 
 pub fn run_session_query(
   session: &Session,
   sql: String,
-) -> oneshot::Receiver<Result<QueryResult, Error>> {
-  let (tx, rx) = oneshot::channel();
+  cx: &impl AppContext,
+) -> Task<Result<QueryResult, Error>> {
   let session = session.0.clone();
-  runtime().spawn(async move {
-    let _ = tx.send(session.run_query(&sql).await);
-  });
-  rx
+  bridge(cx, async move { session.run_query(&sql).await })
 }
 
 pub fn cancel_session(session: &Session) {
@@ -605,16 +617,16 @@ pub fn export_rows(
   request: TableRowsRequest,
   format: soquel_core::export::ExportFormat,
   path: String,
+  cx: &impl AppContext,
 ) -> (
   futures::channel::mpsc::UnboundedReceiver<u64>,
-  oneshot::Receiver<Result<soquel_core::connectors::StreamSummary, Error>>,
+  Task<Result<soquel_core::connectors::StreamSummary, Error>>,
 ) {
   let (progress_tx, progress_rx) = futures::channel::mpsc::unbounded();
-  let (tx, rx) = oneshot::channel();
   let conn = db.0.clone();
   let kind = db.1;
-  runtime().spawn(async move {
-    let result = match conn.sql() {
+  let task = bridge(cx, async move {
+    match conn.sql() {
       Some(surface) => {
         soquel_core::export::run_export(surface, &request, format, kind, &path, move |rows| {
           let _ = progress_tx.unbounded_send(rows);
@@ -624,44 +636,38 @@ pub fn export_rows(
       None => Err(Error::Unsupported {
         message: "connection has no sql surface".to_string(),
       }),
-    };
-    let _ = tx.send(result);
+    }
   });
-  (progress_rx, rx)
+  (progress_rx, task)
 }
 
 pub fn table_ddl(
   db: &Db,
   schema: String,
   table: String,
-) -> oneshot::Receiver<Result<String, Error>> {
-  let (tx, rx) = oneshot::channel();
+  cx: &impl AppContext,
+) -> Task<Result<String, Error>> {
   let conn = db.0.clone();
-  runtime().spawn(async move {
-    let result = match conn.introspect() {
+  bridge_abortable(cx, async move {
+    match conn.introspect() {
       Some(introspect) => introspect.table_ddl(&schema, &table).await,
       None => Err(Error::Unsupported {
         message: "connection has no introspection surface".to_string(),
       }),
-    };
-    let _ = tx.send(result);
-  });
-  rx
+    }
+  })
 }
 
-pub fn schema_snapshot(db: &Db) -> oneshot::Receiver<Result<SchemaSnapshot, Error>> {
-  let (tx, rx) = oneshot::channel();
+pub fn schema_snapshot(db: &Db, cx: &impl AppContext) -> Task<Result<SchemaSnapshot, Error>> {
   let conn = db.0.clone();
-  runtime().spawn(async move {
-    let result = match conn.introspect() {
+  bridge_abortable(cx, async move {
+    match conn.introspect() {
       Some(introspect) => introspect.schema_snapshot().await,
       None => Err(Error::Unsupported {
         message: "connection has no introspection surface".to_string(),
       }),
-    };
-    let _ = tx.send(result);
-  });
-  rx
+    }
+  })
 }
 
 fn no_kv() -> Error {
@@ -675,99 +681,89 @@ pub fn kv_scan(
   pattern: String,
   cursor: Option<String>,
   count: u32,
-) -> oneshot::Receiver<Result<KeyScanPage, Error>> {
-  let (tx, rx) = oneshot::channel();
+  cx: &impl AppContext,
+) -> Task<Result<KeyScanPage, Error>> {
   let conn = db.0.clone();
-  runtime().spawn(async move {
-    let result = match conn.kv() {
+  bridge_abortable(cx, async move {
+    match conn.kv() {
       Some(kv) => kv.scan_keys(&pattern, cursor.as_deref(), count).await,
       None => Err(no_kv()),
-    };
-    let _ = tx.send(result);
-  });
-  rx
+    }
+  })
 }
 
-pub fn kv_key_detail(db: &Db, key: String) -> oneshot::Receiver<Result<KeyDetail, Error>> {
-  let (tx, rx) = oneshot::channel();
+pub fn kv_key_detail(db: &Db, key: String, cx: &impl AppContext) -> Task<Result<KeyDetail, Error>> {
   let conn = db.0.clone();
-  runtime().spawn(async move {
-    let result = match conn.kv() {
+  bridge_abortable(cx, async move {
+    match conn.kv() {
       Some(kv) => kv.key_detail(&key).await,
       None => Err(no_kv()),
-    };
-    let _ = tx.send(result);
-  });
-  rx
+    }
+  })
 }
 
-pub fn kv_databases(db: &Db) -> oneshot::Receiver<Result<KvDatabases, Error>> {
-  let (tx, rx) = oneshot::channel();
+pub fn kv_databases(db: &Db, cx: &impl AppContext) -> Task<Result<KvDatabases, Error>> {
   let conn = db.0.clone();
-  runtime().spawn(async move {
-    let result = match conn.kv() {
+  bridge_abortable(cx, async move {
+    match conn.kv() {
       Some(kv) => kv.databases().await,
       None => Err(no_kv()),
-    };
-    let _ = tx.send(result);
-  });
-  rx
+    }
+  })
 }
 
-pub fn kv_run_command(db: &Db, command: String) -> oneshot::Receiver<Result<Vec<String>, Error>> {
-  let (tx, rx) = oneshot::channel();
+pub fn kv_run_command(
+  db: &Db,
+  command: String,
+  cx: &impl AppContext,
+) -> Task<Result<Vec<String>, Error>> {
   let conn = db.0.clone();
-  runtime().spawn(async move {
-    let result = match conn.kv() {
+  bridge(cx, async move {
+    match conn.kv() {
       Some(kv) => kv.run_command(&command).await,
       None => Err(no_kv()),
-    };
-    let _ = tx.send(result);
-  });
-  rx
+    }
+  })
 }
 
-pub fn kv_set_string(db: &Db, key: String, value: String) -> oneshot::Receiver<Result<(), Error>> {
-  let (tx, rx) = oneshot::channel();
+pub fn kv_set_string(
+  db: &Db,
+  key: String,
+  value: String,
+  cx: &impl AppContext,
+) -> Task<Result<(), Error>> {
   let conn = db.0.clone();
-  runtime().spawn(async move {
-    let result = match conn.kv() {
+  bridge(cx, async move {
+    match conn.kv() {
       Some(kv) => kv.set_string(&key, &value).await,
       None => Err(no_kv()),
-    };
-    let _ = tx.send(result);
-  });
-  rx
+    }
+  })
 }
 
-pub fn kv_delete_key(db: &Db, key: String) -> oneshot::Receiver<Result<(), Error>> {
-  let (tx, rx) = oneshot::channel();
+pub fn kv_delete_key(db: &Db, key: String, cx: &impl AppContext) -> Task<Result<(), Error>> {
   let conn = db.0.clone();
-  runtime().spawn(async move {
-    let result = match conn.kv() {
+  bridge(cx, async move {
+    match conn.kv() {
       Some(kv) => kv.delete_key(&key).await,
       None => Err(no_kv()),
-    };
-    let _ = tx.send(result);
-  });
-  rx
+    }
+  })
 }
 
 pub fn kv_set_ttl(
   db: &Db,
   key: String,
   ttl_ms: Option<f64>,
-) -> oneshot::Receiver<Result<(), Error>> {
-  let (tx, rx) = oneshot::channel();
+  cx: &impl AppContext,
+) -> Task<Result<(), Error>> {
   let conn = db.0.clone();
-  runtime().spawn(async move {
-    let result = match conn.kv() {
+  bridge(cx, async move {
+    match conn.kv() {
       Some(kv) => kv.set_ttl(&key, ttl_ms).await,
       None => Err(no_kv()),
-    };
-    let _ = tx.send(result);
-  });
-  rx
+    }
+  })
 }
 
 /// Switching db is a reconnect (a SELECT reverts on the multiplexed socket):
@@ -776,19 +772,14 @@ pub fn kv_select_db(
   state: Arc<AppState>,
   id: String,
   db: u32,
-) -> oneshot::Receiver<Result<Db, Error>> {
-  let (tx, rx) = oneshot::channel();
-  runtime().spawn(async move {
-    let result = async {
-      state.select_kv_db(&id, db).await?;
-      let kind = state.profiles.lock().unwrap().get(&id)?.params.kind();
-      let connection = soquel_core::ops::active(&state, &id).await?;
-      Ok(Db(connection, kind))
-    }
-    .await;
-    let _ = tx.send(result);
-  });
-  rx
+  cx: &impl AppContext,
+) -> Task<Result<Db, Error>> {
+  bridge(cx, async move {
+    state.select_kv_db(&id, db).await?;
+    let kind = state.profiles.lock().unwrap().get(&id)?.params.kind();
+    let connection = soquel_core::ops::active(&state, &id).await?;
+    Ok(Db(connection, kind))
+  })
 }
 
 fn no_doc() -> Error {
@@ -797,46 +788,42 @@ fn no_doc() -> Error {
   }
 }
 
-pub fn doc_databases(db: &Db) -> oneshot::Receiver<Result<Vec<DocDatabase>, Error>> {
-  let (tx, rx) = oneshot::channel();
+pub fn doc_databases(db: &Db, cx: &impl AppContext) -> Task<Result<Vec<DocDatabase>, Error>> {
   let conn = db.0.clone();
-  runtime().spawn(async move {
-    let result = match conn.doc() {
+  bridge_abortable(cx, async move {
+    match conn.doc() {
       Some(doc) => doc.databases().await,
       None => Err(no_doc()),
-    };
-    let _ = tx.send(result);
-  });
-  rx
+    }
+  })
 }
 
 pub fn doc_collections(
   db: &Db,
   database: String,
-) -> oneshot::Receiver<Result<Vec<DocCollection>, Error>> {
-  let (tx, rx) = oneshot::channel();
+  cx: &impl AppContext,
+) -> Task<Result<Vec<DocCollection>, Error>> {
   let conn = db.0.clone();
-  runtime().spawn(async move {
-    let result = match conn.doc() {
+  bridge_abortable(cx, async move {
+    match conn.doc() {
       Some(doc) => doc.collections(&database).await,
       None => Err(no_doc()),
-    };
-    let _ = tx.send(result);
-  });
-  rx
+    }
+  })
 }
 
-pub fn doc_find(db: &Db, request: DocFindRequest) -> oneshot::Receiver<Result<DocPage, Error>> {
-  let (tx, rx) = oneshot::channel();
+pub fn doc_find(
+  db: &Db,
+  request: DocFindRequest,
+  cx: &impl AppContext,
+) -> Task<Result<DocPage, Error>> {
   let conn = db.0.clone();
-  runtime().spawn(async move {
-    let result = match conn.doc() {
+  bridge_abortable(cx, async move {
+    match conn.doc() {
       Some(doc) => doc.find_docs(&request).await,
       None => Err(no_doc()),
-    };
-    let _ = tx.send(result);
-  });
-  rx
+    }
+  })
 }
 
 pub fn doc_detail(
@@ -844,34 +831,30 @@ pub fn doc_detail(
   database: String,
   collection: String,
   id: String,
-) -> oneshot::Receiver<Result<DocDetail, Error>> {
-  let (tx, rx) = oneshot::channel();
+  cx: &impl AppContext,
+) -> Task<Result<DocDetail, Error>> {
   let conn = db.0.clone();
-  runtime().spawn(async move {
-    let result = match conn.doc() {
+  bridge_abortable(cx, async move {
+    match conn.doc() {
       Some(doc) => doc.doc_detail(&database, &collection, &id).await,
       None => Err(no_doc()),
-    };
-    let _ = tx.send(result);
-  });
-  rx
+    }
+  })
 }
 
 pub fn doc_indexes(
   db: &Db,
   database: String,
   collection: String,
-) -> oneshot::Receiver<Result<Vec<IndexInfo>, Error>> {
-  let (tx, rx) = oneshot::channel();
+  cx: &impl AppContext,
+) -> Task<Result<Vec<IndexInfo>, Error>> {
   let conn = db.0.clone();
-  runtime().spawn(async move {
-    let result = match conn.doc() {
+  bridge_abortable(cx, async move {
+    match conn.doc() {
       Some(doc) => doc.indexes(&database, &collection).await,
       None => Err(no_doc()),
-    };
-    let _ = tx.send(result);
-  });
-  rx
+    }
+  })
 }
 
 pub fn doc_count(
@@ -879,21 +862,19 @@ pub fn doc_count(
   database: String,
   collection: String,
   filter: Option<String>,
-) -> oneshot::Receiver<Result<DocCount, Error>> {
-  let (tx, rx) = oneshot::channel();
+  cx: &impl AppContext,
+) -> Task<Result<DocCount, Error>> {
   let conn = db.0.clone();
-  runtime().spawn(async move {
-    let result = match conn.doc() {
+  bridge_abortable(cx, async move {
+    match conn.doc() {
       Some(doc) => {
         doc
           .count_docs(&database, &collection, filter.as_deref())
           .await
       }
       None => Err(no_doc()),
-    };
-    let _ = tx.send(result);
-  });
-  rx
+    }
+  })
 }
 
 pub fn doc_run_query(
@@ -901,17 +882,15 @@ pub fn doc_run_query(
   database: String,
   collection: String,
   source: String,
-) -> oneshot::Receiver<Result<DocQueryResult, Error>> {
-  let (tx, rx) = oneshot::channel();
+  cx: &impl AppContext,
+) -> Task<Result<DocQueryResult, Error>> {
   let conn = db.0.clone();
-  runtime().spawn(async move {
-    let result = match conn.doc() {
+  bridge(cx, async move {
+    match conn.doc() {
       Some(doc) => doc.run_query(&database, &collection, &source).await,
       None => Err(no_doc()),
-    };
-    let _ = tx.send(result);
-  });
-  rx
+    }
+  })
 }
 
 pub fn doc_replace(
@@ -920,21 +899,19 @@ pub fn doc_replace(
   collection: String,
   id: String,
   doc_json: String,
-) -> oneshot::Receiver<Result<(), Error>> {
-  let (tx, rx) = oneshot::channel();
+  cx: &impl AppContext,
+) -> Task<Result<(), Error>> {
   let conn = db.0.clone();
-  runtime().spawn(async move {
-    let result = match conn.doc() {
+  bridge(cx, async move {
+    match conn.doc() {
       Some(doc) => {
         doc
           .replace_doc(&database, &collection, &id, &doc_json)
           .await
       }
       None => Err(no_doc()),
-    };
-    let _ = tx.send(result);
-  });
-  rx
+    }
+  })
 }
 
 pub fn doc_delete(
@@ -942,17 +919,15 @@ pub fn doc_delete(
   database: String,
   collection: String,
   id: String,
-) -> oneshot::Receiver<Result<(), Error>> {
-  let (tx, rx) = oneshot::channel();
+  cx: &impl AppContext,
+) -> Task<Result<(), Error>> {
   let conn = db.0.clone();
-  runtime().spawn(async move {
-    let result = match conn.doc() {
+  bridge(cx, async move {
+    match conn.doc() {
       Some(doc) => doc.delete_doc(&database, &collection, &id).await,
       None => Err(no_doc()),
-    };
-    let _ = tx.send(result);
-  });
-  rx
+    }
+  })
 }
 
 pub fn page_request(schema: &str, table: &str, offset: u32, limit: u32) -> TableRowsRequest {
@@ -1021,8 +996,9 @@ mod tests {
 
   /// The whole grid path against a real postgres: browse, stage, apply, reread.
   /// Skipped silently without SOQUEL_TEST_PG, like the core suites.
-  #[tokio::test]
-  async fn integration_flow_browse_stage_apply() {
+  #[gpui::test]
+  async fn integration_flow_browse_stage_apply(cx: &mut gpui::TestAppContext) {
+    cx.executor().allow_parking();
     let Ok(url) = std::env::var("SOQUEL_TEST_PG") else {
       return;
     };
@@ -1044,26 +1020,25 @@ mod tests {
         tunnel_id: None,
       }),
     };
-    let db = connect_with(profile, Credentials::fixed(Some(pass)))
+    let db = connect_with(profile, Credentials::fixed(Some(pass)), cx)
       .await
-      .expect("channel")
       .expect("connects to the compose postgres");
 
     let table = format!("gpui_flow_{}", std::process::id());
-    let session = open_session(&db).await.expect("channel").expect("session");
+    let session = open_session(&db, cx).await.expect("session");
     run_session_query(
       &session,
       format!("create table {table} (id int primary key, name text)"),
+      cx,
     )
     .await
-    .expect("channel")
     .expect("create");
     run_session_query(
       &session,
       format!("insert into {table} values (1, 'Ada'), (2, 'Alan')"),
+      cx,
     )
     .await
-    .expect("channel")
     .expect("insert");
 
     // Browse the first page like the grid does; an update moves the row in the
@@ -1076,10 +1051,7 @@ mod tests {
       });
       request
     };
-    let page = fetch_rows(&db, sorted(0))
-      .await
-      .expect("channel")
-      .expect("fetch");
+    let page = fetch_rows(&db, sorted(0), cx).await.expect("fetch");
     let statement = &page.statements[0];
     assert_eq!(statement.rows.len(), 2);
 
@@ -1102,29 +1074,22 @@ mod tests {
     assert_eq!(changes.updates.len(), 1);
     assert_eq!(changes.updates[0].key[0].column, "id");
     assert_eq!(changes.updates[0].key[0].value, Some("1".to_string()));
-    let applied = apply_changes(&db, changes)
-      .await
-      .expect("channel")
-      .expect("apply");
+    let applied = apply_changes(&db, changes, cx).await.expect("apply");
     assert_eq!(applied.updated, 1);
 
     // The reread sees the committed value.
-    let page = fetch_rows(&db, sorted(0))
-      .await
-      .expect("channel")
-      .expect("refetch");
+    let page = fetch_rows(&db, sorted(0), cx).await.expect("refetch");
     assert_eq!(page.statements[0].rows[0][1], Some("Ada II".to_string()));
 
-    let _ = run_session_query(&session, format!("drop table {table}"))
-      .await
-      .expect("channel");
+    let _ = run_session_query(&session, format!("drop table {table}"), cx).await;
     close_session(session);
   }
 
   /// The same grid path against a real mysql/mariadb; the schema is the database.
   /// Skipped silently without SOQUEL_TEST_MYSQL.
-  #[tokio::test]
-  async fn integration_flow_mysql() {
+  #[gpui::test]
+  async fn integration_flow_mysql(cx: &mut gpui::TestAppContext) {
+    cx.executor().allow_parking();
     let Ok(addr) = std::env::var("SOQUEL_TEST_MYSQL") else {
       return;
     };
@@ -1149,26 +1114,25 @@ mod tests {
         tunnel_id: None,
       }),
     };
-    let db = connect_with(profile, Credentials::fixed(Some("soquel".to_string())))
+    let db = connect_with(profile, Credentials::fixed(Some("soquel".to_string())), cx)
       .await
-      .expect("channel")
       .expect("connects to the compose mysql");
 
     let table = format!("gpui_flow_{}", std::process::id());
-    let session = open_session(&db).await.expect("channel").expect("session");
+    let session = open_session(&db, cx).await.expect("session");
     run_session_query(
       &session,
       format!("create table {table} (id int primary key, name text)"),
+      cx,
     )
     .await
-    .expect("channel")
     .expect("create");
     run_session_query(
       &session,
       format!("insert into {table} values (1, 'Ada'), (2, 'Alan')"),
+      cx,
     )
     .await
-    .expect("channel")
     .expect("insert");
 
     let sorted = |offset| {
@@ -1179,10 +1143,7 @@ mod tests {
       });
       request
     };
-    let page = fetch_rows(&db, sorted(0))
-      .await
-      .expect("channel")
-      .expect("fetch");
+    let page = fetch_rows(&db, sorted(0), cx).await.expect("fetch");
     let statement = &page.statements[0];
     assert_eq!(statement.rows.len(), 2);
 
@@ -1201,28 +1162,21 @@ mod tests {
       database,
       &table,
     );
-    let applied = apply_changes(&db, changes)
-      .await
-      .expect("channel")
-      .expect("apply");
+    let applied = apply_changes(&db, changes, cx).await.expect("apply");
     assert_eq!(applied.updated, 1);
 
-    let page = fetch_rows(&db, sorted(0))
-      .await
-      .expect("channel")
-      .expect("refetch");
+    let page = fetch_rows(&db, sorted(0), cx).await.expect("refetch");
     assert_eq!(page.statements[0].rows[0][1], Some("Ada II".to_string()));
 
-    let _ = run_session_query(&session, format!("drop table {table}"))
-      .await
-      .expect("channel");
+    let _ = run_session_query(&session, format!("drop table {table}"), cx).await;
     close_session(session);
   }
 
   /// The same grid path against a fresh sqlite file (no server). Gated on
   /// SOQUEL_TEST_SQLITE so it runs in the integration leg, not the unit suite.
-  #[tokio::test]
-  async fn integration_flow_sqlite() {
+  #[gpui::test]
+  async fn integration_flow_sqlite(cx: &mut gpui::TestAppContext) {
+    cx.executor().allow_parking();
     if std::env::var("SOQUEL_TEST_SQLITE").is_err() {
       return;
     }
@@ -1242,25 +1196,24 @@ mod tests {
         path: path.to_string_lossy().into_owned(),
       },
     };
-    let db = connect_with(profile, Credentials::fixed(None))
+    let db = connect_with(profile, Credentials::fixed(None), cx)
       .await
-      .expect("channel")
       .expect("opens the sqlite file");
 
-    let session = open_session(&db).await.expect("channel").expect("session");
+    let session = open_session(&db, cx).await.expect("session");
     run_session_query(
       &session,
       "create table t (id integer primary key, name text)".to_string(),
+      cx,
     )
     .await
-    .expect("channel")
     .expect("create");
     run_session_query(
       &session,
       "insert into t values (1, 'Ada'), (2, 'Alan')".to_string(),
+      cx,
     )
     .await
-    .expect("channel")
     .expect("insert");
 
     // sqlite's schema is "main".
@@ -1272,10 +1225,7 @@ mod tests {
       });
       request
     };
-    let page = fetch_rows(&db, sorted(0))
-      .await
-      .expect("channel")
-      .expect("fetch");
+    let page = fetch_rows(&db, sorted(0), cx).await.expect("fetch");
     let statement = &page.statements[0];
     assert_eq!(statement.rows.len(), 2);
 
@@ -1294,24 +1244,19 @@ mod tests {
       "main",
       "t",
     );
-    let applied = apply_changes(&db, changes)
-      .await
-      .expect("channel")
-      .expect("apply");
+    let applied = apply_changes(&db, changes, cx).await.expect("apply");
     assert_eq!(applied.updated, 1);
 
-    let page = fetch_rows(&db, sorted(0))
-      .await
-      .expect("channel")
-      .expect("refetch");
+    let page = fetch_rows(&db, sorted(0), cx).await.expect("refetch");
     assert_eq!(page.statements[0].rows[0][1], Some("Ada II".to_string()));
     close_session(session);
   }
 
   /// The tunnel round end to end: TOFU refusal, the trust the dialog writes,
   /// then a query through the forward. Skipped silently without SOQUEL_TEST_SSH.
-  #[tokio::test]
-  async fn integration_flow_tunnel_trust_and_connect() {
+  #[gpui::test]
+  async fn integration_flow_tunnel_trust_and_connect(cx: &mut gpui::TestAppContext) {
+    cx.executor().allow_parking();
     let Ok(ssh) = std::env::var("SOQUEL_TEST_SSH") else {
       return;
     };
@@ -1364,9 +1309,7 @@ mod tests {
     let profile = soquel_core::ops::create_connection(&state, &input).unwrap();
 
     // First contact: the connect is refused with the fields the dialog shows.
-    let refused = connect_id(state.clone(), profile.id.clone())
-      .await
-      .expect("channel");
+    let refused = connect_id(state.clone(), profile.id.clone(), cx).await;
     let Err(soquel_core::error::Error::HostKeyUntrusted {
       host,
       port,
@@ -1383,25 +1326,28 @@ mod tests {
 
     // The exact call the trust button makes, then the same retry.
     trust_host_key(&state, &host, port, &key).unwrap();
-    let db = connect_id(state.clone(), profile.id.clone())
+    let db = connect_id(state.clone(), profile.id.clone(), cx)
       .await
-      .expect("channel")
       .expect("connects through the tunnel once trusted");
-    let session = open_session(&db).await.expect("channel").expect("session");
-    let result = run_session_query(&session, "select 1".to_string())
+    let session = open_session(&db, cx).await.expect("session");
+    let result = run_session_query(&session, "select 1".to_string(), cx)
       .await
-      .expect("channel")
       .expect("select through the forward");
     assert_eq!(result.statements[0].rows.len(), 1);
     close_session(session);
-    soquel_core::ops::disconnect(&state, &profile.id)
-      .await
-      .unwrap();
+    // Direct ops need the runtime's reactor: route them through the bridge.
+    bridge(cx, {
+      let state = state.clone();
+      let id = profile.id.clone();
+      async move { soquel_core::ops::disconnect(&state, &id).await }
+    })
+    .await
+    .unwrap();
 
     // The form's Test connection on the stored tunnel now passes.
-    soquel_core::ops::test_tunnel(
-      &state,
-      &soquel_core::tunnels::TunnelInput {
+    test_tunnel(
+      state.clone(),
+      soquel_core::tunnels::TunnelInput {
         name: tunnel.name.clone(),
         host: tunnel.host.clone(),
         port: tunnel.port,
@@ -1410,7 +1356,8 @@ mod tests {
         credential: tunnel.credential.clone(),
         secret: None,
       },
-      Some(&tunnel.id),
+      Some(tunnel.id.clone()),
+      cx,
     )
     .await
     .expect("Tunnel OK");
@@ -1419,8 +1366,9 @@ mod tests {
   /// The key browser end to end against a live redis: seed via the console,
   /// scan, read a value per type, isolate a db, ttl + delete. Skipped without
   /// SOQUEL_TEST_REDIS.
-  #[tokio::test]
-  async fn integration_flow_redis_browse() {
+  #[gpui::test]
+  async fn integration_flow_redis_browse(cx: &mut gpui::TestAppContext) {
+    cx.executor().allow_parking();
     use soquel_core::connectors::KeyValue;
     use soquel_core::credentials::Credentials;
     use soquel_core::profiles::RedisParams;
@@ -1445,13 +1393,16 @@ mod tests {
         tunnel_id: None,
       }),
     };
-    let db0 = connect_with(profile(0), Credentials::fixed(Some("soquel".to_string())))
-      .await
-      .expect("channel")
-      .expect("connects to the compose redis");
+    let db0 = connect_with(
+      profile(0),
+      Credentials::fixed(Some("soquel".to_string())),
+      cx,
+    )
+    .await
+    .expect("connects to the compose redis");
 
     let prefix = format!("gpui_kv_{}", std::process::id());
-    let cmd = |db: &Db, line: String| kv_run_command(db, line);
+    let cmd = |db: &Db, line: String| kv_run_command(db, line, cx);
     for line in [
       format!("DEL {prefix}:str {prefix}:list {prefix}:hash"),
       format!("SET {prefix}:str hello"),
@@ -1459,28 +1410,25 @@ mod tests {
       format!("HSET {prefix}:hash field1 v1 field2 v2"),
       format!("EXPIRE {prefix}:str 7200"),
     ] {
-      cmd(&db0, line).await.expect("channel").expect("seed");
+      cmd(&db0, line).await.expect("seed");
     }
 
     // The contains-search reaches all three seeded keys.
-    let page = kv_scan(&db0, format!("*{prefix}*"), None, 500)
+    let page = kv_scan(&db0, format!("*{prefix}*"), None, 500, cx)
       .await
-      .expect("channel")
       .expect("scan");
     let names: Vec<&str> = page.keys.iter().map(|k| k.key.as_str()).collect();
     assert!(names.contains(&format!("{prefix}:str").as_str()));
     assert!(names.contains(&format!("{prefix}:hash").as_str()));
 
-    let str_detail = kv_key_detail(&db0, format!("{prefix}:str"))
+    let str_detail = kv_key_detail(&db0, format!("{prefix}:str"), cx)
       .await
-      .expect("channel")
       .expect("detail");
     assert!(matches!(&str_detail.value, KeyValue::String { value } if value == "hello"));
     assert!(str_detail.ttl_ms.is_some());
 
-    let hash = kv_key_detail(&db0, format!("{prefix}:hash"))
+    let hash = kv_key_detail(&db0, format!("{prefix}:hash"), cx)
       .await
-      .expect("channel")
       .expect("detail");
     let KeyValue::Hash { entries } = &hash.value else {
       panic!("hash value");
@@ -1489,23 +1437,18 @@ mod tests {
 
     // ttl clear + delete roundtrip (db isolation + select are covered by the
     // core suite, which owns the AppState the reconnect needs).
-    kv_set_ttl(&db0, format!("{prefix}:str"), None)
+    kv_set_ttl(&db0, format!("{prefix}:str"), None, cx)
       .await
-      .expect("channel")
       .expect("persist");
-    let persisted = kv_key_detail(&db0, format!("{prefix}:str"))
+    let persisted = kv_key_detail(&db0, format!("{prefix}:str"), cx)
       .await
-      .expect("channel")
       .expect("detail");
     assert!(persisted.ttl_ms.is_none());
 
-    kv_delete_key(&db0, format!("{prefix}:str"))
+    kv_delete_key(&db0, format!("{prefix}:str"), cx)
       .await
-      .expect("channel")
       .expect("delete");
-    let gone = kv_key_detail(&db0, format!("{prefix}:str"))
-      .await
-      .expect("channel");
+    let gone = kv_key_detail(&db0, format!("{prefix}:str"), cx).await;
     assert!(gone.is_err(), "the deleted key is gone");
 
     // Cleanup.
@@ -1516,8 +1459,9 @@ mod tests {
 
   /// The document browser end to end against a live mongo, reading the
   /// compose-seeded `soquel_e2e`. Skipped without SOQUEL_TEST_MONGO.
-  #[tokio::test]
-  async fn integration_flow_mongo_browse() {
+  #[gpui::test]
+  async fn integration_flow_mongo_browse(cx: &mut gpui::TestAppContext) {
+    cx.executor().allow_parking();
     use soquel_core::connectors::DocFindRequest;
     use soquel_core::credentials::Credentials;
     use soquel_core::profiles::MongoParams;
@@ -1543,29 +1487,23 @@ mod tests {
         tunnel_id: None,
       }),
     };
-    let db = connect_with(profile, Credentials::fixed(Some("soquel".to_string())))
+    let db = connect_with(profile, Credentials::fixed(Some("soquel".to_string())), cx)
       .await
-      .expect("channel")
       .expect("connects to the compose mongo");
 
     let e2e = "soquel_e2e".to_string();
-    let databases = doc_databases(&db)
-      .await
-      .expect("channel")
-      .expect("databases");
+    let databases = doc_databases(&db, cx).await.expect("databases");
     assert!(databases.iter().any(|d| d.name == e2e));
 
-    let collections = doc_collections(&db, e2e.clone())
+    let collections = doc_collections(&db, e2e.clone(), cx)
       .await
-      .expect("channel")
       .expect("collections");
     assert!(collections.iter().any(|c| c.name == "users"));
 
     // The seed puts 100 of 200 users on the "pro" plan.
     let filter = Some("{\"plan\":\"pro\"}".to_string());
-    let count = doc_count(&db, e2e.clone(), "users".to_string(), filter.clone())
+    let count = doc_count(&db, e2e.clone(), "users".to_string(), filter.clone(), cx)
       .await
-      .expect("channel")
       .expect("count");
     assert!(count.exact && count.count == 100.0);
 
@@ -1579,21 +1517,19 @@ mod tests {
         limit: 100,
         cursor: None,
       },
+      cx,
     )
     .await
-    .expect("channel")
     .expect("find");
     assert_eq!(page.docs.len(), 100);
     let id = page.docs[0].id.clone().expect("a user has an _id");
-    let detail = doc_detail(&db, e2e.clone(), "users".to_string(), id)
+    let detail = doc_detail(&db, e2e.clone(), "users".to_string(), id, cx)
       .await
-      .expect("channel")
       .expect("detail");
     assert!(detail.relaxed.contains("email"));
 
-    let indexes = doc_indexes(&db, e2e.clone(), "users".to_string())
+    let indexes = doc_indexes(&db, e2e.clone(), "users".to_string(), cx)
       .await
-      .expect("channel")
       .expect("indexes");
     assert!(indexes.iter().any(|i| i.name == "email_1" && i.unique));
 
@@ -1603,9 +1539,9 @@ mod tests {
       e2e.clone(),
       "users".to_string(),
       "[{\"$group\":{\"_id\":\"$plan\",\"n\":{\"$sum\":1}}}]".to_string(),
+      cx,
     )
     .await
-    .expect("channel")
     .expect("aggregate");
     assert_eq!(grouped.docs.len(), 2);
     let blocked = doc_run_query(
@@ -1613,9 +1549,9 @@ mod tests {
       e2e.clone(),
       "users".to_string(),
       "[{\"$out\":\"evil\"}]".to_string(),
+      cx,
     )
-    .await
-    .expect("channel");
+    .await;
     assert!(blocked.is_err(), "$out is a write stage");
 
     // Replace + delete a disposable doc (the seed keeps 50, reseeds on restart).
@@ -1629,9 +1565,9 @@ mod tests {
         limit: 1,
         cursor: None,
       },
+      cx,
     )
     .await
-    .expect("channel")
     .expect("disposable");
     let entry = &disposable.docs[0];
     let doc_id = entry.id.clone().expect("string _id");
@@ -1641,17 +1577,20 @@ mod tests {
       "disposable".to_string(),
       doc_id.clone(),
       format!("{{\"_id\": {doc_id}, \"note\": \"replaced by gpui\"}}"),
+      cx,
     )
     .await
-    .expect("channel")
     .expect("replace");
-    doc_delete(&db, e2e.clone(), "disposable".to_string(), doc_id.clone())
-      .await
-      .expect("channel")
-      .expect("delete");
-    let gone = doc_detail(&db, e2e, "disposable".to_string(), doc_id)
-      .await
-      .expect("channel");
+    doc_delete(
+      &db,
+      e2e.clone(),
+      "disposable".to_string(),
+      doc_id.clone(),
+      cx,
+    )
+    .await
+    .expect("delete");
+    let gone = doc_detail(&db, e2e, "disposable".to_string(), doc_id, cx).await;
     assert!(gone.is_err(), "the deleted doc is gone");
   }
 }

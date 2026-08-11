@@ -293,17 +293,17 @@ impl RowsDelegate {
     self.eof = false;
     self.staged.clear();
     self.editing = None;
-    let rx = core::fetch_rows(&db, request);
+    let task = core::fetch_rows(&db, request, cx);
 
     self._load_task = cx.spawn(async move |view, cx| {
-      let result = rx.await;
+      let result = task.await;
       cx.update(|cx| {
         let _ = view.update(cx, |view, cx| {
           {
             let delegate = view.delegate_mut();
             delegate.loading = false;
             match result {
-              Ok(Ok(result)) => {
+              Ok(result) => {
                 if let Some(statement) = result.statements.into_iter().next() {
                   delegate.eof = (statement.rows.len() as u32) < PAGE_SIZE;
                   delegate.columns = statement.columns;
@@ -316,13 +316,9 @@ impl RowsDelegate {
                 )
                 .into();
               }
-              Ok(Err(error)) => {
+              Err(error) => {
                 delegate.eof = true;
                 delegate.status = format!("error: {error}").into();
-              }
-              Err(_) => {
-                delegate.eof = true;
-                delegate.status = "error: fetch canceled".into();
               }
             }
           }
@@ -433,16 +429,16 @@ impl TableDelegate for RowsDelegate {
       (schema.clone(), name.clone())
     };
     self.loading = true;
-    let rx = core::fetch_rows(&db, request);
+    let task = core::fetch_rows(&db, request, cx);
 
     self._load_task = cx.spawn(async move |view, cx| {
-      let result = rx.await;
+      let result = task.await;
       cx.update(|cx| {
         let _ = view.update(cx, |view, cx| {
           let delegate = view.delegate_mut();
           delegate.loading = false;
           match result {
-            Ok(Ok(result)) => {
+            Ok(result) => {
               if let Some(statement) = result.statements.into_iter().next() {
                 delegate.eof = (statement.rows.len() as u32) < PAGE_SIZE;
                 delegate.rows.extend(statement.rows);
@@ -452,13 +448,9 @@ impl TableDelegate for RowsDelegate {
               delegate.status =
                 format!("{schema}.{name} - {} rows loaded", delegate.rows.len()).into();
             }
-            Ok(Err(error)) => {
+            Err(error) => {
               delegate.eof = true;
               delegate.status = format!("error: {error}").into();
-            }
-            Err(_) => {
-              delegate.eof = true;
-              delegate.status = "error: fetch canceled".into();
             }
           }
           cx.notify();

@@ -129,8 +129,8 @@ impl LicenceView {
     if key.is_empty() || self.busy {
       return;
     }
-    let rx = core::licence_activate(self.state.clone(), key);
-    self.run(rx, cx);
+    let task = core::licence_activate(self.state.clone(), key, cx);
+    self.run(task, cx);
   }
 
   fn apply_file(&mut self, cx: &mut Context<Self>) {
@@ -138,28 +138,22 @@ impl LicenceView {
     if token.is_empty() || self.busy {
       return;
     }
-    let rx = core::licence_install(self.state.clone(), token);
-    self.run(rx, cx);
+    let task = core::licence_install(self.state.clone(), token, cx);
+    self.run(task, cx);
   }
 
-  fn run(
-    &mut self,
-    rx: futures::channel::oneshot::Receiver<Result<LicenceStatus, Error>>,
-    cx: &mut Context<Self>,
-  ) {
+  fn run(&mut self, task: Task<Result<LicenceStatus, Error>>, cx: &mut Context<Self>) {
     self.busy = true;
     self.outcome = None;
     cx.notify();
     self._task = cx.spawn(async move |this, cx| {
-      let result = rx.await;
+      let result = task.await;
       let _ = this.update(cx, |this, cx| {
         this.busy = false;
-        if let Ok(result) = result {
-          if result.is_ok() {
-            this.status = core::licence_status(&this.state);
-          }
-          this.outcome = Some(outcome_of(result));
+        if result.is_ok() {
+          this.status = core::licence_status(&this.state);
         }
+        this.outcome = Some(outcome_of(result));
         cx.notify();
       });
     });

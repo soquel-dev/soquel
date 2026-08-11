@@ -204,7 +204,7 @@ impl Workspace {
           return;
         };
         // Schema first: it fills the sidebar and the completion entries.
-        if let Ok(Ok(snapshot)) = core::schema_snapshot(&db).await {
+        if let Ok(snapshot) = core::schema_snapshot(&db, cx).await {
           let _ = this.update(cx, |this, cx| {
             this.schema_entries.fill(&snapshot);
             this.snapshot = Some(snapshot);
@@ -690,11 +690,11 @@ impl Workspace {
     let Some(table) = self.active_table() else {
       return;
     };
-    let rx = core::apply_changes(&db, changes);
+    let task = core::apply_changes(&db, changes, cx);
     self._work_task = cx.spawn(async move |this, cx| {
-      let result = rx.await;
+      let result = task.await;
       match result {
-        Ok(Ok(applied)) => {
+        Ok(applied) => {
           let _ = this.update(cx, |this, cx| {
             this.status = format!(
               "applied: {} updated, {} inserted, {} deleted",
@@ -707,14 +707,13 @@ impl Workspace {
             table.delegate_mut().reload(cx);
           });
         }
-        Ok(Err(error)) => {
+        Err(error) => {
           // Staging is kept: the transaction rolled back server-side.
           table.update(cx, |table, cx| {
             table.delegate_mut().status = format!("error: {error}").into();
             cx.notify();
           });
         }
-        Err(_) => {}
       }
     });
   }
@@ -724,7 +723,7 @@ impl Workspace {
       return;
     };
     self._work_task = cx.spawn(async move |this, cx| {
-      if let Ok(Ok(snapshot)) = core::schema_snapshot(&db).await {
+      if let Ok(snapshot) = core::schema_snapshot(&db, cx).await {
         let _ = this.update(cx, |this, cx| {
           this.schema_entries.fill(&snapshot);
           this.snapshot = Some(snapshot);
@@ -794,8 +793,8 @@ impl Workspace {
       // One pinned session per editor tab: SET and transactions stick to it.
       let session = match session {
         Some(session) => session,
-        None => match core::open_session(&db).await {
-          Ok(Ok(session)) => {
+        None => match core::open_session(&db, cx).await {
+          Ok(session) => {
             let _ = this.update(cx, |this, _| {
               if let Some(TabContent::Sql { session: slot, .. }) = this.contents.get_mut(&id) {
                 *slot = Some(session.clone());
@@ -818,13 +817,13 @@ impl Workspace {
           }
         },
       };
-      let result = core::run_session_query(&session, sql.clone()).await;
+      let result = core::run_session_query(&session, sql.clone(), cx).await;
       let at_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or_default();
       let (ok, duration_ms) = match &result {
-        Ok(Ok(result)) => (true, result.duration_ms),
+        Ok(result) => (true, result.duration_ms),
         _ => (false, 0.),
       };
       let _ = this.update(cx, |this, cx| {
@@ -838,7 +837,7 @@ impl Workspace {
           *running = false;
           *explain = None;
           explain_collapsed.clear();
-          if let Ok(Ok(result)) = &result
+          if let Ok(result) = &result
             && let Some(statement) = result
               .statements
               .iter()
@@ -874,7 +873,7 @@ impl Workspace {
           delegate.eof = true;
           delegate.loading = false;
           match result {
-            Ok(Ok(result)) => {
+            Ok(result) => {
               let total_affected: f64 = result.statements.iter().map(|s| s.rows_affected).sum();
               let display = result
                 .statements
@@ -903,11 +902,8 @@ impl Workspace {
                 }
               }
             }
-            Ok(Err(error)) => {
+            Err(error) => {
               delegate.status = format!("error: {error}").into();
-            }
-            Err(_) => {
-              delegate.status = "error: query canceled".into();
             }
           }
         }
@@ -984,15 +980,14 @@ impl Workspace {
     let Some((db, schema, name)) = browse else {
       return;
     };
-    let rx = core::table_ddl(&db, schema, name);
+    let task = core::table_ddl(&db, schema, name, cx);
     self._work_task = cx.spawn(async move |this, cx| {
-      let result = rx.await;
+      let result = task.await;
       let _ = this.update(cx, |this, cx| {
         if let Some(TabContent::Table { ddl, .. }) = this.contents.get_mut(&id) {
           *ddl = Some(match result {
-            Ok(Ok(sql)) => sql,
-            Ok(Err(error)) => format!("-- error: {error}"),
-            Err(_) => "-- error: fetch canceled".to_string(),
+            Ok(sql) => sql,
+            Err(error) => format!("-- error: {error}"),
           });
         }
         cx.notify();
@@ -1374,7 +1369,7 @@ impl Workspace {
           request.limit = None;
           request.sort = sort;
           request.filters = filters;
-          let (mut progress, done) = core::export_rows(&db, request, format, path);
+          let (mut progress, done) = core::export_rows(&db, request, format, path, cx);
           let _ = this.update(cx, |this, cx| {
             this.status = "exporting...".into();
             cx.notify();
@@ -1394,13 +1389,12 @@ impl Workspace {
               result = done => {
                 let _ = this.update(cx, |this, cx| {
                   this.status = match result {
-                    Ok(Ok(summary)) => format!(
+                    Ok(summary) => format!(
                       "exported {:.0} rows - {:.0} ms",
                       summary.rows, summary.duration_ms
                     )
                     .into(),
-                    Ok(Err(error)) => format!("error: {error}").into(),
-                    Err(_) => "error: export canceled".into(),
+                    Err(error) => format!("error: {error}").into(),
                   };
                   cx.notify();
                 });

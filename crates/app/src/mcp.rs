@@ -183,18 +183,16 @@ impl McpPanel {
   }
 
   fn refresh(&mut self, cx: &mut Context<Self>) {
-    let status_rx = core::mcp_status(self.state.clone());
-    let windows_rx = core::mcp_trust_windows(self.state.clone());
+    let status_task = core::mcp_status(self.state.clone(), cx);
+    let windows_task = core::mcp_trust_windows(self.state.clone(), cx);
     self._task = cx.spawn(async move |this, cx| {
-      let status = status_rx.await;
-      let windows = windows_rx.await;
+      let status = status_task.await;
+      let windows = windows_task.await;
       let _ = this.update(cx, |this, cx| {
-        if let Ok(Ok(status)) = status {
+        if let Ok(status) = status {
           this.status = Some(status);
         }
-        if let Ok(windows) = windows {
-          this.windows = windows;
-        }
+        this.windows = windows;
         cx.notify();
       });
     });
@@ -207,20 +205,21 @@ impl McpPanel {
     self.busy = true;
     self.problem = None;
     cx.notify();
-    let rx = if on {
+    let task = if on {
       core::mcp_start(
         self.state.clone(),
         core::mcp_configured_port(&self.state),
         self.make_approver.clone(),
+        cx,
       )
     } else {
-      core::mcp_stop(self.state.clone())
+      core::mcp_stop(self.state.clone(), cx)
     };
     self._task = cx.spawn(async move |this, cx| {
-      let result = rx.await;
+      let result = task.await;
       let _ = this.update(cx, |this, cx| {
         this.busy = false;
-        if let Ok(Err(error)) = result {
+        if let Err(error) = result {
           this.problem = Some(error.to_string().into());
         }
         this.refresh(cx);
@@ -253,18 +252,18 @@ impl McpPanel {
       // Persist before restarting: the choice survives even if the new port
       // fails to bind.
       if was_running {
-        let _ = core::mcp_stop(state.clone()).await;
+        let _ = core::mcp_stop(state.clone(), cx).await;
       }
-      let set = core::mcp_set_port(state.clone(), port).await;
-      let restart = if was_running && matches!(set, Ok(Ok(()))) {
-        Some(core::mcp_start(state.clone(), port, make_approver).await)
+      let set = core::mcp_set_port(state.clone(), port, cx).await;
+      let restart = if was_running && matches!(set, Ok(())) {
+        Some(core::mcp_start(state.clone(), port, make_approver, cx).await)
       } else {
         None
       };
       let _ = this.update(cx, |this, cx| {
         this.busy = false;
         this.problem = match (set, restart) {
-          (Ok(Err(error)), _) | (_, Some(Ok(Err(error)))) => Some(error.to_string().into()),
+          (Err(error), _) | (_, Some(Err(error))) => Some(error.to_string().into()),
           _ => None,
         };
         this.refresh(cx);
@@ -282,14 +281,13 @@ impl McpPanel {
   }
 
   fn regenerate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-    let rx = core::mcp_regenerate_token(self.state.clone());
+    let task = core::mcp_regenerate_token(self.state.clone(), cx);
     self._task = cx.spawn(async move |this, cx| {
-      let result = rx.await;
+      let result = task.await;
       let _ = this.update(cx, |this, cx| {
         match result {
-          Ok(Ok(_)) => this.refresh(cx),
-          Ok(Err(error)) => this.problem = Some(error.to_string().into()),
-          Err(_) => {}
+          Ok(_) => this.refresh(cx),
+          Err(error) => this.problem = Some(error.to_string().into()),
         }
         cx.notify();
       });
@@ -298,9 +296,9 @@ impl McpPanel {
   }
 
   fn revoke(&mut self, session: String, connection_id: String, cx: &mut Context<Self>) {
-    let rx = core::mcp_revoke_trust(self.state.clone(), session, connection_id);
+    let task = core::mcp_revoke_trust(self.state.clone(), session, connection_id, cx);
     self._task = cx.spawn(async move |this, cx| {
-      let _ = rx.await;
+      task.await;
       let _ = this.update(cx, |this, cx| this.refresh(cx));
     });
   }

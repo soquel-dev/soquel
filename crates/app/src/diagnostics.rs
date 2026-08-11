@@ -21,14 +21,13 @@ pub struct DiagnosticsView {
 
 impl DiagnosticsView {
   pub fn new(state: Arc<AppState>, cx: &mut Context<Self>) -> Self {
-    let rx = core::diagnostics(state.clone());
+    let task = core::diagnostics(state.clone(), cx);
     let _task = cx.spawn(async move |this, cx| {
-      if let Ok(block) = rx.await {
-        let _ = this.update(cx, |this, cx| {
-          this.block = Some(block.into());
-          cx.notify();
-        });
-      }
+      let block = task.await;
+      let _ = this.update(cx, |this, cx| {
+        this.block = Some(block.into());
+        cx.notify();
+      });
     });
     Self {
       state,

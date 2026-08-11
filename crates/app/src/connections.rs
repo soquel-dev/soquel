@@ -584,33 +584,33 @@ impl ConnectionsView {
     self.connecting = Some(id.clone());
     self.status = SharedString::default();
     cx.notify();
-    let rx = core::connect_id(self.state.clone(), id.clone());
+    let task = core::connect_id(self.state.clone(), id.clone(), cx);
     self._task = cx.spawn(async move |this, cx| {
-      let result = rx.await;
+      let result = task.await;
       let _ = this.update(cx, |this, cx| {
         this.connecting = None;
         match result {
-          Ok(Ok(db)) => {
+          Ok(db) => {
             if let Ok(profile) = this.state.profiles.lock().unwrap().get(&id) {
               cx.emit(ConnectionsEvent::Connected { db, profile });
             }
           }
-          Ok(Err(Error::SecretRequired {
+          Err(Error::SecretRequired {
             subject,
             target_id,
             target_name,
             ..
-          })) => {
+          }) => {
             this.open_secret_prompt(subject, target_id, target_name, id.clone(), cx);
           }
-          Ok(Err(Error::HostKeyUntrusted {
+          Err(Error::HostKeyUntrusted {
             host,
             port,
             fingerprint,
             key,
             previously_trusted,
             ..
-          })) => {
+          }) => {
             host_key::open_host_key_dialog(
               cx.entity(),
               this.state.clone(),
@@ -633,14 +633,14 @@ impl ConnectionsView {
           }
           // The subject can be the connection's own command or its tunnel's;
           // either way the retry is the same connect.
-          Ok(Err(Error::CommandApprovalRequired {
+          Err(Error::CommandApprovalRequired {
             subject,
             target_id,
             target_name,
             program,
             args,
             ..
-          })) => {
+          }) => {
             command_approval::open_command_approval_dialog(
               cx.entity(),
               this.state.clone(),
@@ -661,10 +661,9 @@ impl ConnectionsView {
               },
             );
           }
-          Ok(Err(error)) => {
+          Err(error) => {
             this.status = format!("error: {error}").into();
           }
-          Err(_) => {}
         }
         cx.notify();
       });
@@ -1435,20 +1434,20 @@ impl ConnectionsView {
     };
     self.status = "testing...".into();
     cx.notify();
-    let rx = core::test_input(self.state.clone(), input, self.editing.clone());
+    let task = core::test_input(self.state.clone(), input, self.editing.clone(), cx);
     self._task = cx.spawn(async move |this, cx| {
-      let result = rx.await;
+      let result = task.await;
       let _ = this.update(cx, |this, cx| {
         match result {
-          Ok(Ok(())) => this.status = "connection ok".into(),
-          Ok(Err(Error::HostKeyUntrusted {
+          Ok(()) => this.status = "connection ok".into(),
+          Err(Error::HostKeyUntrusted {
             host,
             port,
             fingerprint,
             key,
             previously_trusted,
             ..
-          })) => {
+          }) => {
             // The trust dialog owns this failure; retry re-reads the live form.
             this.status = SharedString::default();
             host_key::open_host_key_dialog(
@@ -1471,8 +1470,7 @@ impl ConnectionsView {
               },
             );
           }
-          Ok(Err(error)) => this.status = format!("error: {error}").into(),
-          Err(_) => this.status = "error: test canceled".into(),
+          Err(error) => this.status = format!("error: {error}").into(),
         }
         cx.notify();
       });
@@ -1488,14 +1486,13 @@ impl ConnectionsView {
         return;
       }
     };
-    let rx = core::save_connection(self.state.clone(), self.editing.clone(), input);
+    let task = core::save_connection(self.state.clone(), self.editing.clone(), input, cx);
     self._task = cx.spawn(async move |this, cx| {
-      let result = rx.await;
+      let result = task.await;
       let _ = this.update(cx, |this, cx| {
         match result {
-          Ok(Ok(_)) => this.refresh(cx),
-          Ok(Err(error)) => this.status = format!("error: {error}").into(),
-          Err(_) => {}
+          Ok(_) => this.refresh(cx),
+          Err(error) => this.status = format!("error: {error}").into(),
         }
         cx.notify();
       });
@@ -1687,15 +1684,14 @@ impl ConnectionsView {
         this.export_busy = true;
         cx.notify();
       });
-      let rx = core::export_connections(state, path, include, include.then_some(passphrase));
-      let result = rx.await;
+      let task = core::export_connections(state, path, include, include.then_some(passphrase), cx);
+      let result = task.await;
       let mut done = None;
       let _ = this.update(cx, |this, cx| {
         this.export_busy = false;
         match result {
-          Ok(Ok(summary)) => done = Some(transfer::export_summary_message(&summary)),
-          Ok(Err(error)) => this.export_error = Some(format!("{error}").into()),
-          Err(_) => {}
+          Ok(summary) => done = Some(transfer::export_summary_message(&summary)),
+          Err(error) => this.export_error = Some(format!("{error}").into()),
         }
         cx.notify();
       });
@@ -1774,22 +1770,21 @@ impl ConnectionsView {
       let typed = self.import_passphrase.read(cx).value().to_string();
       (!typed.is_empty()).then_some(typed)
     };
-    let rx = core::preview_import(self.state.clone(), path, passphrase);
+    let task = core::preview_import(self.state.clone(), path, passphrase, cx);
     self._task = cx.spawn(async move |this, cx| {
-      let result = rx.await;
+      let result = task.await;
       let _ = this.update(cx, |this, cx| {
         this.import_busy = false;
         match result {
-          Ok(Ok(preview)) => {
+          Ok(preview) => {
             this.import_locked = preview.needs_passphrase;
             this.import_preview = Some(preview);
           }
           // The lock stays as it was: a rejected passphrase keeps its field.
-          Ok(Err(error)) => {
+          Err(error) => {
             this.import_preview = None;
             this.import_error = Some(format!("{error}").into());
           }
-          Err(_) => {}
         }
         cx.notify();
       });
@@ -1820,28 +1815,28 @@ impl ConnectionsView {
       .get(self.import_strategy)
       .copied()
       .unwrap_or(DuplicateStrategy::Skip);
-    let rx = core::import_connections(
+    let task = core::import_connections(
       self.state.clone(),
       path,
       passphrase,
       self.import_with_secrets,
       strategy,
+      cx,
     );
     self._task = cx.spawn(async move |this, cx| {
-      let result = rx.await;
+      let result = task.await;
       let mut done = None;
       let _ = this.update(cx, |this, cx| {
         this.import_busy = false;
         match result {
-          Ok(Ok(outcome)) => {
+          Ok(outcome) => {
             done = Some(transfer::import_outcome_message(&outcome));
             this.refresh(cx);
             this
               .tunnels_section
               .update(cx, |tunnels, cx| tunnels.refresh(cx));
           }
-          Ok(Err(error)) => this.import_error = Some(format!("{error}").into()),
-          Err(_) => {}
+          Err(error) => this.import_error = Some(format!("{error}").into()),
         }
         cx.notify();
       });
@@ -1857,11 +1852,11 @@ impl ConnectionsView {
   }
 
   fn delete(&mut self, id: String, cx: &mut Context<Self>) {
-    let rx = core::delete_connection(self.state.clone(), id);
+    let task = core::delete_connection(self.state.clone(), id, cx);
     self._task = cx.spawn(async move |this, cx| {
-      let result = rx.await;
+      let result = task.await;
       let _ = this.update(cx, |this, cx| {
-        if let Ok(Err(error)) = result {
+        if let Err(error) = result {
           this.status = format!("error: {error}").into();
         }
         this.refresh(cx);

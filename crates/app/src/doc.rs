@@ -342,11 +342,11 @@ impl DocWorkspace {
   }
 
   fn load_databases(&mut self, cx: &mut Context<Self>) {
-    let rx = core::doc_databases(&self.db);
+    let task = core::doc_databases(&self.db, cx);
     let this = cx.entity();
     let db_select = self.db_select.clone();
     cx.spawn(async move |_, cx| {
-      let Ok(Ok(databases)) = rx.await else {
+      let Ok(databases) = task.await else {
         return;
       };
       let Some(handle) = cx.update(|cx| cx.active_window()) else {
@@ -411,17 +411,16 @@ impl DocWorkspace {
     };
     self.collections_seq += 1;
     let seq = self.collections_seq;
-    let rx = core::doc_collections(&self.db, db);
+    let task = core::doc_collections(&self.db, db, cx);
     self._collections_task = cx.spawn(async move |this, cx| {
-      let result = rx.await;
+      let result = task.await;
       let _ = this.update(cx, |this, cx| {
         if this.collections_seq != seq {
           return;
         }
         match result {
-          Ok(Ok(collections)) => this.collections = collections,
-          Ok(Err(error)) => this.status = format!("error: {error}").into(),
-          Err(_) => {}
+          Ok(collections) => this.collections = collections,
+          Err(error) => this.status = format!("error: {error}").into(),
         }
         cx.notify();
       });
@@ -464,13 +463,13 @@ impl DocWorkspace {
       limit: DOC_PAGE,
       cursor: self.doc_cursor.clone(),
     };
-    let rx = core::doc_find(&self.db, request);
+    let task = core::doc_find(&self.db, request, cx);
     let filter = self.applied_filter(cx);
-    let count_rx = reset.then(|| core::doc_count(&self.db, db, collection, filter));
+    let count_task = reset.then(|| core::doc_count(&self.db, db, collection, filter, cx));
     self._find_task = cx.spawn(async move |this, cx| {
-      let result = rx.await;
-      let count = match count_rx {
-        Some(rx) => rx.await.ok().and_then(Result::ok),
+      let result = task.await;
+      let count = match count_task {
+        Some(task) => task.await.ok(),
         None => None,
       };
       let _ = this.update(cx, |this, cx| {
@@ -479,7 +478,7 @@ impl DocWorkspace {
         }
         this.doc_loading = false;
         match result {
-          Ok(Ok(page)) => {
+          Ok(page) => {
             this.doc_cursor = page.cursor;
             if reset {
               this.docs = page.docs;
@@ -488,8 +487,7 @@ impl DocWorkspace {
               this.docs.extend(page.docs);
             }
           }
-          Ok(Err(error)) => this.filter_error = Some(format!("{error}").into()),
-          Err(_) => {}
+          Err(error) => this.filter_error = Some(format!("{error}").into()),
         }
         cx.notify();
       });
@@ -501,9 +499,9 @@ impl DocWorkspace {
     else {
       return;
     };
-    let rx = core::doc_indexes(&self.db, db, collection);
+    let task = core::doc_indexes(&self.db, db, collection, cx);
     cx.spawn(async move |this, cx| {
-      if let Ok(Ok(indexes)) = rx.await {
+      if let Ok(indexes) = task.await {
         let _ = this.update(cx, |this, cx| {
           this.indexes = indexes;
           cx.notify();
@@ -530,14 +528,13 @@ impl DocWorkspace {
       // A doc with no `_id` (a view / projected key) has no address to fetch.
       return;
     };
-    let rx = core::doc_detail(&self.db, db, collection, id);
+    let task = core::doc_detail(&self.db, db, collection, id, cx);
     self._detail_task = cx.spawn(async move |this, cx| {
-      let result = rx.await;
+      let result = task.await;
       let _ = this.update(cx, |this, cx| {
         match result {
-          Ok(Ok(detail)) => this.detail = Some(detail),
-          Ok(Err(error)) => this.status = format!("error: {error}").into(),
-          Err(_) => {}
+          Ok(detail) => this.detail = Some(detail),
+          Err(error) => this.status = format!("error: {error}").into(),
         }
         cx.notify();
       });
@@ -568,12 +565,12 @@ impl DocWorkspace {
       return;
     };
     let draft = self.doc_editor.read(cx).value().to_string();
-    let rx = core::doc_replace(&self.db, db, collection, id.clone(), draft);
+    let task = core::doc_replace(&self.db, db, collection, id.clone(), draft, cx);
     self._op_task = cx.spawn(async move |this, cx| {
-      let result = rx.await;
+      let result = task.await;
       let _ = this.update(cx, |this, cx| {
         match result {
-          Ok(Ok(())) => {
+          Ok(()) => {
             this.editing = false;
             let index = this.selected;
             this.find(true, cx);
@@ -581,8 +578,7 @@ impl DocWorkspace {
               this.select_doc(ix, cx);
             }
           }
-          Ok(Err(error)) => this.status = format!("error: {error}").into(),
-          Err(_) => {}
+          Err(error) => this.status = format!("error: {error}").into(),
         }
         cx.notify();
       });
@@ -600,20 +596,19 @@ impl DocWorkspace {
     let Some(id) = detail.id.clone() else {
       return;
     };
-    let rx = core::doc_delete(&self.db, db, collection, id);
+    let task = core::doc_delete(&self.db, db, collection, id, cx);
     self._op_task = cx.spawn(async move |this, cx| {
-      let result = rx.await;
+      let result = task.await;
       let _ = this.update(cx, |this, cx| {
         match result {
-          Ok(Ok(())) => {
+          Ok(()) => {
             this.selected = None;
             this.detail = None;
             this.delete_armed = false;
             this.find(true, cx);
             this.load_collections(cx);
           }
-          Ok(Err(error)) => this.status = format!("error: {error}").into(),
-          Err(_) => {}
+          Err(error) => this.status = format!("error: {error}").into(),
         }
         cx.notify();
       });
@@ -630,17 +625,17 @@ impl DocWorkspace {
       return;
     }
     let prompt = format!("{db}.{collection}");
-    let rx = core::doc_run_query(&self.db, db, collection, source.clone());
+    let task = core::doc_run_query(&self.db, db, collection, source.clone(), cx);
     let this = cx.entity();
     let input = self.console_input.clone();
     self._op_task = cx.spawn(async move |_, cx| {
-      let result = rx.await;
+      let result = task.await;
       let Some(handle) = cx.update(|cx| cx.active_window()) else {
         return;
       };
       let _ = cx.update_window(handle, move |_, window, cx| {
         let entry = match result {
-          Ok(Ok(query)) => {
+          Ok(query) => {
             let mut summary = vec![format!(
               "{} doc{}",
               query.docs.len(),
@@ -658,14 +653,13 @@ impl DocWorkspace {
               ok: true,
             }
           }
-          Ok(Err(error)) => ConsoleEntry {
+          Err(error) => ConsoleEntry {
             prompt: prompt.clone(),
             source: source.clone(),
             lines: vec![format!("{error}")],
             summary: None,
             ok: false,
           },
-          Err(_) => return,
         };
         input.update(cx, |input, cx| input.set_value("", window, cx));
         this.update(cx, |this, cx| {
@@ -1338,11 +1332,10 @@ mod tests {
         tunnel_id: None,
       }),
     };
-    let db = futures::executor::block_on(crate::core::connect_with(
+    let db = crate::core::connect_with_blocking(
       profile.clone(),
       soquel_core::credentials::Credentials::fixed(Some("soquel".to_string())),
-    ))
-    .expect("channel")
+    )
     .expect("connects to the compose mongo");
 
     let dir = tempfile::tempdir().unwrap();
