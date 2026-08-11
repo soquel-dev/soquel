@@ -174,7 +174,18 @@ deleted. Each panel lands with its layer-3 tests; each flow with layer 4.
       covered by `integration_flow_redis_browse` + the visual pass, not a
       gpui render test - faking a `Connection` for a headless view isn't worth
       it)
-- [ ] Mongo: collection list, doc list/detail, indexes, db select, console
+- [x] Mongo: collection list, doc list/detail, indexes, db select, console
+      (`doc.rs` is a `DocWorkspace` mounted by App on the `DocBrowse`
+      capability - the third kind branch after redis; reuses the KvWorkspace
+      skeleton with the doc specifics: two-level tree (databases -> collections,
+      no db reconnect - mongo addresses any db per call), a nested list+detail
+      split, the 3-view toggle documents/indexes/console, JSON render via
+      `TextView::markdown` (the grid inspector's pattern), edit = full-doc
+      replace from the canonical extjson, read-only for docs without `_id`, and
+      a JSON find filter (not a glob). `doc.rs` ports `lib/docs.ts` with its
+      tests; behaviour is covered by `integration_flow_mongo_browse` +
+      `integration_doc_workspace_*` against the seeded `soquel_e2e`, render by
+      the visual pass)
 
 ### App surfaces
 
