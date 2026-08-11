@@ -16,6 +16,8 @@ use soquel_core::profiles::{
 };
 
 use crate::core::{self, Db};
+use crate::host_key::{self, HostKeyPrompt};
+use crate::tunnels::TunnelsView;
 
 pub enum ConnectionsEvent {
   Connected { db: Db, profile: ConnectionProfile },
@@ -101,6 +103,10 @@ pub struct ConnectionsView {
   form_env: Entity<SelectState<Vec<String>>>,
   form_ssl: Entity<SelectState<Vec<String>>>,
   form_credential: Entity<SelectState<Vec<String>>>,
+  form_tunnel: Entity<SelectState<Vec<String>>>,
+  /// Index-coupled with the picker's items: names collide, ids do not.
+  form_tunnel_ids: Vec<Option<String>>,
+  tunnels_section: Entity<TunnelsView>,
   prompt_password: Entity<InputState>,
   prompt_remember: bool,
   _task: Task<()>,
@@ -164,6 +170,15 @@ impl ConnectionsView {
         cx,
       )
     });
+    let form_tunnel = cx.new(|cx| {
+      SelectState::new(
+        vec!["none".to_string()],
+        Some(IndexPath::default()),
+        window,
+        cx,
+      )
+    });
+    let tunnels_section = cx.new(|cx| TunnelsView::new(state.clone(), window, cx));
 
     Self {
       state,
@@ -181,6 +196,9 @@ impl ConnectionsView {
       form_env,
       form_ssl,
       form_credential,
+      form_tunnel,
+      form_tunnel_ids: vec![None],
+      tunnels_section,
       prompt_password,
       prompt_remember: false,
       _task: Task::ready(()),
@@ -217,6 +235,34 @@ impl ConnectionsView {
             ..
           })) => {
             this.open_secret_prompt(subject, target_id, target_name, id.clone(), cx);
+          }
+          Ok(Err(Error::HostKeyUntrusted {
+            host,
+            port,
+            fingerprint,
+            key,
+            previously_trusted,
+            ..
+          })) => {
+            host_key::open_host_key_dialog(
+              cx.entity(),
+              this.state.clone(),
+              HostKeyPrompt {
+                host,
+                port,
+                fingerprint,
+                key,
+                previously_trusted,
+              },
+              cx,
+              move |view: &mut Self, result, cx| match result {
+                Ok(()) => view.connect(id.clone(), cx),
+                Err(error) => {
+                  view.status = format!("error: {error}").into();
+                  cx.notify();
+                }
+              },
+            );
           }
           Ok(Err(error)) => {
             this.status = format!("error: {error}").into();
@@ -262,7 +308,10 @@ impl ConnectionsView {
           );
           let remember = this.read(cx).prompt_remember;
           dialog
-            .title(format!("Password for {target_name}"))
+            .title(match subject {
+              SecretSubject::Tunnel => format!("Credential for the tunnel {target_name}"),
+              _ => format!("Password for {target_name}"),
+            })
             .child(
               v_flex().gap_3().child(Input::new(&input)).child(
                 Checkbox::new("remember")
@@ -327,52 +376,57 @@ impl ConnectionsView {
       let _ =
         cx.update_window(window_handle, |_, window, cx| {
           this.update(cx, |view, cx| {
-            let (name, group, host, port, database, user, env_ix, ssl_ix, cred_ix) = match &editing
-            {
-              Some(profile) => {
-                let (host, port, database, user, ssl) = match &profile.params {
-                  ConnectorParams::Postgres(p) => (
-                    p.host.clone(),
-                    p.port.to_string(),
-                    p.database.clone(),
-                    p.user.clone(),
-                    p.ssl_mode,
-                  ),
-                  _ => (
-                    String::new(),
-                    String::new(),
-                    String::new(),
-                    String::new(),
-                    SslMode::Prefer,
-                  ),
-                };
-                (
-                  profile.name.clone(),
-                  profile.group.clone().unwrap_or_default(),
-                  host,
-                  port,
-                  database,
-                  user,
-                  ENVS.iter().position(|e| *e == profile.env).unwrap_or(0),
-                  SSL_MODES.iter().position(|m| *m == ssl).unwrap_or(1),
-                  match profile.credential {
-                    CredentialSource::Prompt => 1,
-                    _ => 0,
-                  },
-                )
-              }
-              None => (
-                String::new(),
-                String::new(),
-                String::new(),
-                "5432".to_string(),
-                String::new(),
-                String::new(),
-                0,
-                1,
-                0,
-              ),
-            };
+            let (name, group, host, port, database, user, env_ix, ssl_ix, cred_ix, tunnel_id) =
+              match &editing {
+                Some(profile) => {
+                  let (host, port, database, user, ssl, tunnel_id) = match &profile.params {
+                    ConnectorParams::Postgres(p) => (
+                      p.host.clone(),
+                      p.port.to_string(),
+                      p.database.clone(),
+                      p.user.clone(),
+                      p.ssl_mode,
+                      p.tunnel_id.clone(),
+                    ),
+                    _ => (
+                      String::new(),
+                      String::new(),
+                      String::new(),
+                      String::new(),
+                      SslMode::Prefer,
+                      None,
+                    ),
+                  };
+                  (
+                    profile.name.clone(),
+                    profile.group.clone().unwrap_or_default(),
+                    host,
+                    port,
+                    database,
+                    user,
+                    ENVS.iter().position(|e| *e == profile.env).unwrap_or(0),
+                    SSL_MODES.iter().position(|m| *m == ssl).unwrap_or(1),
+                    match profile.credential {
+                      CredentialSource::Prompt => 1,
+                      _ => 0,
+                    },
+                    tunnel_id,
+                  )
+                }
+                None => (
+                  String::new(),
+                  String::new(),
+                  String::new(),
+                  "5432".to_string(),
+                  String::new(),
+                  String::new(),
+                  0,
+                  1,
+                  0,
+                  None,
+                ),
+              };
+            view.refresh_tunnel_picker(tunnel_id.as_deref(), window, cx);
             view
               .form_name
               .update(cx, |i, cx| i.set_value(name, window, cx));
@@ -436,6 +490,11 @@ impl ConnectionsView {
                   .child(field().label("SSL").child(Select::new(&view.form_ssl)))
                   .child(
                     field()
+                      .label("SSH tunnel")
+                      .child(Select::new(&view.form_tunnel)),
+                  )
+                  .child(
+                    field()
                       .label("Password")
                       .child(Select::new(&view.form_credential)),
                   )
@@ -474,6 +533,35 @@ impl ConnectionsView {
               )
           });
         });
+    });
+  }
+
+  /// Ids and labels rebuilt together: the picker maps by index, since tunnel
+  /// names can collide.
+  fn refresh_tunnel_picker(
+    &mut self,
+    current: Option<&str>,
+    window: &mut Window,
+    cx: &mut Context<Self>,
+  ) {
+    let tunnels = core::list_tunnels(&self.state);
+    self.form_tunnel_ids = std::iter::once(None)
+      .chain(tunnels.iter().map(|t| Some(t.id.clone())))
+      .collect();
+    let labels: Vec<String> = std::iter::once("none".to_string())
+      .chain(tunnels.iter().map(|t| t.name.clone()))
+      .collect();
+    let ix = current
+      .and_then(|id| {
+        self
+          .form_tunnel_ids
+          .iter()
+          .position(|t| t.as_deref() == Some(id))
+      })
+      .unwrap_or(0);
+    self.form_tunnel.update(cx, |s, cx| {
+      s.set_items(labels, window, cx);
+      s.set_selected_index(Some(IndexPath::new(ix)), window, cx);
     });
   }
 
@@ -517,6 +605,12 @@ impl ConnectionsView {
       _ => CredentialSource::Keychain,
     };
     let password = self.form_password.read(cx).value().to_string();
+    let tunnel_ix = self
+      .form_tunnel
+      .read(cx)
+      .selected_index(cx)
+      .map_or(0, |ix| ix.row);
+    let tunnel_id = self.form_tunnel_ids.get(tunnel_ix).cloned().flatten();
     Ok(ConnectionInput {
       name,
       env,
@@ -530,7 +624,7 @@ impl ConnectionsView {
         user,
         ssl_mode,
         ssl_root_cert: None,
-        tunnel_id: None,
+        tunnel_id,
       }),
       password: (!password.is_empty()).then_some(password),
     })
@@ -551,11 +645,41 @@ impl ConnectionsView {
     self._task = cx.spawn(async move |this, cx| {
       let result = rx.await;
       let _ = this.update(cx, |this, cx| {
-        this.status = match result {
-          Ok(Ok(())) => "connection ok".into(),
-          Ok(Err(error)) => format!("error: {error}").into(),
-          Err(_) => "error: test canceled".into(),
-        };
+        match result {
+          Ok(Ok(())) => this.status = "connection ok".into(),
+          Ok(Err(Error::HostKeyUntrusted {
+            host,
+            port,
+            fingerprint,
+            key,
+            previously_trusted,
+            ..
+          })) => {
+            // The trust dialog owns this failure; retry re-reads the live form.
+            this.status = SharedString::default();
+            host_key::open_host_key_dialog(
+              cx.entity(),
+              this.state.clone(),
+              HostKeyPrompt {
+                host,
+                port,
+                fingerprint,
+                key,
+                previously_trusted,
+              },
+              cx,
+              |view: &mut Self, result, cx| match result {
+                Ok(()) => view.test_form(cx),
+                Err(error) => {
+                  view.status = format!("error: {error}").into();
+                  cx.notify();
+                }
+              },
+            );
+          }
+          Ok(Err(error)) => this.status = format!("error: {error}").into(),
+          Err(_) => this.status = "error: test canceled".into(),
+        }
         cx.notify();
       });
     });
@@ -750,7 +874,8 @@ impl Render for ConnectionsView {
               );
             }
             rows
-          })),
+          }))
+          .child(self.tunnels_section.clone()),
       )
   }
 }
@@ -864,6 +989,66 @@ mod tests {
         assert_eq!(params.port, 5433);
         // No group typed = no group stored, not an empty string.
         assert_eq!(input.group, None);
+      });
+    });
+  }
+
+  #[gpui::test]
+  fn tunnel_picker_maps_by_index_not_label(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let cx = cx.add_empty_window();
+    let state = std::sync::Arc::new(soquel_core::AppState::for_tests(
+      tempfile::tempdir().unwrap().path(),
+      Box::new(soquel_core::secrets::InMemoryStore::default()),
+    ));
+    // Two tunnels with the same name: only the index tells them apart.
+    let tunnel_input = || soquel_core::tunnels::TunnelInput {
+      name: "bastion".to_string(),
+      host: "bastion.internal".to_string(),
+      port: 22,
+      user: "deploy".to_string(),
+      auth: soquel_core::tunnels::SshAuth::Agent,
+      credential: CredentialSource::Keychain,
+      secret: None,
+    };
+    let _first = soquel_core::ops::create_tunnel(&state, &tunnel_input()).unwrap();
+    let second = soquel_core::ops::create_tunnel(&state, &tunnel_input()).unwrap();
+
+    let view = cx.update(|window, cx| cx.new(|cx| ConnectionsView::new(state, window, cx)));
+    cx.update(|window, cx| {
+      view.update(cx, |view, cx| {
+        view
+          .form_name
+          .update(cx, |i, cx| i.set_value("db1", window, cx));
+        view
+          .form_host
+          .update(cx, |i, cx| i.set_value("h", window, cx));
+        view
+          .form_port
+          .update(cx, |i, cx| i.set_value("5432", window, cx));
+        view
+          .form_database
+          .update(cx, |i, cx| i.set_value("app", window, cx));
+        view
+          .form_user
+          .update(cx, |i, cx| i.set_value("u", window, cx));
+
+        view.refresh_tunnel_picker(Some(&second.id), window, cx);
+        let input = view.form_input(cx).unwrap();
+        let ConnectorParams::Postgres(params) = &input.params else {
+          panic!("postgres form");
+        };
+        assert_eq!(params.tunnel_id.as_deref(), Some(second.id.as_str()));
+
+        // Index 0 is the "none" sentinel.
+        view.form_tunnel.update(cx, |s, cx| {
+          s.set_selected_index(Some(IndexPath::new(0)), window, cx)
+        });
+        let input = view.form_input(cx).unwrap();
+        let ConnectorParams::Postgres(params) = &input.params else {
+          panic!("postgres form");
+        };
+        assert_eq!(params.tunnel_id, None);
       });
     });
   }

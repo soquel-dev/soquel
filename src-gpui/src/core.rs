@@ -5,6 +5,7 @@ use soquel_core::AppState;
 use soquel_core::connectors::{Connection, QueryResult, SchemaSnapshot, TableRowsRequest};
 use soquel_core::error::{Error, SecretSubject};
 use soquel_core::profiles::{ConnectionInput, ConnectionProfile, ConnectorKind};
+use soquel_core::tunnels::{TunnelInput, TunnelProfile};
 
 fn runtime() -> &'static tokio::runtime::Runtime {
   static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -135,6 +136,56 @@ pub fn unlock_secret(
   remember: bool,
 ) {
   soquel_core::ops::unlock_secret(state, subject, id, secret, remember);
+}
+
+pub fn list_tunnels(state: &AppState) -> Vec<TunnelProfile> {
+  state.tunnels.lock().unwrap().list()
+}
+
+pub fn save_tunnel(
+  state: Arc<AppState>,
+  editing: Option<String>,
+  input: TunnelInput,
+) -> oneshot::Receiver<Result<TunnelProfile, Error>> {
+  let (tx, rx) = oneshot::channel();
+  runtime().spawn(async move {
+    let result = match editing {
+      Some(id) => soquel_core::ops::update_tunnel(&state, &id, &input),
+      None => soquel_core::ops::create_tunnel(&state, &input),
+    };
+    let _ = tx.send(result);
+  });
+  rx
+}
+
+pub fn delete_tunnel(state: Arc<AppState>, id: String) -> oneshot::Receiver<Result<(), Error>> {
+  let (tx, rx) = oneshot::channel();
+  runtime().spawn(async move {
+    let _ = tx.send(soquel_core::ops::delete_tunnel(&state, &id));
+  });
+  rx
+}
+
+pub fn test_tunnel(
+  state: Arc<AppState>,
+  input: TunnelInput,
+  existing_id: Option<String>,
+) -> oneshot::Receiver<Result<(), Error>> {
+  let (tx, rx) = oneshot::channel();
+  runtime().spawn(async move {
+    let result = soquel_core::ops::test_tunnel(&state, &input, existing_id.as_deref()).await;
+    let _ = tx.send(result);
+  });
+  rx
+}
+
+/// Sync like `list_connections`: a mutex and a small JSON write.
+pub fn trust_host_key(state: &AppState, host: &str, port: u16, key: &str) -> Result<(), Error> {
+  soquel_core::ops::trust_host_key(state, host, port, key)
+}
+
+pub fn default_ssh_keys() -> Vec<String> {
+  soquel_core::ssh::default_key_paths()
 }
 
 /// Test-only direct connect, bypassing the stores.
@@ -458,5 +509,113 @@ mod tests {
       .await
       .expect("channel");
     close_session(session);
+  }
+
+  /// The tunnel round end to end: TOFU refusal, the trust the dialog writes,
+  /// then a query through the forward. Skipped silently without SOQUEL_TEST_SSH.
+  #[tokio::test]
+  async fn integration_flow_tunnel_trust_and_connect() {
+    let Ok(ssh) = std::env::var("SOQUEL_TEST_SSH") else {
+      return;
+    };
+    let (ssh_host, ssh_port) = ssh.split_once(':').expect("host:port");
+    let ssh_port: u16 = ssh_port.parse().expect("ssh port");
+    let dir = tempfile::tempdir().unwrap();
+    let state = std::sync::Arc::new(soquel_core::AppState::for_tests(
+      dir.path(),
+      Box::new(soquel_core::secrets::InMemoryStore::default()),
+    ));
+
+    let tunnel = soquel_core::ops::create_tunnel(
+      &state,
+      &soquel_core::tunnels::TunnelInput {
+        name: "compose sshd".to_string(),
+        host: ssh_host.to_string(),
+        port: ssh_port,
+        user: "tunnel".to_string(),
+        auth: soquel_core::tunnels::SshAuth::KeyFile {
+          path: concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../scripts/test-ssh/id_ed25519"
+          )
+          .to_string(),
+        },
+        credential: CredentialSource::Keychain,
+        secret: None,
+      },
+    )
+    .unwrap();
+
+    let input = ConnectionInput {
+      name: "through the tunnel".to_string(),
+      env: Env::Dev,
+      group: None,
+      agent_access: AgentAccess::None,
+      credential: CredentialSource::Keychain,
+      params: ConnectorParams::Postgres(SqlServerParams {
+        // The database target as seen from the sshd container.
+        host: "postgres".to_string(),
+        port: 5432,
+        database: "soquel_test".to_string(),
+        user: "soquel".to_string(),
+        ssl_mode: Default::default(),
+        ssl_root_cert: None,
+        tunnel_id: Some(tunnel.id.clone()),
+      }),
+      password: Some("soquel".to_string()),
+    };
+    let profile = soquel_core::ops::create_connection(&state, &input).unwrap();
+
+    // First contact: the connect is refused with the fields the dialog shows.
+    let refused = connect_id(state.clone(), profile.id.clone())
+      .await
+      .expect("channel");
+    let Err(soquel_core::error::Error::HostKeyUntrusted {
+      host,
+      port,
+      fingerprint,
+      key,
+      previously_trusted,
+      ..
+    }) = refused
+    else {
+      panic!("first contact must be refused");
+    };
+    assert!(!previously_trusted);
+    assert!(fingerprint.starts_with("SHA256:"));
+
+    // The exact call the trust button makes, then the same retry.
+    trust_host_key(&state, &host, port, &key).unwrap();
+    let db = connect_id(state.clone(), profile.id.clone())
+      .await
+      .expect("channel")
+      .expect("connects through the tunnel once trusted");
+    let session = open_session(&db).await.expect("channel").expect("session");
+    let result = run_session_query(&session, "select 1".to_string())
+      .await
+      .expect("channel")
+      .expect("select through the forward");
+    assert_eq!(result.statements[0].rows.len(), 1);
+    close_session(session);
+    soquel_core::ops::disconnect(&state, &profile.id)
+      .await
+      .unwrap();
+
+    // The form's Test connection on the stored tunnel now passes.
+    soquel_core::ops::test_tunnel(
+      &state,
+      &soquel_core::tunnels::TunnelInput {
+        name: tunnel.name.clone(),
+        host: tunnel.host.clone(),
+        port: tunnel.port,
+        user: tunnel.user.clone(),
+        auth: tunnel.auth.clone(),
+        credential: tunnel.credential.clone(),
+        secret: None,
+      },
+      Some(&tunnel.id),
+    )
+    .await
+    .expect("Tunnel OK");
   }
 }

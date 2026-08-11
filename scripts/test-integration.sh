@@ -34,8 +34,9 @@ SOQUEL_TEST_REDIS=localhost:5457 \
 SOQUEL_TEST_MONGO=localhost:5464 \
   cargo test --manifest-path "$app" integration_mcp_
 
-echo "==> gpui flow (browse, stage, apply)"
+echo "==> gpui flow (browse, stage, apply, tunnel)"
 SOQUEL_TEST_PG=postgres://soquel:soquel@localhost:5455/soquel_test \
+SOQUEL_TEST_SSH=localhost:5458 \
   cargo test --manifest-path "$gpui" integration_
 
 echo "==> mariadb (mysql kind)"
