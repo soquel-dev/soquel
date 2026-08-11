@@ -19,6 +19,7 @@ mod tabs;
 #[cfg(test)]
 mod test_support;
 mod theme;
+mod transfer;
 mod tunnels;
 mod workspace;
 
