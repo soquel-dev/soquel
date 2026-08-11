@@ -28,24 +28,6 @@ env:
   GPUI_DEPS: libxkbcommon-x11-dev libwayland-dev libxcb1-dev libx11-xcb-dev libfontconfig1-dev libfreetype6-dev libgbm-dev libssl-dev
 
 jobs:
-  lint:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version-file: package.json
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
-
-      - name: Lint
-        run: pnpm lint
-
   landing:
     runs-on: ubuntu-latest
     timeout-minutes: 10

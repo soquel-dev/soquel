@@ -321,11 +321,15 @@ multi-kind surface of `lib/connections.ts`, which is the one deletion blocker
    `55968d1` pins verified unchanged after the merge); `.gitignore` -> `/target/`.
 4. **CI**: DONE. The `rust` job runs `cargo fmt/clippy/test --workspace` on the
    root with `$GPUI_DEPS` (xkbcommon/wayland/xcb/fontconfig/gbm) instead of the
-   tauri ones, no bindings check; the webview `check` job became a small `lint`
-   (eslint only) and the wdio `e2e_tests` job is gone; `landing` +
-   `integration_tests` stay. `cargo test` still skips Windows (gpui link there
-   unverified; clippy compiles the workspace on all three). The `$GPUI_DEPS` apt
-   set is a best-effort guess to confirm on the first CI run.
+   tauri ones, no bindings check; the webview `check` and wdio `e2e_tests` jobs
+   are gone, and with the webview went the entire root node stack (eslint,
+   tsconfig, `package.json`, pnpm workspace + lockfile) - a `Justfile` now holds
+   the cargo/docker shortcuts, so there is no root lint job and `landing/` is the
+   only node project. `landing` (own lint) + `integration_tests` stay. `cargo
+   test` still
+   skips Windows (gpui link there unverified; clippy compiles the workspace on
+   all three). The `$GPUI_DEPS` apt set is a best-effort guess to confirm on the
+   first CI run.
 5. **Restore the lost coverage**: `integration_flow_mysql` + `integration_flow_
    sqlite` (the only real e2e gap, unblocked now that the form creates them). TODO.
 
