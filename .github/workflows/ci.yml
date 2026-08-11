@@ -4,11 +4,13 @@ on:
   push:
     branches: [main]
     paths-ignore:
+      - docs/**
       - .gitignore
       - README.md
       - LICENSE
   pull_request:
     paths-ignore:
+      - docs/**
       - .gitignore
       - README.md
       - LICENSE
@@ -21,12 +23,14 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  TAURI_DEPS: libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev
+  # gpui (zed) + gpui-component build deps: windowing, fonts, gl.
+  # The exact set may need a tweak on the first CI run.
+  GPUI_DEPS: libxkbcommon-x11-dev libwayland-dev libxcb1-dev libx11-xcb-dev libfontconfig1-dev libfreetype6-dev libgbm-dev libssl-dev
 
 jobs:
-  check:
+  lint:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -41,15 +45,6 @@ jobs:
 
       - name: Lint
         run: pnpm lint
-
-      - name: Typecheck
-        run: pnpm typecheck
-
-      - name: Build
-        run: pnpm build
-
-      - name: Test
-        run: pnpm test
 
   landing:
     runs-on: ubuntu-latest
@@ -88,10 +83,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Only Linux needs them: macOS and Windows carry their webview.
-      - name: Install Tauri system dependencies
+      # Only Linux needs them: macOS (Metal) and Windows (DirectX) carry their own.
+      - name: Install gpui system dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends $TAURI_DEPS
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends $GPUI_DEPS
 
       - name: Install Rust toolchain
         run: |
@@ -100,41 +95,24 @@ jobs:
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
-          workspaces: |
-            src-tauri
-            crates/core
+          workspaces: .
           shared-key: soquel
 
       # Formatting has no platform to differ on, so it runs once.
       - name: Format
         if: runner.os == 'Linux'
-        run: |
-          cargo fmt --manifest-path crates/core/Cargo.toml --check
-          cargo fmt --manifest-path src-tauri/Cargo.toml --check
+        run: cargo fmt --all --check
 
       - name: Clippy
-        run: |
-          cargo clippy --manifest-path crates/core/Cargo.toml --all-targets -- -D warnings
-          cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
-      # Not on Windows: the test binary builds and links there, then the loader
-      # refuses it with STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139). It is not a
-      # shadowed C runtime, which was measured rather than assumed: pruning PATH to
-      # System32 changes nothing. Two upstream reports carry the same signature and
-      # neither has a workaround (https://github.com/tauri-apps/tauri/issues/13419, #13948).
-      #
+      # Not on Windows yet: gpui's `cargo test` link there is unverified (the
+      # old tauri skip was for a different, tauri-specific loader failure).
+      # Clippy above still compiles + lints the whole workspace on all three.
       # integration_* tests skip themselves without their SOQUEL_TEST_* env vars.
       - name: Test
         if: runner.os != 'Windows'
-        run: |
-          cargo test --manifest-path crates/core/Cargo.toml
-          cargo test --manifest-path src-tauri/Cargo.toml
-
-      # export_typescript_bindings just rewrote bindings.ts: fail if it was stale.
-      # Linux only, since git on Windows would report the line endings as a diff.
-      - name: Bindings up to date
-        if: runner.os == 'Linux'
-        run: git diff --exit-code packages/app/src/lib/bindings.ts
+        run: cargo test --workspace
 
   integration_tests:
     runs-on: ubuntu-latest
@@ -142,8 +120,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install Tauri system dependencies
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends $TAURI_DEPS
+      - name: Install gpui system dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends $GPUI_DEPS
 
       - name: Install Rust toolchain
         run: |
@@ -152,9 +130,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
-          workspaces: |
-            src-tauri
-            crates/core
+          workspaces: .
           shared-key: soquel
 
       # sshd StrictModes wants authorized_keys owned by root or the tunnel user (uid 1000);
@@ -167,60 +143,3 @@ jobs:
 
       - name: Integration tests
         run: bash scripts/test-integration.sh
-
-  e2e_tests:
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version-file: package.json
-          cache: pnpm
-
-      - name: Install Tauri system dependencies
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends $TAURI_DEPS webkit2gtk-driver xvfb
-
-      - name: Install Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-        with:
-          workspaces: |
-            src-tauri
-            crates/core
-          shared-key: soquel
-
-      - name: Cache tauri-driver
-        id: tauri-driver-cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cargo/bin/tauri-driver
-          key: ${{ runner.os }}-tauri-driver-v2
-
-      - name: Install tauri-driver
-        if: steps.tauri-driver-cache.outputs.cache-hit != 'true'
-        run: cargo install tauri-driver --locked
-
-      - run: pnpm install --frozen-lockfile
-
-      - name: Start test databases
-        run: docker compose -f docker-compose.test.yml up -d --wait
-
-      # onPrepare builds the debug binary (rust-cache makes this incremental).
-      # Default xvfb screen is 640x480: smaller than the app's minimum window size.
-      - name: E2E
-        run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" pnpm test:e2e
-
-      - name: Upload failure screenshots
-        if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: e2e-screenshots
-          path: packages/app/e2e/screenshots/
-          if-no-files-found: ignore

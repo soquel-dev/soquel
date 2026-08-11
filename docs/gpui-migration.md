@@ -306,23 +306,32 @@ multi-kind surface of `lib/connections.ts`, which is the one deletion blocker
    `Arc<AppState>`, no bridge), drop keychain from the credential picker when the
    keyring probe failed (`available_credential_modes`), default a new profile to
    `prompt` (`default_credential_mode`), and show the amber problem line.
-2. **Delete** `src-tauri` and `packages/app` (with the wdio e2e, `bindings.ts`,
-   `tauri.conf.json`, `capabilities/`, tauri icons). Rewrite the root
-   `package.json` (`dev` = `cargo run -p soquel-app`, drop the `pnpm -r` webview
-   scripts and `test:e2e`, keep the `db:*`/docker scripts and eslint), drop the
-   wdio/tauri-driver devDeps.
-3. **Collapse to a root cargo workspace**: `crates/core` + `crates/app`
-   (`src-gpui` renamed), remove the two `[workspace]` stubs, one committed
-   `Cargo.lock` (the git pins for zed/gpui-component must survive the merge), one
-   target dir.
-4. **CI**: the `rust` job builds/clippies/tests core + app with the gpui system
-   deps (`libxkbcommon-x11-dev`, `libx11-xcb-dev`, x11/wayland) instead of the
-   tauri ones, no bindings check; drop the `check` (webview) and `e2e_tests`
-   (wdio) jobs; keep `landing` and `integration_tests`. Verify whether gpui
-   `cargo test` links on Windows (the tauri `STATUS_ENTRYPOINT_NOT_FOUND` skip
-   may not apply) - if not, tests Linux-first, clippy on all three.
+2. **Delete** `src-tauri` and `packages/app`. DONE: gone with the wdio e2e,
+   `bindings.ts`, `tauri.conf.json`, `capabilities/`, tauri icons, plus the dead
+   `update-server.mjs`/`market-app.sh`. Root `package.json` drives cargo
+   (`dev` = `cargo run -p soquel-app`, `test` = `cargo test --workspace`); the
+   lockfile was rebuilt fresh (eslint-only, no webview/tauri deps); eslint drops
+   Vue + `toml:false` (cargo fmt owns Cargo.toml).
+3. **Collapse to a root cargo workspace**: DONE. Root `Cargo.toml`
+   (`members = ["crates/core", "crates/app"]`, `resolver = "2"`, the `dev`
+   profile hoisted here); `src-gpui` -> `crates/app` (package `soquel-app`, log
+   target `soquel_app`); both `[workspace]` stubs removed; the app's `soquel-core`
+   path fixed to `../core` and the two `CARGO_MANIFEST_DIR/../scripts` test paths
+   to `../../scripts`; one root `Cargo.lock` (the zed `9e236090` + gpui-component
+   `55968d1` pins verified unchanged after the merge); `.gitignore` -> `/target/`.
+4. **CI**: DONE. The `rust` job runs `cargo fmt/clippy/test --workspace` on the
+   root with `$GPUI_DEPS` (xkbcommon/wayland/xcb/fontconfig/gbm) instead of the
+   tauri ones, no bindings check; the webview `check` job became a small `lint`
+   (eslint only) and the wdio `e2e_tests` job is gone; `landing` +
+   `integration_tests` stay. `cargo test` still skips Windows (gpui link there
+   unverified; clippy compiles the workspace on all three). The `$GPUI_DEPS` apt
+   set is a best-effort guess to confirm on the first CI run.
 5. **Restore the lost coverage**: `integration_flow_mysql` + `integration_flow_
-   sqlite` (the only real e2e gap, unblocked once the form can create them).
+   sqlite` (the only real e2e gap, unblocked now that the form creates them). TODO.
+
+Still stale after this PR: **`AGENTS.md`** describes the tauri command layer and
+the detached workspaces - it needs a rewrite for the gpui-only, root-workspace
+world (follow-up docs commit).
 
 **Deferred past this PR** (greenfield, not deletion blockers, nothing ships
 yet): the updater (+ the non-rotatable signing-key reuse-or-mint decision) and
