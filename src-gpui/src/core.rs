@@ -309,6 +309,44 @@ pub fn mcp_revoke_trust(
   rx
 }
 
+/// Sync: reads the installed licence file. Called on the dialog opening and per
+/// tab-open, not per frame.
+pub fn licence_status(state: &AppState) -> soquel_core::licence::LicenceStatus {
+  soquel_core::licence::read(&soquel_core::licence::path(&state.data_dir))
+}
+
+/// A pasted file: validated before it replaces a working licence.
+pub fn licence_install(
+  state: Arc<AppState>,
+  token: String,
+) -> oneshot::Receiver<Result<soquel_core::licence::LicenceStatus, Error>> {
+  let (tx, rx) = oneshot::channel();
+  runtime().spawn(async move {
+    let result =
+      soquel_core::licence::install(&soquel_core::licence::path(&state.data_dir), &token);
+    let _ = tx.send(result);
+  });
+  rx
+}
+
+/// The normal path: the key goes out, a signed file comes back and installs
+/// through the same validation as a pasted one. HTTP lives in the core.
+pub fn licence_activate(
+  state: Arc<AppState>,
+  key: String,
+) -> oneshot::Receiver<Result<soquel_core::licence::LicenceStatus, Error>> {
+  let (tx, rx) = oneshot::channel();
+  runtime().spawn(async move {
+    let result = async {
+      let token = soquel_core::activation::activate(key.trim()).await?;
+      soquel_core::licence::install(&soquel_core::licence::path(&state.data_dir), &token)
+    }
+    .await;
+    let _ = tx.send(result);
+  });
+  rx
+}
+
 /// Off the UI thread: exporting reads the keychain.
 pub fn export_connections(
   state: Arc<AppState>,

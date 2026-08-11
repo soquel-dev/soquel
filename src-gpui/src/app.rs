@@ -154,6 +154,24 @@ impl App {
     });
   }
 
+  fn open_licence(&mut self, cx: &mut Context<Self>) {
+    let state = self.state.clone();
+    cx.defer(move |cx| {
+      let Some(window_handle) = cx.active_window() else {
+        return;
+      };
+      let _ = cx.update_window(window_handle, |_, window, cx| {
+        let view = cx.new(|cx| crate::licence::LicenceView::new(state.clone(), window, cx));
+        window.open_dialog(cx, move |dialog, _, _| {
+          dialog
+            .title(div().font_family("IBM Plex Mono").child("Licence"))
+            .w(px(440.))
+            .child(view.clone())
+        });
+      });
+    });
+  }
+
   fn open_audit(&mut self, cx: &mut Context<Self>) {
     let state = self.state.clone();
     cx.defer(move |cx| {
@@ -214,7 +232,8 @@ impl App {
         _subscription: subscription,
       }
     } else {
-      let view = cx.new(|cx| Workspace::new(db, profile, window, cx));
+      let data_dir = self.state.data_dir.clone();
+      let view = cx.new(|cx| Workspace::new(db, profile, data_dir, window, cx));
       let subscription = cx.subscribe_in(
         &view,
         window,
@@ -279,6 +298,13 @@ impl App {
       hint: None,
       keywords: "agent activity audit log mcp".to_string(),
       run: Rc::new(move |_, cx| audit_app.update(cx, |app, cx| app.open_audit(cx))),
+    });
+    let licence_app = cx.entity();
+    items.push(PaletteItem {
+      label: "Licence".into(),
+      hint: None,
+      keywords: "licence license unlock buy activate tabs".to_string(),
+      run: Rc::new(move |_, cx| licence_app.update(cx, |app, cx| app.open_licence(cx))),
     });
 
     match &self.screen {

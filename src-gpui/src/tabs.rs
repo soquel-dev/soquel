@@ -1,4 +1,5 @@
 use soquel_core::connectors::ColumnFilter;
+use soquel_core::licence::LicenceStatus;
 
 #[derive(Debug, Clone)]
 pub enum WorkspaceTab {
@@ -37,6 +38,15 @@ pub struct TabsState {
 
 /// What the free tier allows per connection; a licence lifts it.
 pub const FREE_TABS: usize = 2;
+
+/// A licence lifts the cap for good; otherwise the debug override wins, else the
+/// free tier. `Expired` and `Free` both run on the free tier.
+pub fn effective_tab_limit(status: &LicenceStatus, override_limit: Option<u32>) -> usize {
+  if matches!(status, LicenceStatus::Licensed { .. }) {
+    return usize::MAX;
+  }
+  override_limit.map_or(FREE_TABS, |limit| limit as usize)
+}
 
 fn new_id() -> String {
   uuid::Uuid::new_v4().to_string()
@@ -173,6 +183,25 @@ mod tests {
 
   fn open_table(state: &TabsState, schema: &str, table: &str, limit: usize) -> TabsState {
     open_table_tab(state, schema, table, Vec::new(), limit).unwrap()
+  }
+
+  #[test]
+  fn a_licence_lifts_the_cap_the_override_beats_the_free_tier() {
+    let licensed = LicenceStatus::Licensed {
+      email: "b@example.com".to_string(),
+      name: None,
+      updates_until: "2030-01-01T00:00:00Z".to_string(),
+    };
+    assert_eq!(effective_tab_limit(&licensed, None), usize::MAX);
+    // A lapsed window and no licence both run on the free tier.
+    let expired = LicenceStatus::Expired {
+      email: "b@example.com".to_string(),
+      updates_until: "2020-01-01T00:00:00Z".to_string(),
+    };
+    assert_eq!(effective_tab_limit(&expired, None), FREE_TABS);
+    assert_eq!(effective_tab_limit(&LicenceStatus::Free, None), FREE_TABS);
+    // The debug override lifts the free tier without claiming a licence.
+    assert_eq!(effective_tab_limit(&LicenceStatus::Free, Some(5)), 5);
   }
 
   #[test]

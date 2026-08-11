@@ -106,8 +106,10 @@ deleted. Each panel lands with its layer-3 tests; each flow with layer 4.
 - [x] Theme: port tokens from `style.css`, light/dark
 - [x] Toasts (gpui-component `push_notification`, used by revoke and transfer)
 - [x] Tab limit (`tabs.rs` ports `lib/tabs.ts` with its tests; free-tier toast,
-      SOQUEL_TAB_LIMIT dev override honored; tab persistence across restarts
-      still to do)
+      SOQUEL_TAB_LIMIT dev override honored; `effective_tab_limit` now consults
+      the installed licence so a valid one lifts the cap - `Workspace` reads the
+      licence file per tab-open, so an activation lifts it live; tab persistence
+      across restarts still to do)
 
 ### Connections
 
@@ -208,7 +210,13 @@ deleted. Each panel lands with its layer-3 tests; each flow with layer 4.
       `GpuiApprover` mpsc seam: a blocked write rides the channel to the App,
       the human's answer fires the oneshot the server thread waits on, the 60s
       timeout and silence-denies staying in core
-- [ ] Licence dialog: status, paste key (activation), paste file
+- [x] Licence dialog (`licence.rs`, `LicenceView`, from the palette): status
+      blurb per state (Free / Licensed / Expired), key field + Activate (the
+      activation HTTP is in the core, no network permission), a folded "I have a
+      licence file" textarea + Add, outcome line (green/destructive) via
+      `installed_outcome` + the exhaustive `activation_message` map. A successful
+      install writes the file, so the open workspace's cap lifts on next open.
+      `soquel_core::licence::path` is now shared by both frontends
 - [ ] Diagnostics dialog: block preview, copy, open log folder
 - [ ] Update panel: check, progress, install/restart
 - [ ] Single instance + `.soquel` file association
