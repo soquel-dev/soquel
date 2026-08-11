@@ -91,12 +91,13 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      # Not on Windows yet: gpui's `cargo test` link there is unverified (the
-      # old tauri skip was for a different, tauri-specific loader failure).
-      # Clippy above still compiles + lints the whole workspace on all three.
+      # Linux only: gpui's macOS/Windows test platforms don't back a real window,
+      # so the view tests panic ("Test Windows are not backed by a real platform
+      # window"). The suite is headless UI logic, so one platform covers it; clippy
+      # above still compiles + lints the whole workspace on all three.
       # integration_* tests skip themselves without their SOQUEL_TEST_* env vars.
       - name: Test
-        if: runner.os != 'Windows'
+        if: runner.os == 'Linux'
         run: cargo test --workspace
 
   integration_tests:
