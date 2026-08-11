@@ -9,8 +9,8 @@ default:
 dev:
     cargo run -p soquel-app
 
-# Run the app with file-backed plaintext secrets (WSL has no OS keychain); dev only.
-dev-wsl:
+# Run the app with file-backed plaintext secrets, for a host with no OS keychain; dev only.
+dev-insecure:
     SOQUEL_INSECURE_FILE_SECRETS=1 cargo run -p soquel-app
 
 # Build the app.
