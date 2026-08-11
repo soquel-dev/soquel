@@ -933,6 +933,28 @@ mod tests {
     assert_eq!(default_credential_mode(false), CredentialMode::Prompt);
   }
 
+  #[gpui::test]
+  fn no_keyring_drops_keychain_from_the_tunnel_form(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let cx = cx.add_empty_window();
+    let dir = tempfile::tempdir().unwrap();
+    let mut app_state = AppState::for_tests(
+      dir.path(),
+      Box::new(soquel_core::secrets::InMemoryStore::default()),
+    );
+    app_state.secrets_problem = Some("no keyring".to_string());
+    let state = Arc::new(app_state);
+    let view = cx.update(|window, cx| cx.new(|cx| TunnelsView::new(state, window, cx)));
+
+    cx.update(|_, cx| {
+      view.update(cx, |view, cx| {
+        assert!(!view.keychain_available);
+        // The picker dropped keychain, so its first entry is prompt.
+        assert_eq!(view.selected_mode(cx), CredentialMode::Prompt);
+      });
+    });
+  }
+
   fn valid() -> TunnelFormValues {
     TunnelFormValues {
       name: "bastion".to_string(),
