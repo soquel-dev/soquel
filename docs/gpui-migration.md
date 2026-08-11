@@ -37,8 +37,10 @@ fits a one-person product and skip the rest:
 ```
 Cargo.toml          # single workspace, shared target + lockfile
 crates/
-  core/             # as today: connectors, ssh, credentials, secrets, licence
-  agent/            # the MCP server, out of src-tauri, behind the Approver trait
+  core/             # as today: connectors, ssh, credentials, secrets, licence,
+                    #   plus the MCP server + tools + approval (core::mcp),
+                    #   behind the Approver trait; split to its own agent/ crate
+                    #   only if it grows enough to hurt
   app/              # the gpui binary: workspace shell, panels, actions, theme
 ```
 
@@ -113,9 +115,10 @@ deleted. Each panel lands with its layer-3 tests; each flow with layer 4.
       startup screen; connects through core::ops against the same data dir as
       the tauri dev app)
 - [x] Connection form (postgres fields, test connection, keychain/prompt/
-      command credential modes with the argv preview; agent access, other
-      kinds, paste-url prefill (`parseConnectionUrl` port) and small-screen
-      dialog height still to do)
+      command credential modes with the argv preview; agent-access select
+      (Off / Read-only / Writes need approval) maps into `ConnectionInput` and
+      an "agent" badge marks opted-in rows; other kinds, paste-url prefill
+      (`parseConnectionUrl` port) and small-screen dialog height still to do)
 - [x] Tunnel form + tunnel list (`tunnels.rs` ports `lib/tunnels.ts` with its
       tests; the connection form's picker maps by index since names collide)
 - [x] Secret prompt dialog (SecretRequired -> unlock -> retry, with the
@@ -189,8 +192,22 @@ deleted. Each panel lands with its layer-3 tests; each flow with layer 4.
 
 ### App surfaces
 
-- [ ] MCP panel: status, port, token, audit log, trust windows
-- [ ] MCP approval dialog (blocks the agent call until answered)
+- [x] MCP panel: status dot + endpoint, port (commits on blur/Enter, restarts
+      a running server), on/off toggle, masked setup command with copy, the
+      exposed-summary line, the trust-windows amber card (ticks down every 1s,
+      Revoke), "Regenerate token" while stopped; opened from the palette
+      ("MCP server") and an "Agents…" header button (`mcp.rs`, `McpPanel`)
+- [x] MCP audit log: `McpAuditView` dialog, newest-first rows (ok/err dot,
+      tool, target, time, detail, error), empty state; palette "Agent activity"
+- [x] MCP approval dialog (`mcp_approval.rs`, global like host-key/command):
+      operation + payload blocks, "{n} more waiting", Deny / Allow for 15 min /
+      Run this write; Enter is a no-op, dismissing denies. The core lift moved
+      the server, tools and approval into `core::mcp` (rmcp/axum now core deps),
+      the 7 `integration_mcp_*` + unit tests moved with it (the last tauri-only
+      tests; the `app` test leg is retired), and the tauri event became the
+      `GpuiApprover` mpsc seam: a blocked write rides the channel to the App,
+      the human's answer fires the oneshot the server thread waits on, the 60s
+      timeout and silence-denies staying in core
 - [ ] Licence dialog: status, paste key (activation), paste file
 - [ ] Diagnostics dialog: block preview, copy, open log folder
 - [ ] Update panel: check, progress, install/restart
@@ -207,7 +224,8 @@ deleted. Each panel lands with its layer-3 tests; each flow with layer 4.
       unneeded), opener, logging (fern/tracing to the same log files)
 - [ ] Data dir + keychain service names unchanged (installed apps must not
       lose their connections or secrets on the switch)
-- [ ] MCP autostart parity
+- [x] MCP autostart parity (App reads the persisted toggle at launch and
+      brings the server back on `runtime()` with the `GpuiApprover` factory)
 
 ## Feature-parity discipline
 

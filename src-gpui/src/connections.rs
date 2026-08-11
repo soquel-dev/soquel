@@ -32,8 +32,10 @@ use crate::tunnels::{
   credential_mode_label,
 };
 
+#[allow(clippy::large_enum_variant)]
 pub enum ConnectionsEvent {
   Connected { db: Db, profile: ConnectionProfile },
+  OpenMcpPanel,
 }
 
 const ENVS: [Env; 3] = [Env::Dev, Env::Staging, Env::Prod];
@@ -115,6 +117,7 @@ pub struct ConnectionsView {
   form_password: Entity<InputState>,
   form_command: Entity<InputState>,
   form_env: Entity<SelectState<Vec<String>>>,
+  form_agent_access: Entity<SelectState<Vec<String>>>,
   form_ssl: Entity<SelectState<Vec<String>>>,
   form_credential: Entity<SelectState<Vec<String>>>,
   form_tunnel: Entity<SelectState<Vec<String>>>,
@@ -184,6 +187,17 @@ impl ConnectionsView {
         cx,
       )
     });
+    let form_agent_access = cx.new(|cx| {
+      SelectState::new(
+        crate::mcp::AGENT_ACCESSES
+          .iter()
+          .map(|a| crate::mcp::agent_access_label(*a).to_string())
+          .collect::<Vec<_>>(),
+        Some(IndexPath::default()),
+        window,
+        cx,
+      )
+    });
     let form_ssl = cx.new(|cx| {
       SelectState::new(
         SSL_MODES
@@ -231,6 +245,7 @@ impl ConnectionsView {
       form_password,
       form_command,
       form_env,
+      form_agent_access,
       form_ssl,
       form_credential,
       form_tunnel,
@@ -495,6 +510,11 @@ impl ConnectionsView {
                   .child(field().label("Name").child(Input::new(&view.form_name)))
                   .child(field().label("Group").child(Input::new(&view.form_group)))
                   .child(field().label("Env").child(Select::new(&view.form_env)))
+                  .child(
+                    field()
+                      .label("Agent access")
+                      .child(Select::new(&view.form_agent_access)),
+                  )
                   .child(field().label("Host").child(Input::new(&view.form_host)))
                   .child(field().label("Port").child(Input::new(&view.form_port)))
                   .child(
@@ -592,63 +612,80 @@ impl ConnectionsView {
     window: &mut Window,
     cx: &mut Context<Self>,
   ) {
-    let (name, group, host, port, database, user, env_ix, ssl_ix, cred_ix, command, tunnel_id) =
-      match editing {
-        Some(profile) => {
-          let (host, port, database, user, ssl, tunnel_id) = match &profile.params {
-            ConnectorParams::Postgres(p) => (
-              p.host.clone(),
-              p.port.to_string(),
-              p.database.clone(),
-              p.user.clone(),
-              p.ssl_mode,
-              p.tunnel_id.clone(),
-            ),
-            _ => (
-              String::new(),
-              String::new(),
-              String::new(),
-              String::new(),
-              SslMode::Prefer,
-              None,
-            ),
-          };
-          let (mode, command) = match &profile.credential {
-            CredentialSource::Keychain => (CredentialMode::Keychain, String::new()),
-            CredentialSource::Prompt => (CredentialMode::Prompt, String::new()),
-            CredentialSource::Command { command, .. } => (CredentialMode::Command, command.clone()),
-          };
-          (
-            profile.name.clone(),
-            profile.group.clone().unwrap_or_default(),
-            host,
-            port,
-            database,
-            user,
-            ENVS.iter().position(|e| *e == profile.env).unwrap_or(0),
-            SSL_MODES.iter().position(|m| *m == ssl).unwrap_or(1),
-            CREDENTIAL_MODES
-              .iter()
-              .position(|m| *m == mode)
-              .unwrap_or(0),
-            command,
-            tunnel_id,
-          )
-        }
-        None => (
-          String::new(),
-          String::new(),
-          String::new(),
-          "5432".to_string(),
-          String::new(),
-          String::new(),
-          0,
-          1,
-          0,
-          String::new(),
-          None,
-        ),
-      };
+    let (
+      name,
+      group,
+      host,
+      port,
+      database,
+      user,
+      env_ix,
+      agent_ix,
+      ssl_ix,
+      cred_ix,
+      command,
+      tunnel_id,
+    ) = match editing {
+      Some(profile) => {
+        let (host, port, database, user, ssl, tunnel_id) = match &profile.params {
+          ConnectorParams::Postgres(p) => (
+            p.host.clone(),
+            p.port.to_string(),
+            p.database.clone(),
+            p.user.clone(),
+            p.ssl_mode,
+            p.tunnel_id.clone(),
+          ),
+          _ => (
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+            SslMode::Prefer,
+            None,
+          ),
+        };
+        let (mode, command) = match &profile.credential {
+          CredentialSource::Keychain => (CredentialMode::Keychain, String::new()),
+          CredentialSource::Prompt => (CredentialMode::Prompt, String::new()),
+          CredentialSource::Command { command, .. } => (CredentialMode::Command, command.clone()),
+        };
+        (
+          profile.name.clone(),
+          profile.group.clone().unwrap_or_default(),
+          host,
+          port,
+          database,
+          user,
+          ENVS.iter().position(|e| *e == profile.env).unwrap_or(0),
+          crate::mcp::AGENT_ACCESSES
+            .iter()
+            .position(|a| *a == profile.agent_access)
+            .unwrap_or(0),
+          SSL_MODES.iter().position(|m| *m == ssl).unwrap_or(1),
+          CREDENTIAL_MODES
+            .iter()
+            .position(|m| *m == mode)
+            .unwrap_or(0),
+          command,
+          tunnel_id,
+        )
+      }
+      None => (
+        String::new(),
+        String::new(),
+        String::new(),
+        "5432".to_string(),
+        String::new(),
+        String::new(),
+        0,
+        0,
+        1,
+        0,
+        String::new(),
+        None,
+      ),
+    };
     self.refresh_tunnel_picker(tunnel_id.as_deref(), window, cx);
     self
       .form_name
@@ -676,6 +713,9 @@ impl ConnectionsView {
       .update(cx, |i, cx| i.set_value(command, window, cx));
     self.form_env.update(cx, |s, cx| {
       s.set_selected_index(Some(IndexPath::new(env_ix)), window, cx)
+    });
+    self.form_agent_access.update(cx, |s, cx| {
+      s.set_selected_index(Some(IndexPath::new(agent_ix)), window, cx)
     });
     self.form_ssl.update(cx, |s, cx| {
       s.set_selected_index(Some(IndexPath::new(ssl_ix)), window, cx)
@@ -746,6 +786,17 @@ impl ConnectionsView {
       .and_then(|label| ENVS.iter().find(|e| env_label(**e) == label))
       .copied()
       .unwrap_or(Env::Dev);
+    let agent_access = self
+      .form_agent_access
+      .read(cx)
+      .selected_value()
+      .and_then(|label| {
+        crate::mcp::AGENT_ACCESSES
+          .iter()
+          .find(|a| crate::mcp::agent_access_label(**a) == label)
+      })
+      .copied()
+      .unwrap_or(AgentAccess::None);
     let ssl_mode = self
       .form_ssl
       .read(cx)
@@ -778,7 +829,7 @@ impl ConnectionsView {
       name,
       env,
       group: (!group.is_empty()).then_some(group),
-      agent_access: AgentAccess::None,
+      agent_access,
       credential,
       params: ConnectorParams::Postgres(SqlServerParams {
         host,
@@ -1618,6 +1669,14 @@ impl Render for ConnectionsView {
             h_flex()
               .gap_2()
               .child(
+                Button::new("open-mcp")
+                  .ghost()
+                  .small()
+                  .label("Agents…")
+                  .debug_selector(|| "open-mcp".into())
+                  .on_click(cx.listener(|_, _, _, cx| cx.emit(ConnectionsEvent::OpenMcpPanel))),
+              )
+              .child(
                 Button::new("open-import")
                   .ghost()
                   .small()
@@ -1724,7 +1783,20 @@ impl Render for ConnectionsView {
                           .gap_2()
                           .items_center()
                           .child(div().font_semibold().text_sm().child(profile.name.clone()))
-                          .child(self.env_badge(profile.env, cx)),
+                          .child(self.env_badge(profile.env, cx))
+                          .when(profile.agent_access != AgentAccess::None, |row| {
+                            row.child(
+                              div()
+                                .px_1p5()
+                                .py_0p5()
+                                .rounded(cx.theme().radius)
+                                .bg(cx.theme().muted)
+                                .text_xs()
+                                .font_family("IBM Plex Mono")
+                                .text_color(cx.theme().muted_foreground)
+                                .child("agent"),
+                            )
+                          }),
                       )
                       .child(
                         div()
@@ -1901,6 +1973,30 @@ mod tests {
         assert_eq!(params.port, 5433);
         // No group typed = no group stored, not an empty string.
         assert_eq!(input.group, None);
+      });
+    });
+  }
+
+  #[gpui::test]
+  fn the_form_round_trips_agent_access(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let cx = cx.add_empty_window();
+    let (_dir, state) = test_state();
+    let view = cx.update(|window, cx| cx.new(|cx| ConnectionsView::new(state, window, cx)));
+    cx.update(|window, cx| {
+      view.update(cx, |view, cx| {
+        // A new connection defaults to invisible.
+        assert_eq!(
+          view.form_input(cx).unwrap_err(),
+          "name, host, database and user are required"
+        );
+        let mut profile = profile("warehouse", None);
+        profile.agent_access = AgentAccess::WriteWithApproval;
+        view.prefill_form(Some(&profile), window, cx);
+        assert_eq!(
+          view.form_input(cx).unwrap().agent_access,
+          AgentAccess::WriteWithApproval
+        );
       });
     });
   }

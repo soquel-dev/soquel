@@ -9,12 +9,18 @@ use gpui_component::{
 };
 use soquel_core::AppState;
 
+use futures::StreamExt;
+use soquel_core::ApprovalAnswer;
+use soquel_core::mcp::McpApprovalRequest;
+
 use crate::actions::ToggleCommandPalette;
 use crate::command_palette::{CommandPaletteDelegate, PaletteItem};
 use crate::connections::{ConnectionsEvent, ConnectionsView, group_connections};
 use crate::core;
 use crate::doc::{DocWorkspace, DocWorkspaceEvent};
 use crate::kv::{KvWorkspace, KvWorkspaceEvent};
+use crate::mcp::{McpAuditView, McpPanel};
+use crate::mcp_approval::open_mcp_approval_dialog;
 use crate::theme;
 use crate::workspace::{Workspace, WorkspaceEvent};
 
@@ -44,28 +50,126 @@ pub struct App {
   /// The cross-screen key home: the global cmd-k needs a focus target that
   /// survives the Connections screen, which does not focus itself.
   focus_handle: FocusHandle,
+  /// Injected into every MCP server start so a blocked write reaches the
+  /// approval dialog through this App's channel.
+  make_approver: core::ApproverFactory,
+  approval_queue: Vec<McpApprovalRequest>,
+  approval_showing: bool,
+  _approval_drain: Task<()>,
   _connections_subscription: Subscription,
 }
 
 impl App {
   pub fn new(state: Arc<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
     let connections = cx.new(|cx| ConnectionsView::new(state.clone(), window, cx));
-    let subscription = cx.subscribe_in(
-      &connections,
-      window,
-      |this, _, event: &ConnectionsEvent, window, cx| {
-        let ConnectionsEvent::Connected { db, profile } = event;
-        this.open_workspace(db.clone(), profile.clone(), window, cx);
-      },
-    );
+    let subscription = cx.subscribe_in(&connections, window, Self::on_connections_event);
     let focus_handle = cx.focus_handle();
     focus_handle.focus(window, cx);
+
+    let (tx, mut rx) = crate::mcp::approval_channel();
+    let make_approver = crate::mcp::approver_factory(tx);
+    // One drain for the app's life: server restarts reuse the same channel.
+    let _approval_drain = cx.spawn(async move |this, cx| {
+      while let Some(request) = rx.next().await {
+        if this
+          .update(cx, |this, cx| this.enqueue_approval(request, cx))
+          .is_err()
+        {
+          break;
+        }
+      }
+    });
+    // An enabled server comes back on launch, off the UI thread.
+    core::mcp_autostart(state.clone(), make_approver.clone());
+
     Self {
       state,
       screen: Screen::Connections(connections),
       focus_handle,
+      make_approver,
+      approval_queue: Vec::new(),
+      approval_showing: false,
+      _approval_drain,
       _connections_subscription: subscription,
     }
+  }
+
+  fn on_connections_event(
+    this: &mut Self,
+    _: &Entity<ConnectionsView>,
+    event: &ConnectionsEvent,
+    window: &mut Window,
+    cx: &mut Context<Self>,
+  ) {
+    match event {
+      ConnectionsEvent::Connected { db, profile } => {
+        this.open_workspace(db.clone(), profile.clone(), window, cx);
+      }
+      ConnectionsEvent::OpenMcpPanel => this.open_mcp_panel(cx),
+    }
+  }
+
+  fn enqueue_approval(&mut self, request: McpApprovalRequest, cx: &mut Context<Self>) {
+    self.approval_queue.push(request);
+    self.show_next_approval(cx);
+  }
+
+  /// The open dialog is always for the front of the queue; new requests wait
+  /// behind it and surface as it drains.
+  fn show_next_approval(&mut self, cx: &mut Context<Self>) {
+    if self.approval_showing || self.approval_queue.is_empty() {
+      return;
+    }
+    self.approval_showing = true;
+    let request = self.approval_queue[0].clone();
+    let more = self.approval_queue.len() - 1;
+    open_mcp_approval_dialog(cx.entity(), request, more, cx, |app, answer, cx| {
+      app.resolve_front(answer, cx)
+    });
+  }
+
+  fn resolve_front(&mut self, answer: ApprovalAnswer, cx: &mut Context<Self>) {
+    if self.approval_queue.is_empty() {
+      return;
+    }
+    let request = self.approval_queue.remove(0);
+    core::mcp_resolve_approval(self.state.clone(), request.id, answer);
+    self.approval_showing = false;
+    self.show_next_approval(cx);
+  }
+
+  fn open_mcp_panel(&mut self, cx: &mut Context<Self>) {
+    let state = self.state.clone();
+    let make_approver = self.make_approver.clone();
+    cx.defer(move |cx| {
+      let Some(window_handle) = cx.active_window() else {
+        return;
+      };
+      let _ = cx.update_window(window_handle, |_, window, cx| {
+        let panel = cx.new(|cx| McpPanel::new(state.clone(), make_approver.clone(), window, cx));
+        window.open_dialog(cx, move |dialog, _, _| {
+          dialog.w(px(560.)).child(panel.clone())
+        });
+      });
+    });
+  }
+
+  fn open_audit(&mut self, cx: &mut Context<Self>) {
+    let state = self.state.clone();
+    cx.defer(move |cx| {
+      let Some(window_handle) = cx.active_window() else {
+        return;
+      };
+      let _ = cx.update_window(window_handle, |_, window, cx| {
+        let audit = cx.new(|cx| McpAuditView::new(state.clone(), cx));
+        window.open_dialog(cx, move |dialog, _, _| {
+          dialog
+            .title(div().font_family("IBM Plex Mono").child("Agent activity"))
+            .w(px(640.))
+            .child(audit.clone())
+        });
+      });
+    });
   }
 
   fn open_workspace(
@@ -139,14 +243,8 @@ impl App {
       core::disconnect_id(self.state.clone(), id);
     }
     let connections = cx.new(|cx| ConnectionsView::new(self.state.clone(), window, cx));
-    self._connections_subscription = cx.subscribe_in(
-      &connections,
-      window,
-      |this, _, event: &ConnectionsEvent, window, cx| {
-        let ConnectionsEvent::Connected { db, profile } = event;
-        this.open_workspace(db.clone(), profile.clone(), window, cx);
-      },
-    );
+    self._connections_subscription =
+      cx.subscribe_in(&connections, window, Self::on_connections_event);
     self.screen = Screen::Connections(connections);
     // The connections screen has no focus of its own; keep the key home here.
     self.focus_handle.focus(window, cx);
@@ -167,6 +265,20 @@ impl App {
       hint: None,
       keywords: "toggle theme dark light".to_string(),
       run: Rc::new(theme::toggle),
+    });
+    let panel_app = cx.entity();
+    items.push(PaletteItem {
+      label: "MCP server".into(),
+      hint: None,
+      keywords: "mcp server agent access port token".to_string(),
+      run: Rc::new(move |_, cx| panel_app.update(cx, |app, cx| app.open_mcp_panel(cx))),
+    });
+    let audit_app = cx.entity();
+    items.push(PaletteItem {
+      label: "Agent activity".into(),
+      hint: None,
+      keywords: "agent activity audit log mcp".to_string(),
+      run: Rc::new(move |_, cx| audit_app.update(cx, |app, cx| app.open_audit(cx))),
     });
 
     match &self.screen {

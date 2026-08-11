@@ -17,6 +17,8 @@ mod history;
 mod host_key;
 mod icons;
 mod kv;
+mod mcp;
+mod mcp_approval;
 mod staged;
 mod tabs;
 #[cfg(test)]
