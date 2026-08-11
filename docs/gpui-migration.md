@@ -49,9 +49,12 @@ when `app` grows enough to hurt; not before.
 
 **Sequencing rule: the root workspace lands the day src-tauri dies, not
 before.** A workspace member shares the target dir and lockfile; folding
-src-tauri in now would invalidate its build cache for zero benefit, and the
-tauri + zed git dependency trees have no reason to meet in one lockfile.
-Until then the three units stay detached (`[workspace]` stub in each).
+src-tauri in early would invalidate its build cache for zero benefit, and the
+tauri + zed git dependency trees have no reason to meet in one lockfile. Until
+then the three units stay detached (`[workspace]` stub in each). That day is the
+completion PR below: src-tauri and the webview are deleted, then the three
+detached units collapse to one root workspace (core + app), one lockfile, one
+target dir.
 
 ## Test strategy
 
@@ -116,11 +119,18 @@ deleted. Each panel lands with its layer-3 tests; each flow with layer 4.
 - [x] Connections page: list, groups, env badges, connect/edit/delete (the
       startup screen; connects through core::ops against the same data dir as
       the tauri dev app)
-- [x] Connection form (postgres fields, test connection, keychain/prompt/
+- [~] Connection form: postgres done (fields, test connection, keychain/prompt/
       command credential modes with the argv preview; agent-access select
       (Off / Read-only / Writes need approval) maps into `ConnectionInput` and
-      an "agent" badge marks opted-in rows; other kinds, paste-url prefill
-      (`parseConnectionUrl` port) and small-screen dialog height still to do)
+      an "agent" badge marks opted-in rows). **Multi-kind is NOT done and it is
+      the one deletion blocker** (see "Removing tauri"): the form hardcodes
+      `ConnectorParams::Postgres`, so mysql/mariadb/sqlite/redis/mongo cannot be
+      created in gpui - today those profiles come from the tauri webview via the
+      shared dev data dir. Porting `lib/connections.ts`'s multi-kind surface
+      (engine selector, per-kind fields/params, `prefill_form` per kind,
+      `portForKindChange`, `parseConnectionUrl` URL prefill, `serverBadge` with
+      mariadb/valkey detection, per-kind dsn/target, `ssl_root_cert`) is the
+      first phase of that PR. Small-screen dialog height still to do
 - [x] Tunnel form + tunnel list (`tunnels.rs` ports `lib/tunnels.ts` with its
       tests; the connection form's picker maps by index since names collide)
 - [x] Secret prompt dialog (SecretRequired -> unlock -> retry, with the
@@ -224,15 +234,25 @@ deleted. Each panel lands with its layer-3 tests; each flow with layer 4.
       folder via the `open` crate (detached, creates the dir first). Logs land
       under `<data dir>/logs` and the path is real now that logging is wired
       (below)
-- [ ] Update panel: check, progress, install/restart
-- [ ] Single instance + `.soquel` file association
+- [ ] Update panel: check, progress, install/restart. **Deferred past the
+      tauri-removal PR** (greenfield, no `updater.rs` lift): dev builds skip the
+      update check and nothing has shipped, so auto-update is not a deletion
+      blocker. When built, decide whether the gpui updater reuses the existing
+      minisign keypair (`tauri.conf.json` pubkey, **not rotatable**, private key
+      in 1Password) or mints a fresh one - one-time window while no client exists.
+- [ ] Single instance + `.soquel` file association. **Never existed in either
+      frontend** (no `bundle.fileAssociations`, no single-instance plugin, no
+      argv reading; the `open_connections_file` command only emitted an event to
+      the webview as an e2e route). Nothing to port - build fresh in gpui later
+      if wanted (argv parse in `main.rs` + single-instance + OS association in
+      the bundler).
 
 ### Platform work (no webview equivalent, must exist before shipping)
 
-- [ ] Packaging: installers + updater feed replacing the Tauri bundler
-      (candidate: cargo-packager; **verify the existing updater signing key
-      and manifest format carry over**, the key is not rotatable and a format
-      break orphans every installed client)
+- [ ] Packaging: installers + updater feed replacing the Tauri bundler.
+      **Deferred past the tauri-removal PR** (greenfield, the tauri bundler
+      config does not carry over; candidate: cargo-packager). Ships with the
+      updater decision above (signing key reuse-or-mint).
 - [x] Logging: `core::init_logging` (fern) to `<data dir>/logs/soquel[-dev].log`,
       called before `init_state` so the keyring probe is captured; Warn floor,
       Info for `soquel_core`/`soquel_gpui` (our lines stay above russh/hyper/
@@ -248,10 +268,64 @@ deleted. Each panel lands with its layer-3 tests; each flow with layer 4.
 
 ## Feature-parity discipline
 
-- A webview surface is deleted only in the commit where its gpui replacement
-  and tests land. The webview keeps running (`pnpm dev`) until the last box is
-  checked: it is the reference implementation, not dead code.
-- The `bindings.ts` surface (77 commands) is the functional contract: any
-  behavior reachable from a command must be reachable from the gpui app.
-- CI: `src-gpui` gets a job (fmt, clippy, test) on all three platforms; the
-  flow tests join `test-integration.sh`.
+Held through the chapter-by-chapter migration; the completion PR below closes it
+out. While both frontends existed:
+
+- A webview surface was deleted only in the commit where its gpui replacement
+  and tests landed. The webview kept running (`pnpm dev`) as the reference
+  implementation, not dead code.
+- The `bindings.ts` surface was the functional contract: any behavior reachable
+  from a command had to be reachable from the gpui app. Every core lift kept the
+  bindings byte-identical so the webview never regressed.
+
+## Removing tauri (the completion PR)
+
+Decided once it was clear nothing had shipped and there are no users but the dev:
+the only thing keeping tauri was "it is what ships", which is false, so the
+migration completes now rather than dragging two frontends. An audit of
+`src-tauri` and `packages/app` (2026-08-11) drew the line between what must be
+ported first and what is safe to delete.
+
+**The audit result.** `src-tauri/src/commands.rs` (74 commands) is a thin IPC
+skin over `soquel_core::*`; `src-gpui/src/core.rs` already mirrors that surface,
+so the command layer, `lib.rs` (specta builder + bindings export + plugin chain
++ setup), `mcp.rs` (DialogApprover/event) and `diagnostics.rs` are safe to
+delete. The only genuinely tauri-only Rust logic is `updater.rs`. `.soquel` file
+association and single-instance never existed. `SOQUEL_BUILD_DATE` is stamped by
+`crates/core/build.rs`, so gpui inherits it. On the webview side, every
+`lib/*.ts` pure-logic module already has a tested Rust twin - except the
+multi-kind surface of `lib/connections.ts`, which is the one deletion blocker
+(the gpui form is postgres-only).
+
+**Order (one PR, staged commits):**
+
+1. **Port the blockers.** The multi-kind connection form (see the Connections
+   checklist) is the real work. Also verify `secrets_status`: `AppState`'s
+   `secrets_problem` is populated by the keyring probe but gpui never reads it -
+   confirm the form disables keychain mode and defaults a new profile to
+   `prompt` when the probe failed, and bridge the getter if that path is missing.
+2. **Delete** `src-tauri` and `packages/app` (with the wdio e2e, `bindings.ts`,
+   `tauri.conf.json`, `capabilities/`, tauri icons). Rewrite the root
+   `package.json` (`dev` = `cargo run -p soquel-app`, drop the `pnpm -r` webview
+   scripts and `test:e2e`, keep the `db:*`/docker scripts and eslint), drop the
+   wdio/tauri-driver devDeps.
+3. **Collapse to a root cargo workspace**: `crates/core` + `crates/app`
+   (`src-gpui` renamed), remove the two `[workspace]` stubs, one committed
+   `Cargo.lock` (the git pins for zed/gpui-component must survive the merge), one
+   target dir.
+4. **CI**: the `rust` job builds/clippies/tests core + app with the gpui system
+   deps (`libxkbcommon-x11-dev`, `libx11-xcb-dev`, x11/wayland) instead of the
+   tauri ones, no bindings check; drop the `check` (webview) and `e2e_tests`
+   (wdio) jobs; keep `landing` and `integration_tests`. Verify whether gpui
+   `cargo test` links on Windows (the tauri `STATUS_ENTRYPOINT_NOT_FOUND` skip
+   may not apply) - if not, tests Linux-first, clippy on all three.
+5. **Restore the lost coverage**: `integration_flow_mysql` + `integration_flow_
+   sqlite` (the only real e2e gap, unblocked once the form can create them).
+
+**Deferred past this PR** (greenfield, not deletion blockers, nothing ships
+yet): the updater (+ the non-rotatable signing-key reuse-or-mint decision) and
+the packaging pipeline; optionally `.soquel` association + single-instance.
+
+**Design differences kept, not ported:** `stream_table_rows`/`RowsChunk` (the
+gpui grid pages via `fetch_rows`, no streaming); the server-side sql-session
+registry (`state.sessions` keyed by uuid) is a UI-held `Session` handle in gpui.
