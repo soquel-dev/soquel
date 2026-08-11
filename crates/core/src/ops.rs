@@ -243,6 +243,35 @@ pub fn approve_own_command(
   }
 }
 
+/// Agrees to run the credential command a profile carries, as it stands now.
+/// The approval is local and dies with any later edit of the command.
+pub fn approve_credential_command(
+  state: &AppState,
+  subject: SecretSubject,
+  id: String,
+) -> Result<(), Error> {
+  let key = key_for(subject, id);
+  let command = current_command(state, &key)?;
+  state
+    .command_approvals
+    .lock()
+    .unwrap()
+    .approve(&key, &command)
+}
+
+/// Puts the command back in waiting: the next connect asks again.
+pub fn revoke_credential_command(
+  state: &AppState,
+  subject: SecretSubject,
+  id: String,
+) -> Result<(), Error> {
+  state
+    .command_approvals
+    .lock()
+    .unwrap()
+    .revoke(&key_for(subject, id))
+}
+
 pub fn create_connection(
   state: &AppState,
   input: &ConnectionInput,
@@ -720,6 +749,46 @@ mod tests {
       .unwrap();
     assert!(matches!(
       current_command(&state, &key(&plain.id)),
+      Err(Error::NotFound { .. })
+    ));
+  }
+
+  #[test]
+  fn the_approval_verbs_work_against_the_stored_command_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = state(&dir);
+    let line = "vault read db";
+    let profile = state
+      .profiles
+      .lock()
+      .unwrap()
+      .create(&input(command(line), None))
+      .unwrap();
+
+    // Imported shape: the command sits in the store with no approval yet.
+    approve_credential_command(&state, SecretSubject::Connection, profile.id.clone()).unwrap();
+    assert!(state
+      .command_approvals
+      .lock()
+      .unwrap()
+      .is_approved(&key(&profile.id), line));
+
+    revoke_credential_command(&state, SecretSubject::Connection, profile.id.clone()).unwrap();
+    assert!(!state
+      .command_approvals
+      .lock()
+      .unwrap()
+      .is_approved(&key(&profile.id), line));
+
+    // Nothing to approve on a profile that has no command.
+    let plain = state
+      .profiles
+      .lock()
+      .unwrap()
+      .create(&input(CredentialSource::Keychain, None))
+      .unwrap();
+    assert!(matches!(
+      approve_credential_command(&state, SecretSubject::Connection, plain.id),
       Err(Error::NotFound { .. })
     ));
   }

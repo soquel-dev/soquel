@@ -65,13 +65,7 @@ pub fn approve_credential_command(
   subject: SecretSubject,
   id: String,
 ) -> Result<(), Error> {
-  let key = soquel_core::ops::key_for(subject, id);
-  let command = soquel_core::ops::current_command(state.inner(), &key)?;
-  state
-    .command_approvals
-    .lock()
-    .unwrap()
-    .approve(&key, &command)
+  soquel_core::ops::approve_credential_command(state.inner(), subject, id)
 }
 
 #[tauri::command]
@@ -81,11 +75,7 @@ pub fn revoke_credential_command(
   subject: SecretSubject,
   id: String,
 ) -> Result<(), Error> {
-  state
-    .command_approvals
-    .lock()
-    .unwrap()
-    .revoke(&soquel_core::ops::key_for(subject, id))
+  soquel_core::ops::revoke_credential_command(state.inner(), subject, id)
 }
 
 /// Splits a credential command the way the core will run it, so the form can
