@@ -22,9 +22,34 @@ pub fn format_estimated_rows(estimate: f64) -> String {
   }
 }
 
+/// An RFC 3339 timestamp to a medium day like "Jan 15, 2027"; None when it does
+/// not parse. Mirrors the webview's `formatDay` (Intl medium date).
+pub fn format_day(raw: &str) -> Option<String> {
+  const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+  ];
+  let mut parts = raw.get(..10)?.split('-');
+  let year: i32 = parts.next()?.parse().ok()?;
+  let month: usize = parts.next()?.parse().ok()?;
+  let day: u32 = parts.next()?.parse().ok()?;
+  let name = MONTHS.get(month.checked_sub(1)?)?;
+  Some(format!("{name} {day}, {year}"))
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn format_day_reads_the_date_part() {
+    assert_eq!(
+      format_day("2027-01-15T00:00:00Z").as_deref(),
+      Some("Jan 15, 2027")
+    );
+    assert_eq!(format_day("2026-12-03").as_deref(), Some("Dec 3, 2026"));
+    assert_eq!(format_day("not-a-date"), None);
+    assert_eq!(format_day("2027-13-01T00:00:00Z"), None);
+  }
 
   #[test]
   fn hides_unanalyzed_and_small_numbers_stay_plain() {

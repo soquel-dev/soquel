@@ -39,7 +39,8 @@ use crate::history::{HistoryEntry, filter_history, push_history};
 use crate::icons::SoquelIcon;
 use crate::staged::{build_table_changes, preview_sql};
 use crate::tabs::{
-  FREE_TABS, TabsState, WorkspaceTab, activate_sibling, close_tab, open_sql_tab, open_table_tab,
+  FREE_TABS, TabsState, WorkspaceTab, activate_sibling, close_tab, effective_tab_limit,
+  open_sql_tab, open_table_tab,
 };
 use crate::theme;
 
@@ -70,6 +71,9 @@ impl EventEmitter<WorkspaceEvent> for Workspace {}
 pub struct Workspace {
   focus_handle: FocusHandle,
   profile: ConnectionProfile,
+  /// Reads the installed licence per tab-open to lift the free-tier cap; an
+  /// activation writes the file, so the cap follows without reactive plumbing.
+  data_dir: std::path::PathBuf,
   tabs: TabsState,
   contents: HashMap<String, TabContent>,
   cell_editor: Entity<InputState>,
@@ -97,10 +101,11 @@ impl Workspace {
   pub fn new(
     db: Db,
     profile: ConnectionProfile,
+    data_dir: std::path::PathBuf,
     window: &mut Window,
     cx: &mut Context<Self>,
   ) -> Self {
-    Self::build(Some(db), profile, window, cx)
+    Self::build(Some(db), profile, data_dir, window, cx)
   }
 
   /// Tab-lifecycle tests need no live database behind the workspace.
@@ -117,12 +122,14 @@ impl Workspace {
         path: String::new(),
       },
     };
-    Self::build(None, profile, window, cx)
+    // No licence file under an empty dir: the free tier, unless the env override.
+    Self::build(None, profile, std::path::PathBuf::new(), window, cx)
   }
 
   fn build(
     db: Option<Db>,
     profile: ConnectionProfile,
+    data_dir: std::path::PathBuf,
     window: &mut Window,
     cx: &mut Context<Self>,
   ) -> Self {
@@ -223,6 +230,7 @@ impl Workspace {
     Self {
       focus_handle,
       profile,
+      data_dir,
       tabs: TabsState::default(),
       contents: HashMap::new(),
       cell_editor,
@@ -248,8 +256,8 @@ impl Workspace {
   }
 
   fn tab_limit(&self) -> usize {
-    // A licence lifts the cap; the surface for it is not here yet.
-    tab_limit_override().map_or(FREE_TABS, |limit| limit as usize)
+    let status = soquel_core::licence::read(&soquel_core::licence::path(&self.data_dir));
+    effective_tab_limit(&status, tab_limit_override())
   }
 
   fn active_tab(&self) -> Option<&WorkspaceTab> {
