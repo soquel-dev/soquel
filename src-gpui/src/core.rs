@@ -1,7 +1,6 @@
 use std::sync::{Arc, OnceLock};
 
 use futures::channel::oneshot;
-use soquel_core::AppState;
 use soquel_core::connectors::{
   Connection, DocCollection, DocCount, DocDatabase, DocDetail, DocFindRequest, DocPage,
   DocQueryResult, IndexInfo, KeyDetail, KeyScanPage, KvDatabases, QueryResult, SchemaSnapshot,
@@ -10,6 +9,7 @@ use soquel_core::connectors::{
 use soquel_core::error::{Error, SecretSubject};
 use soquel_core::profiles::{ConnectionInput, ConnectionProfile, ConnectorKind};
 use soquel_core::tunnels::{TunnelInput, TunnelProfile};
+use soquel_core::{AppState, ApprovalAnswer};
 
 fn runtime() -> &'static tokio::runtime::Runtime {
   static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -206,6 +206,107 @@ pub fn revoke_credential_command(
 
 pub fn default_ssh_keys() -> Vec<String> {
   soquel_core::ssh::default_key_paths()
+}
+
+/// Each frontend injects how a blocked write gets its yes; gpui sends it through
+/// a channel the App drains (see `mcp::GpuiApprover`).
+pub type ApproverFactory = Arc<dyn Fn() -> Arc<dyn soquel_core::mcp::Approver> + Send + Sync>;
+
+pub fn mcp_configured_port(state: &AppState) -> u16 {
+  soquel_core::mcp::configured_port(state)
+}
+
+pub fn mcp_status(
+  state: Arc<AppState>,
+) -> oneshot::Receiver<Result<soquel_core::mcp::McpStatus, Error>> {
+  let (tx, rx) = oneshot::channel();
+  runtime().spawn(async move {
+    let _ = tx.send(soquel_core::mcp::status(&state).await);
+  });
+  rx
+}
+
+/// The server runs on `runtime()`, off the UI thread; `make_approver` is the
+/// gpui seam, its answers arriving through the App's approval channel.
+pub fn mcp_start(
+  state: Arc<AppState>,
+  port: u16,
+  make_approver: ApproverFactory,
+) -> oneshot::Receiver<Result<(), Error>> {
+  let (tx, rx) = oneshot::channel();
+  runtime().spawn(async move {
+    let _ = tx.send(soquel_core::mcp::start(state, port, make_approver).await);
+  });
+  rx
+}
+
+/// Fire-and-forget: launch reads the persisted toggle and brings the server back.
+pub fn mcp_autostart(state: Arc<AppState>, make_approver: ApproverFactory) {
+  runtime().spawn(async move {
+    soquel_core::mcp::autostart(state, make_approver).await;
+  });
+}
+
+pub fn mcp_stop(state: Arc<AppState>) -> oneshot::Receiver<Result<(), Error>> {
+  let (tx, rx) = oneshot::channel();
+  runtime().spawn(async move {
+    let _ = tx.send(soquel_core::mcp::stop(&state).await);
+  });
+  rx
+}
+
+pub fn mcp_set_port(state: Arc<AppState>, port: u16) -> oneshot::Receiver<Result<(), Error>> {
+  let (tx, rx) = oneshot::channel();
+  runtime().spawn(async move {
+    let _ = tx.send(soquel_core::mcp::set_port(&state, port).await);
+  });
+  rx
+}
+
+pub fn mcp_regenerate_token(state: Arc<AppState>) -> oneshot::Receiver<Result<String, Error>> {
+  let (tx, rx) = oneshot::channel();
+  runtime().spawn(async move {
+    let _ = tx.send(soquel_core::mcp::regenerate_token(&state).await);
+  });
+  rx
+}
+
+pub fn mcp_audit_log(
+  state: &AppState,
+  limit: usize,
+) -> Result<Vec<soquel_core::mcp::AuditEntry>, Error> {
+  soquel_core::mcp::audit_log(state, limit)
+}
+
+/// Fires the oneshot the server thread is parked on; NotFound (already expired)
+/// is fine, the write is denied either way.
+pub fn mcp_resolve_approval(state: Arc<AppState>, id: String, answer: ApprovalAnswer) {
+  runtime().spawn(async move {
+    let _ = soquel_core::mcp::resolve_approval(&state, &id, answer).await;
+  });
+}
+
+pub fn mcp_trust_windows(
+  state: Arc<AppState>,
+) -> oneshot::Receiver<Vec<soquel_core::mcp::TrustWindowInfo>> {
+  let (tx, rx) = oneshot::channel();
+  runtime().spawn(async move {
+    let _ = tx.send(soquel_core::mcp::trust_windows(&state).await);
+  });
+  rx
+}
+
+pub fn mcp_revoke_trust(
+  state: Arc<AppState>,
+  session: String,
+  connection_id: String,
+) -> oneshot::Receiver<()> {
+  let (tx, rx) = oneshot::channel();
+  runtime().spawn(async move {
+    soquel_core::mcp::revoke_trust(&state, &session, &connection_id).await;
+    let _ = tx.send(());
+  });
+  rx
 }
 
 /// Off the UI thread: exporting reads the keychain.

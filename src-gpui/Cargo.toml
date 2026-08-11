@@ -16,6 +16,7 @@ result_large_err = "allow"
 
 [dependencies]
 anyhow = "1"
+async-trait = "0.1"
 futures = "0.3"
 gpui = { git = "https://github.com/zed-industries/zed" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
