@@ -1,6 +1,5 @@
 //! What makes a bug report actionable: where logs land, and a pasteable summary.
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use tauri::{AppHandle, Manager};
@@ -8,7 +7,6 @@ use tauri_plugin_log::{Target, TargetKind};
 use tauri_plugin_opener::OpenerExt;
 
 use soquel_core::error::Error;
-use soquel_core::profiles::{ConnectionProfile, ConnectorKind};
 use soquel_core::AppState;
 
 /// The log dir derives from the identifier, so debug and release share it: only
@@ -78,60 +76,7 @@ pub fn open_log_folder(app: &AppHandle) -> Result<String, Error> {
   Ok(dir.display().to_string())
 }
 
-const fn kind_label(kind: ConnectorKind) -> &'static str {
-  match kind {
-    ConnectorKind::Postgres => "postgres",
-    ConnectorKind::Mysql => "mysql",
-    ConnectorKind::Sqlite => "sqlite",
-    ConnectorKind::Redis => "redis",
-    ConnectorKind::Mongo => "mongo",
-  }
-}
-
-/// The environment facts, gathered from the app handle so `render` stays testable.
-struct Facts<'a> {
-  version: &'a str,
-  build: &'a str,
-  keychain: &'a str,
-  log: &'a str,
-  mcp: &'a str,
-}
-
-/// Facts only: no connection names, no hosts, no database paths. Counts answer
-/// "does this only happen with mongo?" and carry nothing worth hiding.
-fn render(facts: &Facts, profiles: &[ConnectionProfile], tunnels: usize) -> String {
-  let mut per_kind: BTreeMap<&str, usize> = BTreeMap::new();
-  for profile in profiles {
-    *per_kind
-      .entry(kind_label(profile.params.kind()))
-      .or_default() += 1;
-  }
-  let kinds = per_kind
-    .iter()
-    .map(|(kind, count)| format!("{kind} {count}"))
-    .collect::<Vec<_>>()
-    .join(", ");
-
-  let mut lines = vec![
-    format!("soquel {} ({})", facts.version, facts.build),
-    format!("{} {}", std::env::consts::OS, std::env::consts::ARCH),
-    format!("keychain: {}", facts.keychain),
-    format!("log: {}", facts.log),
-    format!("connections: {}", profiles.len()),
-  ];
-  if !kinds.is_empty() {
-    lines.push(format!("kinds: {kinds}"));
-  }
-  lines.push(format!("tunnels: {tunnels}"));
-  lines.push(format!("mcp: {}", facts.mcp));
-  lines.join("\n")
-}
-
 pub async fn block(app: &AppHandle, state: &AppState) -> String {
-  let keychain = match &state.secrets_problem {
-    None => "available".to_string(),
-    Some(problem) => format!("unavailable - {problem}"),
-  };
   let log = match log_dir(app) {
     Ok(dir) => dir
       .join(LOG_FILE_NAME)
@@ -140,35 +85,17 @@ pub async fn block(app: &AppHandle, state: &AppState) -> String {
       .to_string(),
     Err(err) => err.to_string(),
   };
-  // Read the handle rather than mcp::status: that one mints a keychain token.
-  let mcp = match state.mcp.lock().await.as_ref() {
-    Some(running) => format!("running on {}", running.port),
-    None => "stopped".to_string(),
+  let build = if cfg!(debug_assertions) {
+    "debug"
+  } else {
+    "release"
   };
-  let profiles = state.profiles.lock().unwrap().list();
-  let tunnels = state.tunnels.lock().unwrap().list().len();
-
-  render(
-    &Facts {
-      version: &app.package_info().version.to_string(),
-      build: if cfg!(debug_assertions) {
-        "debug"
-      } else {
-        "release"
-      },
-      keychain: &keychain,
-      log: &log,
-      mcp: &mcp,
-    },
-    &profiles,
-    tunnels,
-  )
+  soquel_core::diagnostics::block(state, &app.package_info().version.to_string(), build, &log).await
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use soquel_core::profiles::{ConnectorParams, Env, SqlServerParams, SslMode};
 
   #[test]
   fn an_isolated_run_keeps_its_logs_with_its_data() {
@@ -181,66 +108,5 @@ mod tests {
       log_dir_in(Some("run-data".to_string())),
       Some(["run-data", "logs"].iter().collect::<PathBuf>())
     );
-  }
-
-  fn facts() -> Facts<'static> {
-    Facts {
-      version: "0.1.0",
-      build: "debug",
-      keychain: "available",
-      log: "/tmp/logs/soquel-dev.log",
-      mcp: "stopped",
-    }
-  }
-
-  fn profile(name: &str, params: ConnectorParams) -> ConnectionProfile {
-    ConnectionProfile {
-      id: "c-1".to_string(),
-      name: name.to_string(),
-      env: Env::Prod,
-      group: None,
-      agent_access: Default::default(),
-      credential: Default::default(),
-      params,
-    }
-  }
-
-  fn pg(host: &str) -> ConnectorParams {
-    ConnectorParams::Postgres(SqlServerParams {
-      host: host.to_string(),
-      port: 5432,
-      database: "shop".to_string(),
-      user: "app".to_string(),
-      ssl_mode: SslMode::Prefer,
-      ssl_root_cert: None,
-      tunnel_id: None,
-    })
-  }
-
-  #[test]
-  fn a_pasteable_block_names_no_connection() {
-    // This block is meant to land in a public issue: a name or a host in it
-    // would be pasted there by someone who never reread it.
-    let profiles = vec![
-      profile("prod billing", pg("db.internal")),
-      profile("staging", pg("staging.internal")),
-    ];
-
-    let block = render(&facts(), &profiles, 1);
-
-    assert!(!block.contains("prod billing"), "{block}");
-    assert!(!block.contains("db.internal"), "{block}");
-    assert!(!block.contains("shop"), "{block}");
-    assert!(block.contains("connections: 2"), "{block}");
-    assert!(block.contains("postgres 2"), "{block}");
-  }
-
-  #[test]
-  fn no_connection_yet_means_no_kinds_line() {
-    let block = render(&facts(), &[], 0);
-
-    assert!(block.contains("connections: 0"), "{block}");
-    assert!(!block.contains("kinds:"), "{block}");
-    assert!(block.contains("keychain: available"), "{block}");
   }
 }

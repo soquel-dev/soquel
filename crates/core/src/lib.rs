@@ -21,6 +21,7 @@ pub mod activation;
 pub mod command_approvals;
 pub mod connectors;
 pub mod credentials;
+pub mod diagnostics;
 pub mod error;
 pub mod export;
 pub mod known_hosts;
