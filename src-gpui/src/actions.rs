@@ -5,6 +5,7 @@ actions!(
   [
     RunQuery,
     ToggleThemeMode,
+    ToggleCommandPalette,
     RefreshSchema,
     FocusEditor,
     CancelCellEdit,
@@ -26,6 +27,7 @@ pub fn init(cx: &mut App) {
     KeyBinding::new("ctrl-tab", NextTab, None),
     KeyBinding::new("ctrl-shift-tab", PrevTab, None),
     KeyBinding::new("secondary-t", NewSqlTab, None),
+    KeyBinding::new("secondary-k", ToggleCommandPalette, None),
     // Scoped to the cell editor wrapper so the sql editor's own keys survive.
     KeyBinding::new("escape", CancelCellEdit, Some("CellEditor > Input")),
     KeyBinding::new("tab", NextCell, Some("CellEditor > Input")),

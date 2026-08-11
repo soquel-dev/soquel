@@ -260,7 +260,7 @@ impl ConnectionsView {
     cx.notify();
   }
 
-  fn connect(&mut self, id: String, cx: &mut Context<Self>) {
+  pub(crate) fn connect(&mut self, id: String, cx: &mut Context<Self>) {
     if self.connecting.is_some() {
       return;
     }
@@ -459,7 +459,7 @@ impl ConnectionsView {
     });
   }
 
-  fn open_form(&mut self, editing: Option<ConnectionProfile>, cx: &mut Context<Self>) {
+  pub(crate) fn open_form(&mut self, editing: Option<ConnectionProfile>, cx: &mut Context<Self>) {
     self.editing = editing.as_ref().map(|p| p.id.clone());
     self.status = SharedString::default();
     let this = cx.entity();
@@ -890,7 +890,7 @@ impl ConnectionsView {
     }
   }
 
-  fn open_export_dialog(&mut self, cx: &mut Context<Self>) {
+  pub(crate) fn open_export_dialog(&mut self, cx: &mut Context<Self>) {
     self.export_include_secrets = false;
     self.export_busy = false;
     self.export_error = None;
@@ -1079,7 +1079,7 @@ impl ConnectionsView {
     });
   }
 
-  fn import_via_picker(&mut self, cx: &mut Context<Self>) {
+  pub(crate) fn import_via_picker(&mut self, cx: &mut Context<Self>) {
     let picked = cx.prompt_for_paths(PathPromptOptions {
       files: true,
       directories: false,

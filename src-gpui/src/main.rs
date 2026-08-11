@@ -3,6 +3,7 @@ mod actions;
 mod app;
 mod cell_editing;
 mod command_approval;
+mod command_palette;
 mod completion;
 mod connections;
 mod core;
