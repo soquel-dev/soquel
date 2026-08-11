@@ -2615,6 +2615,89 @@ mod tests {
     });
   }
 
+  #[gpui::test]
+  fn the_form_validates_each_kind(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let cx = cx.add_empty_window();
+    let (_dir, state) = test_state();
+    let view = cx.update(|window, cx| cx.new(|cx| ConnectionsView::new(state, window, cx)));
+
+    let set_engine =
+      |view: &ConnectionsView, kind: ConnectorKind, window: &mut Window, cx: &mut App| {
+        let ix = ENGINE_CHOICES
+          .iter()
+          .position(|choice| choice.id == engine_choice_for_kind(kind))
+          .unwrap();
+        view.form_engine.update(cx, |s, cx| {
+          s.set_selected_index(Some(IndexPath::new(ix)), window, cx)
+        });
+      };
+
+    cx.update(|window, cx| {
+      view.update(cx, |view, cx| {
+        // Start from the defaults, then a name so it is the kind fields that fail.
+        view.prefill_form(None, window, cx);
+        view
+          .form_name
+          .update(cx, |i, cx| i.set_value("conn", window, cx));
+
+        // sqlite: its file is required; host/db/user are not asked.
+        set_engine(view, ConnectorKind::Sqlite, window, cx);
+        assert_eq!(
+          view.form_input(cx).unwrap_err(),
+          "Database file is required"
+        );
+
+        // redis: only host+port, and host is required.
+        set_engine(view, ConnectorKind::Redis, window, cx);
+        view
+          .form_host
+          .update(cx, |i, cx| i.set_value("", window, cx));
+        assert_eq!(view.form_input(cx).unwrap_err(), "Host is required");
+
+        // A server kind refuses a non-numeric port.
+        set_engine(view, ConnectorKind::Mysql, window, cx);
+        view
+          .form_host
+          .update(cx, |i, cx| i.set_value("db", window, cx));
+        view
+          .form_database
+          .update(cx, |i, cx| i.set_value("app", window, cx));
+        view
+          .form_user
+          .update(cx, |i, cx| i.set_value("u", window, cx));
+        view
+          .form_port
+          .update(cx, |i, cx| i.set_value("nope", window, cx));
+        assert_eq!(view.form_input(cx).unwrap_err(), "the port is not a number");
+
+        // mysql/postgres need host, database and user.
+        view
+          .form_port
+          .update(cx, |i, cx| i.set_value("3306", window, cx));
+        view
+          .form_database
+          .update(cx, |i, cx| i.set_value("", window, cx));
+        assert_eq!(
+          view.form_input(cx).unwrap_err(),
+          "host, database and user are required"
+        );
+
+        // sqlite has no auth: it forces keychain and drops any typed password.
+        set_engine(view, ConnectorKind::Sqlite, window, cx);
+        view
+          .form_path
+          .update(cx, |i, cx| i.set_value("/x.db", window, cx));
+        view
+          .form_password
+          .update(cx, |i, cx| i.set_value("ignored", window, cx));
+        let input = view.form_input(cx).unwrap();
+        assert!(matches!(input.credential, CredentialSource::Keychain));
+        assert_eq!(input.password, None);
+      });
+    });
+  }
+
   fn profile_with(params: ConnectorParams) -> ConnectionProfile {
     ConnectionProfile {
       id: "c".to_string(),
