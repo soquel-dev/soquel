@@ -15,6 +15,7 @@ use soquel_core::AppState;
 use soquel_core::connectors::{KeyDetail, KeyEntry, KeyKind, KeyValue, KvDatabases};
 use soquel_core::profiles::ConnectionProfile;
 
+use crate::actions::{FocusEditor, RefreshSchema};
 use crate::core::{self, Db};
 
 /// Short badge label + colour per redis type (the webview's kv.ts map).
@@ -106,6 +107,7 @@ pub enum KvWorkspaceEvent {
 
 pub struct KvWorkspace {
   state: Arc<AppState>,
+  focus_handle: FocusHandle,
   db: Db,
   connection_id: String,
   name: SharedString,
@@ -131,10 +133,20 @@ pub struct KvWorkspace {
   console_log: Vec<ConsoleEntry>,
   status: SharedString,
   _subscriptions: Vec<Subscription>,
-  _task: Task<()>,
+  // One slot per concern: a shared slot would cancel a sibling refresh
+  // before its first poll (a write triggers scan + detail together).
+  _scan_task: Task<()>,
+  _detail_task: Task<()>,
+  _op_task: Task<()>,
 }
 
 impl EventEmitter<KvWorkspaceEvent> for KvWorkspace {}
+
+impl Focusable for KvWorkspace {
+  fn focus_handle(&self, _: &App) -> FocusHandle {
+    self.focus_handle.clone()
+  }
+}
 
 impl KvWorkspace {
   pub fn new(
@@ -145,6 +157,8 @@ impl KvWorkspace {
     cx: &mut Context<Self>,
   ) -> Self {
     let server_version = db.server_version();
+    let focus_handle = cx.focus_handle();
+    window.focus(&focus_handle, cx);
     let search = cx.new(|cx| InputState::new(window, cx).placeholder("search keys"));
     let string_draft = cx.new(|cx| InputState::new(window, cx).multi_line(true));
     let ttl_input = cx.new(|cx| InputState::new(window, cx).placeholder("seconds"));
@@ -178,6 +192,7 @@ impl KvWorkspace {
 
     let mut this = Self {
       state,
+      focus_handle,
       db,
       connection_id: profile.id.clone(),
       name: profile.name.clone().into(),
@@ -203,7 +218,9 @@ impl KvWorkspace {
       console_log: Vec::new(),
       status: SharedString::default(),
       _subscriptions: subscriptions,
-      _task: Task::ready(()),
+      _scan_task: Task::ready(()),
+      _detail_task: Task::ready(()),
+      _op_task: Task::ready(()),
     };
     this.scan(true, cx);
     this.load_databases(cx);
@@ -232,7 +249,7 @@ impl KvWorkspace {
     let db = self.db.clone();
     let pattern = self.pattern(cx);
     let start = self.cursor.clone();
-    self._task = cx.spawn(async move |this, cx| {
+    self._scan_task = cx.spawn(async move |this, cx| {
       let mut cursor = start;
       let mut fresh: Vec<KeyEntry> = Vec::new();
       let mut done = false;
@@ -331,7 +348,7 @@ impl KvWorkspace {
       return;
     }
     let rx = core::kv_select_db(self.state.clone(), self.connection_id.clone(), db);
-    self._task = cx.spawn(async move |this, cx| match rx.await {
+    self._op_task = cx.spawn(async move |this, cx| match rx.await {
       Ok(Ok(fresh)) => {
         let _ = this.update(cx, |this, cx| {
           this.db = fresh;
@@ -363,7 +380,7 @@ impl KvWorkspace {
     let string_draft = self.string_draft.clone();
     let ttl_input = self.ttl_input.clone();
     let _ = window;
-    self._task = cx.spawn(async move |_, cx| {
+    self._detail_task = cx.spawn(async move |_, cx| {
       let result = rx.await;
       let Some(handle) = cx.update(|cx| cx.active_window()) else {
         return;
@@ -410,7 +427,7 @@ impl KvWorkspace {
     let rx = core::kv_run_command(&self.db, command.clone());
     let this = cx.entity();
     let input = self.console_input.clone();
-    self._task = cx.spawn(async move |_, cx| {
+    self._op_task = cx.spawn(async move |_, cx| {
       let result = rx.await;
       let Some(handle) = cx.update(|cx| cx.active_window()) else {
         return;
@@ -449,7 +466,7 @@ impl KvWorkspace {
       return;
     };
     let rx = core::kv_set_string(&self.db, key.clone(), value);
-    self._task = self.after_write(rx, key, cx);
+    self._op_task = self.after_write(rx, key, cx);
   }
 
   fn apply_ttl(&mut self, ttl_ms: Option<f64>, cx: &mut Context<Self>) {
@@ -457,7 +474,7 @@ impl KvWorkspace {
       return;
     };
     let rx = core::kv_set_ttl(&self.db, key.clone(), ttl_ms);
-    self._task = self.after_write(rx, key, cx);
+    self._op_task = self.after_write(rx, key, cx);
   }
 
   fn submit_ttl(&mut self, cx: &mut Context<Self>) {
@@ -475,7 +492,7 @@ impl KvWorkspace {
       return;
     };
     let rx = core::kv_delete_key(&self.db, key);
-    self._task = cx.spawn(async move |this, cx| {
+    self._op_task = cx.spawn(async move |this, cx| {
       let result = rx.await;
       let _ = this.update(cx, |this, cx| {
         match result {
@@ -938,6 +955,18 @@ impl Render for KvWorkspace {
 
     v_flex()
       .size_full()
+      .track_focus(&self.focus_handle)
+      .on_action(cx.listener(|this, _: &RefreshSchema, _, cx| {
+        this.scan(true, cx);
+        this.load_databases(cx);
+      }))
+      .on_action(cx.listener(|this, _: &FocusEditor, window, cx| {
+        this.view = KvView::Console;
+        this
+          .console_input
+          .update(cx, |input, cx| input.focus(window, cx));
+        cx.notify();
+      }))
       .bg(cx.theme().background)
       .child(
         h_flex()

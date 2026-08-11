@@ -20,6 +20,7 @@ use soquel_core::connectors::{
 };
 use soquel_core::profiles::ConnectionProfile;
 
+use crate::actions::{FocusEditor, RefreshSchema};
 use crate::core::{self, Db};
 
 pub fn doc_kind_badge(kind: DocCollectionKind, cx: &App) -> (&'static str, Hsla) {
@@ -194,6 +195,7 @@ pub enum DocWorkspaceEvent {
 }
 
 pub struct DocWorkspace {
+  focus_handle: FocusHandle,
   db: Db,
   name: SharedString,
   server_version: Option<String>,
@@ -224,10 +226,21 @@ pub struct DocWorkspace {
   console_log: Vec<ConsoleEntry>,
   status: SharedString,
   _subscriptions: Vec<Subscription>,
-  _task: Task<()>,
+  // One slot per concern: a shared slot would cancel a sibling refresh
+  // before its first poll (a save triggers find + detail together).
+  _collections_task: Task<()>,
+  _find_task: Task<()>,
+  _detail_task: Task<()>,
+  _op_task: Task<()>,
 }
 
 impl EventEmitter<DocWorkspaceEvent> for DocWorkspace {}
+
+impl Focusable for DocWorkspace {
+  fn focus_handle(&self, _: &App) -> FocusHandle {
+    self.focus_handle.clone()
+  }
+}
 
 impl DocWorkspace {
   pub fn new(
@@ -238,6 +251,8 @@ impl DocWorkspace {
     cx: &mut Context<Self>,
   ) -> Self {
     let server_version = db.server_version();
+    let focus_handle = cx.focus_handle();
+    window.focus(&focus_handle, cx);
     let doc_db = match &profile.params {
       soquel_core::profiles::ConnectorParams::Mongo(params) => params.database.clone(),
       _ => None,
@@ -285,6 +300,7 @@ impl DocWorkspace {
     ];
 
     let mut this = Self {
+      focus_handle,
       db,
       name: profile.name.clone().into(),
       server_version,
@@ -315,7 +331,10 @@ impl DocWorkspace {
       console_log: Vec::new(),
       status: SharedString::default(),
       _subscriptions: subscriptions,
-      _task: Task::ready(()),
+      _collections_task: Task::ready(()),
+      _find_task: Task::ready(()),
+      _detail_task: Task::ready(()),
+      _op_task: Task::ready(()),
     };
     this.load_databases(cx);
     this.load_collections(cx);
@@ -393,7 +412,7 @@ impl DocWorkspace {
     self.collections_seq += 1;
     let seq = self.collections_seq;
     let rx = core::doc_collections(&self.db, db);
-    self._task = cx.spawn(async move |this, cx| {
+    self._collections_task = cx.spawn(async move |this, cx| {
       let result = rx.await;
       let _ = this.update(cx, |this, cx| {
         if this.collections_seq != seq {
@@ -448,7 +467,7 @@ impl DocWorkspace {
     let rx = core::doc_find(&self.db, request);
     let filter = self.applied_filter(cx);
     let count_rx = reset.then(|| core::doc_count(&self.db, db, collection, filter));
-    self._task = cx.spawn(async move |this, cx| {
+    self._find_task = cx.spawn(async move |this, cx| {
       let result = rx.await;
       let count = match count_rx {
         Some(rx) => rx.await.ok().and_then(Result::ok),
@@ -512,7 +531,7 @@ impl DocWorkspace {
       return;
     };
     let rx = core::doc_detail(&self.db, db, collection, id);
-    self._task = cx.spawn(async move |this, cx| {
+    self._detail_task = cx.spawn(async move |this, cx| {
       let result = rx.await;
       let _ = this.update(cx, |this, cx| {
         match result {
@@ -550,7 +569,7 @@ impl DocWorkspace {
     };
     let draft = self.doc_editor.read(cx).value().to_string();
     let rx = core::doc_replace(&self.db, db, collection, id.clone(), draft);
-    self._task = cx.spawn(async move |this, cx| {
+    self._op_task = cx.spawn(async move |this, cx| {
       let result = rx.await;
       let _ = this.update(cx, |this, cx| {
         match result {
@@ -582,7 +601,7 @@ impl DocWorkspace {
       return;
     };
     let rx = core::doc_delete(&self.db, db, collection, id);
-    self._task = cx.spawn(async move |this, cx| {
+    self._op_task = cx.spawn(async move |this, cx| {
       let result = rx.await;
       let _ = this.update(cx, |this, cx| {
         match result {
@@ -614,7 +633,7 @@ impl DocWorkspace {
     let rx = core::doc_run_query(&self.db, db, collection, source.clone());
     let this = cx.entity();
     let input = self.console_input.clone();
-    self._task = cx.spawn(async move |_, cx| {
+    self._op_task = cx.spawn(async move |_, cx| {
       let result = rx.await;
       let Some(handle) = cx.update(|cx| cx.active_window()) else {
         return;
@@ -1133,6 +1152,19 @@ impl Render for DocWorkspace {
 
     v_flex()
       .size_full()
+      .track_focus(&self.focus_handle)
+      .on_action(cx.listener(|this, _: &RefreshSchema, _, cx| {
+        this.load_collections(cx);
+        this.find(true, cx);
+        this.load_indexes(cx);
+      }))
+      .on_action(cx.listener(|this, _: &FocusEditor, window, cx| {
+        this.view = DocView::Console;
+        this
+          .console_input
+          .update(cx, |input, cx| input.focus(window, cx));
+        cx.notify();
+      }))
       .bg(cx.theme().background)
       .child(
         h_flex()

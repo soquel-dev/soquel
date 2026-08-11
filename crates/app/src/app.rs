@@ -274,6 +274,9 @@ impl App {
   }
 
   fn close_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    if let Screen::Workspace { view, .. } = &self.screen {
+      view.update(cx, |workspace, _| workspace.close_sessions());
+    }
     let open_id = match &self.screen {
       Screen::Workspace { connection_id, .. }
       | Screen::KvWorkspace { connection_id, .. }

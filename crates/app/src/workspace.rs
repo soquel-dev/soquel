@@ -473,6 +473,19 @@ impl Workspace {
     cx.notify();
   }
 
+  /// The screen is going away: free every tab's pinned session.
+  pub fn close_sessions(&mut self) {
+    for (_, content) in self.contents.drain() {
+      if let TabContent::Sql {
+        session: Some(session),
+        ..
+      } = content
+      {
+        core::close_session(session);
+      }
+    }
+  }
+
   fn activate(&mut self, id: String, cx: &mut Context<Self>) {
     // The close button lives inside the tab: its click also lands here with
     // the id that just closed. Activating a ghost would blank the content.
