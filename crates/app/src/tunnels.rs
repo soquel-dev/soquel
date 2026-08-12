@@ -633,43 +633,28 @@ impl TunnelsView {
 pub(crate) const TUNNEL_COMMAND_HINT: &str =
   "No shell: {host} {port} {user} are substituted, pipes and $(...) are not supported.";
 
-pub(crate) fn command_preview(command: &str, hint: &'static str, cx: &App) -> Div {
-  let parsed = (!command.is_empty()).then(|| soquel_core::credentials::parse_command(command));
-  let hint = div()
-    .text_xs()
-    .text_color(cx.theme().muted_foreground)
-    .child(hint);
-  match parsed {
-    Some(Ok(spec)) => v_flex()
+/// What a non-empty command parses to; the static hint lives in the field's description.
+pub(crate) fn command_preview(command: &str, cx: &App) -> Div {
+  match soquel_core::credentials::parse_command(command) {
+    Ok(spec) => h_flex()
+      .flex_wrap()
       .gap_1()
-      .child(
-        h_flex()
-          .flex_wrap()
-          .gap_1()
-          .items_center()
-          .text_xs()
-          .font_family("IBM Plex Mono")
-          .text_color(cx.theme().muted_foreground)
-          .child("runs:")
-          .children(std::iter::once(spec.program).chain(spec.args).map(|arg| {
-            div()
-              .px_1()
-              .rounded(cx.theme().radius)
-              .bg(cx.theme().muted)
-              .child(arg)
-          })),
-      )
-      .child(hint),
-    Some(Err(error)) => v_flex()
-      .gap_1()
-      .child(
+      .items_center()
+      .text_xs()
+      .font_family("IBM Plex Mono")
+      .text_color(cx.theme().muted_foreground)
+      .child("runs:")
+      .children(std::iter::once(spec.program).chain(spec.args).map(|arg| {
         div()
-          .text_xs()
-          .text_color(cx.theme().danger)
-          .child(format!("{error}")),
-      )
-      .child(hint),
-    None => v_flex().child(hint),
+          .px_1()
+          .rounded(cx.theme().radius)
+          .bg(cx.theme().muted)
+          .child(arg)
+      })),
+    Err(error) => div()
+      .text_xs()
+      .text_color(cx.theme().danger)
+      .child(format!("{error}")),
   }
 }
 
@@ -803,9 +788,12 @@ impl RenderOnce for TunnelForm {
           .child(
             field()
               .label("Command")
+              .description(TUNNEL_COMMAND_HINT)
               .child(Input::new(&view.form_command)),
           )
-          .child(field().child(command_preview(&command, TUNNEL_COMMAND_HINT, cx)))
+          .when(!command.is_empty(), |form| {
+            form.child(field().child(command_preview(&command, cx)))
+          })
       })
       .when(!status.is_empty(), |form| {
         form.child(field().child(div().text_sm().text_color(status_color).child(status)))

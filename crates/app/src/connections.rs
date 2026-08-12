@@ -12,7 +12,8 @@ use gpui_component::radio::{Radio, RadioGroup};
 use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::switch::Switch;
 use gpui_component::{
-  ActiveTheme, Disableable, IndexPath, Sizable, StyledExt, WindowExt, h_flex, v_flex,
+  ActiveTheme, Disableable, Icon, IconName, IndexPath, Sizable, StyledExt, WindowExt, h_flex,
+  v_flex,
 };
 use soquel_core::AppState;
 use soquel_core::error::{Error, SecretSubject};
@@ -271,6 +272,16 @@ enum FormField {
 
 type FormErrors = Vec<(FormField, SharedString)>;
 
+/// Test feedback shown inside the dialog, styled by outcome.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+enum FormStatus {
+  #[default]
+  Idle,
+  Testing,
+  Ok,
+  Error(SharedString),
+}
+
 /// What a pasted connection URL prefills; fields the kind does not use stay at
 /// their defaults and are ignored by `form_input`.
 #[derive(Debug, Clone, PartialEq)]
@@ -366,8 +377,7 @@ pub struct ConnectionsView {
   editing: Option<String>,
   /// Validation errors keyed by field, shown under the inputs in the dialog.
   form_errors: FormErrors,
-  /// Test feedback shown inside the dialog, never on the page behind it.
-  form_status: SharedString,
+  form_status: FormStatus,
   form_name: Entity<InputState>,
   form_group: Entity<InputState>,
   form_host: Entity<InputState>,
@@ -561,7 +571,7 @@ impl ConnectionsView {
       status: SharedString::default(),
       editing: None,
       form_errors: Vec::new(),
-      form_status: SharedString::default(),
+      form_status: FormStatus::Idle,
       form_name,
       form_group,
       form_host,
@@ -815,7 +825,7 @@ impl ConnectionsView {
     self.editing = editing.as_ref().map(|p| p.id.clone());
     self.status = SharedString::default();
     self.form_errors.clear();
-    self.form_status = SharedString::default();
+    self.form_status = FormStatus::Idle;
     let this = cx.entity().downgrade();
     dialogs::defer_on_active_window(cx, move |window, cx| {
       this
@@ -1037,12 +1047,13 @@ impl ConnectionsView {
       return;
     }
     let Some(parsed) = parse_connection_url(&raw) else {
-      self.form_status =
-        "Not a connection URL. Use postgres://, mysql://, redis:// or mongodb://.".into();
+      self.form_status = FormStatus::Error(
+        "Not a connection URL. Use postgres://, mysql://, redis:// or mongodb://.".into(),
+      );
       cx.notify();
       return;
     };
-    self.form_status = SharedString::default();
+    self.form_status = FormStatus::Idle;
     let engine_ix = ENGINE_CHOICES
       .iter()
       .position(|choice| choice.id == engine_choice_for_kind(parsed.kind))
@@ -1321,14 +1332,14 @@ impl ConnectionsView {
         return;
       }
     };
-    self.form_status = "testing...".into();
+    self.form_status = FormStatus::Testing;
     cx.notify();
     let task = core::test_input(self.state.clone(), input, self.editing.clone(), cx);
     self._task = cx.spawn(async move |this, cx| {
       let result = task.await;
       let _ = this.update(cx, |this, cx| {
         match result {
-          Ok(()) => this.form_status = "connection ok".into(),
+          Ok(()) => this.form_status = FormStatus::Ok,
           Err(Error::HostKeyUntrusted {
             host,
             port,
@@ -1338,7 +1349,7 @@ impl ConnectionsView {
             ..
           }) => {
             // The trust dialog owns this failure; retry re-reads the live form.
-            this.form_status = SharedString::default();
+            this.form_status = FormStatus::Idle;
             host_key::open_host_key_dialog(
               cx.entity(),
               this.state.clone(),
@@ -1353,13 +1364,13 @@ impl ConnectionsView {
               |view: &mut Self, result, cx| match result {
                 Ok(()) => view.test_form(cx),
                 Err(error) => {
-                  view.form_status = crate::status::error(&error);
+                  view.form_status = FormStatus::Error(crate::status::error(&error));
                   cx.notify();
                 }
               },
             );
           }
-          Err(error) => this.form_status = crate::status::error(&error),
+          Err(error) => this.form_status = FormStatus::Error(crate::status::error(&error)),
         }
         cx.notify();
       });
@@ -1941,32 +1952,74 @@ impl RenderOnce for ConnectionForm {
           })
           .when(mode == CredentialMode::Command, |form| {
             form
-              .child(note(
-                field()
+              .child({
+                let f = field()
                   .label("Command")
                   .col_span(2)
-                  .child(Input::new(&view.form_command)),
-                error_for(FormField::Command),
-                credential_command_caveat(kind).map(SharedString::from),
-              ))
-              .child(field().col_span(2).child(command_preview(
-                &command,
-                CONNECTION_COMMAND_HINT,
-                cx,
-              )))
+                  .child(Input::new(&view.form_command));
+                match error_for(FormField::Command) {
+                  Some(message) => f.description_fn(move |_, cx| {
+                    div()
+                      .text_color(cx.theme().danger)
+                      .child(message.clone())
+                      .into_any_element()
+                  }),
+                  None => {
+                    let caveat = credential_command_caveat(kind);
+                    f.description_fn(move |_, _| {
+                      v_flex()
+                        .gap_0p5()
+                        .child(CONNECTION_COMMAND_HINT)
+                        .when_some(caveat, |hint, caveat| hint.child(caveat))
+                        .into_any_element()
+                    })
+                  }
+                }
+              })
+              .when(!command.is_empty(), |form| {
+                form.child(field().col_span(2).child(command_preview(&command, cx)))
+              })
           })
       })
-      .when(!form_status.is_empty(), |form| {
+      .when(form_status != FormStatus::Idle, |form| {
         form.child(
-          field().col_span(2).child(
-            div()
+          field().col_span(2).child(match form_status.clone() {
+            FormStatus::Idle => div().into_any_element(),
+            FormStatus::Testing => h_flex()
+              .gap_2()
               .text_xs()
               .text_color(cx.theme().muted_foreground)
-              .child(form_status),
-          ),
+              .child("Testing connection…")
+              .into_any_element(),
+            FormStatus::Ok => status_banner(
+              cx.theme().green,
+              IconName::CircleCheck,
+              "Connection ok".into(),
+              cx,
+            ),
+            FormStatus::Error(message) => {
+              status_banner(cx.theme().red, IconName::CircleX, message, cx)
+            }
+          }),
         )
       })
   }
+}
+
+/// A tinted outcome row at the bottom of the form.
+fn status_banner(color: Hsla, icon: IconName, text: SharedString, cx: &App) -> AnyElement {
+  h_flex()
+    .items_start()
+    .gap_2()
+    .px_3()
+    .py_2()
+    .rounded(cx.theme().radius)
+    .bg(color.opacity(0.1))
+    .text_color(color)
+    .text_sm()
+    .child(Icon::new(icon).small().mt_0p5())
+    .child(div().flex_1().child(text))
+    .into_any_element()
 }
 
 /// The export body; the dialog builder keeps only the chrome around it.
@@ -3126,8 +3179,11 @@ mod tests {
           .update(cx, |i, cx| i.set_value("ftp://nope", window, cx));
         view.apply_url(window, cx);
         assert!(
-          view.form_status.contains("Not a connection URL"),
-          "got: {}",
+          matches!(
+            &view.form_status,
+            FormStatus::Error(message) if message.contains("Not a connection URL")
+          ),
+          "got: {:?}",
           view.form_status
         );
       });
