@@ -4118,6 +4118,24 @@ mod tests {
   }
 
   #[gpui::test]
+  fn toast_error_lands_in_the_notification_list(cx: &mut TestAppContext) {
+    let (_dir, state) = test_state();
+    let (_view, cx) = crate::test_support::shell_window(cx, {
+      let state = state.clone();
+      move |window, cx| ConnectionsView::new(state, window, cx)
+    });
+    cx.update(|_, cx| {
+      crate::status::toast_error(&"boom", cx);
+    });
+    cx.run_until_parked();
+    let count = cx.update(|window, cx| {
+      use gpui_component::WindowExt;
+      window.notifications(cx).len()
+    });
+    assert_eq!(count, 1, "the toast reached the window's list");
+  }
+
+  #[gpui::test]
   fn edit_does_not_connect(cx: &mut TestAppContext) {
     use gpui_component::WindowExt;
 

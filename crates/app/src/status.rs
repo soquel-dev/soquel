@@ -1,19 +1,30 @@
 //! Status-line errors also land in the log: the status is overwritten by the
 //! next operation, the log line survives into a diagnostics bundle.
 
-use gpui::{App, SharedString};
+use gpui::{App, AppContext, SharedString};
 use gpui_component::WindowExt;
 use gpui_component::notification::Notification;
 
-/// Log, toast on the active window, and hand back the bare message.
+/// Log, toast on the app window, and hand back the bare message.
+///
+/// Falls back to any window: an OS prompt (keychain, file picker) can hold
+/// focus when the error lands, and the toast must not be dropped for it.
 #[track_caller]
 pub fn toast_error(error: &impl std::fmt::Display, cx: &mut App) -> SharedString {
   let caller = std::panic::Location::caller();
   log::warn!("{}:{}: {error}", caller.file(), caller.line());
   let message: SharedString = format!("{error}").into();
   let toast = message.clone();
-  crate::dialogs::defer_on_active_window(cx, move |window, cx| {
-    window.push_notification(Notification::error(toast), cx);
+  cx.defer(move |cx| {
+    let Some(handle) = cx
+      .active_window()
+      .or_else(|| cx.windows().into_iter().next())
+    else {
+      return;
+    };
+    let _ = cx.update_window(handle, |_, window, cx| {
+      window.push_notification(Notification::error(toast), cx);
+    });
   });
   message
 }
