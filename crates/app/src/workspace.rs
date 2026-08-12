@@ -669,12 +669,14 @@ impl Workspace {
             .child(
               Button::new("cancel-apply")
                 .label("Cancel")
+                .debug_selector(|| "cancel-apply".into())
                 .on_click(|_, window, cx| window.close_dialog(cx)),
             )
             .child(
               Button::new("confirm-apply")
                 .primary()
                 .label("Apply")
+                .debug_selector(|| "confirm-apply".into())
                 .on_click(move |_, window, cx| {
                   window.close_dialog(cx);
                   let changes = changes.clone();
@@ -1047,6 +1049,7 @@ impl Workspace {
               };
               h_flex()
                 .id(SharedString::from(format!("h-{ix}")))
+                .debug_selector(move || format!("history-{ix}"))
                 .px_2()
                 .py_1()
                 .gap_2()
@@ -2290,8 +2293,72 @@ mod tests {
   // make the generated `#[test]` expand itself forever. Shadow it back.
   use ::core::prelude::v1::test;
   use gpui::TestAppContext;
+  use soquel_core::connectors::{ColumnKind, QueryColumn};
+  use soquel_core::credentials::Credentials;
+  use soquel_core::profiles::{ConnectorParams, Env};
 
   use super::*;
+  use crate::test_support::{shell_window, wait_until};
+
+  fn column(name: &str, data_type: &str, kind: ColumnKind) -> QueryColumn {
+    QueryColumn {
+      name: name.to_string(),
+      data_type: Some(data_type.to_string()),
+      kind,
+    }
+  }
+
+  /// A table tab whose grid is seeded in memory: no database behind it, so
+  /// reloads are no-ops and everything settles deterministically.
+  fn open_seeded_people(
+    this: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+  ) -> Entity<TableState<RowsDelegate>> {
+    this.tabs =
+      open_table_tab(&this.tabs, "main", "people", Vec::new(), usize::MAX).expect("under the cap");
+    let id = this.tabs.active_id.clone().expect("just opened");
+    let table = this.new_grid(window, cx);
+    table.update(cx, |table, _| {
+      let delegate = table.delegate_mut();
+      delegate.columns = vec![
+        column("id", "integer", ColumnKind::Number),
+        column("name", "text", ColumnKind::Text),
+      ];
+      delegate.rows = vec![
+        vec![Some("1".into()), Some("Ada".into())],
+        vec![Some("2".into()), Some("Alan".into())],
+      ];
+      delegate.can_ever_edit = true;
+      delegate.key_columns = vec!["id".to_string()];
+      delegate.loading = false;
+      delegate.eof = true;
+    });
+    this.contents.insert(
+      id,
+      TabContent::Table {
+        table: table.clone(),
+        show_ddl: false,
+        ddl: None,
+        inspector_split: cx.new(|_| ResizableState::default()),
+      },
+    );
+    table
+  }
+
+  fn sqlite_profile(path: &std::path::Path) -> ConnectionProfile {
+    ConnectionProfile {
+      id: "ws-test".to_string(),
+      name: "ws test".to_string(),
+      env: Env::Dev,
+      group: None,
+      agent_access: Default::default(),
+      credential: Default::default(),
+      params: ConnectorParams::Sqlite {
+        path: path.to_string_lossy().into_owned(),
+      },
+    }
+  }
 
   #[gpui::test]
   fn activating_a_ghost_tab_is_ignored(cx: &mut TestAppContext) {
@@ -2346,5 +2413,539 @@ mod tests {
         assert_eq!(titles, vec!["sql 2", "sql 3"]);
       });
     });
+  }
+
+  #[gpui::test]
+  fn the_filter_row_offers_the_grids_columns_and_ops_follow_the_kind(cx: &mut TestAppContext) {
+    let (workspace, cx) = shell_window(cx, Workspace::test_new);
+    cx.update(|window, cx| {
+      workspace.update(cx, |this, cx| {
+        open_seeded_people(this, window, cx);
+        this.toggle_filter_row(window, cx);
+        assert!(this.filter_open);
+        // The picker got the grid's columns, in column order.
+        this.filter_column.update(cx, |state, cx| {
+          state.set_selected_index(Some(IndexPath::new(1)), window, cx);
+        });
+        assert_eq!(
+          this.filter_column.read(cx).selected_value(),
+          Some(&"name".to_string())
+        );
+
+        this.sync_filter_ops("id".to_string(), window, cx);
+        assert_eq!(this.filter_ops, ops_for_kind(ColumnKind::Number));
+        // The first op is preselected so Add works right away.
+        assert_eq!(
+          this.filter_op.read(cx).selected_value(),
+          Some(&"=".to_string())
+        );
+      });
+    });
+  }
+
+  #[gpui::test]
+  fn apply_filter_requires_a_value_and_replaces_per_column(cx: &mut TestAppContext) {
+    let (workspace, cx) = shell_window(cx, Workspace::test_new);
+    cx.update(|window, cx| {
+      workspace.update(cx, |this, cx| {
+        let table = open_seeded_people(this, window, cx);
+        this.toggle_filter_row(window, cx);
+        this.filter_column.update(cx, |state, cx| {
+          state.set_selected_index(Some(IndexPath::new(1)), window, cx);
+        });
+        this.sync_filter_ops("name".to_string(), window, cx);
+
+        // Text ops: [=, !=, contains, starts with, is null, is not null].
+        this.filter_op.update(cx, |state, cx| {
+          state.set_selected_index(Some(IndexPath::new(2)), window, cx);
+        });
+        this
+          .filter_value
+          .update(cx, |state, cx| state.set_value("da", window, cx));
+        this.apply_filter(cx);
+        let filters = table.read(cx).delegate().filters.clone();
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0].op, FilterOp::Contains);
+        assert_eq!(filters[0].value.as_deref(), Some("da"));
+
+        // The same column again replaces instead of stacking.
+        this.filter_op.update(cx, |state, cx| {
+          state.set_selected_index(Some(IndexPath::new(0)), window, cx);
+        });
+        this
+          .filter_value
+          .update(cx, |state, cx| state.set_value("Ada", window, cx));
+        this.apply_filter(cx);
+        let filters = table.read(cx).delegate().filters.clone();
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0].op, FilterOp::Eq);
+
+        // A blank value on an op that takes one applies nothing.
+        this
+          .filter_value
+          .update(cx, |state, cx| state.set_value("  ", window, cx));
+        this.apply_filter(cx);
+        assert_eq!(
+          table.read(cx).delegate().filters[0].value.as_deref(),
+          Some("Ada")
+        );
+
+        // Nullness ops carry no value at all.
+        this.filter_op.update(cx, |state, cx| {
+          state.set_selected_index(Some(IndexPath::new(4)), window, cx);
+        });
+        this.apply_filter(cx);
+        let filters = table.read(cx).delegate().filters.clone();
+        assert_eq!(filters[0].op, FilterOp::IsNull);
+        assert_eq!(filters[0].value, None);
+      });
+    });
+  }
+
+  #[gpui::test]
+  fn removing_filters_reaches_the_grid_one_column_or_all(cx: &mut TestAppContext) {
+    let (workspace, cx) = shell_window(cx, Workspace::test_new);
+    cx.update(|window, cx| {
+      workspace.update(cx, |this, cx| {
+        let table = open_seeded_people(this, window, cx);
+        table.update(cx, |table, _| {
+          table.delegate_mut().filters = vec![
+            ColumnFilter {
+              column: "id".into(),
+              op: FilterOp::Eq,
+              value: Some("1".into()),
+            },
+            ColumnFilter {
+              column: "name".into(),
+              op: FilterOp::Contains,
+              value: Some("a".into()),
+            },
+          ];
+        });
+        this.remove_filter("name", cx);
+        assert_eq!(table.read(cx).delegate().filters.len(), 1);
+        assert_eq!(table.read(cx).delegate().filters[0].column, "id");
+        this.clear_filters(cx);
+        assert!(table.read(cx).delegate().filters.is_empty());
+      });
+    });
+  }
+
+  #[gpui::test]
+  fn enable_ctid_rekeys_a_keyless_grid(cx: &mut TestAppContext) {
+    let (workspace, cx) = shell_window(cx, Workspace::test_new);
+    cx.update(|window, cx| {
+      workspace.update(cx, |this, cx| {
+        let table = open_seeded_people(this, window, cx);
+        table.update(cx, |table, _| table.delegate_mut().key_columns = Vec::new());
+        assert!(!table.read(cx).delegate().editable());
+        this.enable_ctid(cx);
+        let state = table.read(cx);
+        let delegate = state.delegate();
+        assert!(delegate.ctid_mode);
+        assert_eq!(delegate.key_columns, vec!["ctid".to_string()]);
+        assert!(delegate.editable());
+      });
+    });
+  }
+
+  #[gpui::test]
+  fn export_copy_writes_the_visible_grid_and_skips_hidden_keys(cx: &mut TestAppContext) {
+    let (workspace, cx) = shell_window(cx, Workspace::test_new);
+    cx.update(|window, cx| {
+      workspace.update(cx, |this, cx| {
+        let table = open_seeded_people(this, window, cx);
+        // The driver prepends system columns; exports must not leak them.
+        table.update(cx, |table, _| {
+          let delegate = table.delegate_mut();
+          delegate
+            .columns
+            .insert(0, column("xmin", "xid", ColumnKind::Other));
+          for (ix, row) in delegate.rows.iter_mut().enumerate() {
+            row.insert(0, Some(format!("77{ix}")));
+          }
+          delegate.include_xmin = true;
+        });
+        this.export_copy(ExportFormat::Csv, cx);
+        assert_eq!(this.status.to_string(), "copied 2 rows as CSV");
+      });
+    });
+    let text = cx
+      .read_from_clipboard()
+      .and_then(|item| item.text())
+      .expect("the export landed in the clipboard");
+    assert!(text.contains("Ada") && text.contains("Alan"));
+    assert!(!text.contains("xmin") && !text.contains("770"));
+  }
+
+  #[gpui::test]
+  fn the_free_tier_refuses_a_third_tab(cx: &mut TestAppContext) {
+    let (workspace, cx) = shell_window(cx, Workspace::test_new);
+    cx.update(|window, cx| {
+      workspace.update(cx, |this, cx| {
+        this.open_sql(window, cx);
+        this.open_sql(window, cx);
+        this.open_sql(window, cx);
+        assert_eq!(this.tabs.tabs.len(), FREE_TABS);
+        assert_eq!(this.contents.len(), FREE_TABS);
+      });
+    });
+  }
+
+  #[gpui::test]
+  fn apply_staged_previews_the_sql_and_cancel_keeps_the_staging(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ws.db");
+    std::fs::File::create(&path).unwrap();
+    // A real handle for the browse slot; nothing is fetched through it here.
+    let db = crate::core::connect_with_blocking(sqlite_profile(&path), Credentials::fixed(None))
+      .expect("opens the sqlite file");
+    let (workspace, cx) = shell_window(cx, Workspace::test_new);
+    cx.update(|window, cx| {
+      workspace.update(cx, |this, cx| {
+        let table = open_seeded_people(this, window, cx);
+        table.update(cx, |table, _| {
+          let delegate = table.delegate_mut();
+          delegate.browse = Some((db.clone(), "main".to_string(), "people".to_string()));
+          delegate.staged.edits.insert(
+            0,
+            [("name".to_string(), Some("Ada II".to_string()))]
+              .into_iter()
+              .collect(),
+          );
+        });
+        this.apply_staged(window, cx);
+      });
+    });
+    cx.run_until_parked();
+    let bounds = cx
+      .debug_bounds("cancel-apply")
+      .expect("the preview dialog is open");
+    cx.simulate_click(bounds.center(), Modifiers::none());
+    cx.run_until_parked();
+    assert!(
+      cx.debug_bounds("cancel-apply").is_none(),
+      "the dialog closed"
+    );
+    cx.update(|_, cx| {
+      let this = workspace.read(cx);
+      let table = this.active_table().expect("a table tab");
+      assert_eq!(table.read(cx).delegate().staged.count(), 1);
+    });
+  }
+
+  #[gpui::test]
+  fn the_history_dialog_loads_an_entry_into_the_editor(cx: &mut TestAppContext) {
+    let (workspace, cx) = shell_window(cx, Workspace::test_new);
+    cx.update(|window, cx| {
+      workspace.update(cx, |this, cx| {
+        this.open_sql(window, cx);
+        this.history = vec![
+          HistoryEntry {
+            sql: "select 2".to_string(),
+            at_ms: 2,
+            duration_ms: 1.,
+            ok: true,
+          },
+          HistoryEntry {
+            sql: "select 1".to_string(),
+            at_ms: 1,
+            duration_ms: 1.,
+            ok: false,
+          },
+        ];
+        this.open_history(window, cx);
+      });
+    });
+    cx.run_until_parked();
+    let bounds = cx.debug_bounds("history-1").expect("two history rows");
+    cx.simulate_click(bounds.center(), Modifiers::none());
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("history-1").is_none(), "the dialog closed");
+    cx.update(|_, cx| {
+      let this = workspace.read(cx);
+      let (_, editor, _) = this.active_sql().expect("a sql tab");
+      assert_eq!(editor.read(cx).value().to_string(), "select 1");
+    });
+  }
+
+  /// The table surface end to end on a real sqlite file: the schema fills the
+  /// sidebar, a filter reloads through the database, staged edits apply
+  /// through the preview dialog, an fk hops, the ddl fetches. Gated like the
+  /// other sqlite flow.
+  #[gpui::test]
+  async fn integration_workspace_sqlite_table_flow(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    if soquel_core::integration_env("SOQUEL_TEST_SQLITE").is_none() {
+      return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("flow.db");
+    std::fs::File::create(&path).unwrap();
+    let profile = sqlite_profile(&path);
+    let db = crate::core::connect_with(profile.clone(), Credentials::fixed(None), cx)
+      .await
+      .expect("opens the sqlite file");
+    let session = crate::core::open_session(&db, cx).await.expect("session");
+    for sql in [
+      "create table orgs (id integer primary key, name text)",
+      "create table people (id integer primary key, name text, org_id integer references orgs(id))",
+      "insert into orgs values (1, 'Umbrella'), (2, 'Acme')",
+      "insert into people values (1, 'Ada', 2), (2, 'Alan', 2), (3, 'Grace', 1)",
+    ] {
+      crate::core::run_session_query(&session, sql.to_string(), cx)
+        .await
+        .expect("seed");
+    }
+    crate::core::close_session(session);
+
+    let data_dir = dir.path().to_path_buf();
+    let (workspace, cx) = shell_window(cx, |window, cx| {
+      Workspace::new(db, profile, data_dir, window, cx)
+    });
+    wait_until(cx, "the schema snapshot", |cx| {
+      workspace.read_with(cx, |this, _| this.snapshot.is_some())
+    });
+
+    // The sidebar's open: rows arrive, editing is keyed on the pk.
+    cx.update(|window, cx| {
+      workspace.update(cx, |this, cx| {
+        this.open_table(
+          "main".to_string(),
+          "people".to_string(),
+          Vec::new(),
+          window,
+          cx,
+        );
+      });
+    });
+    wait_until(cx, "the people rows", |cx| {
+      workspace.read_with(cx, |this, cx| {
+        this
+          .active_table()
+          .is_some_and(|table| table.read(cx).delegate().rows.len() == 3)
+      })
+    });
+    workspace.read_with(cx, |this, cx| {
+      assert!(this.active_table().unwrap().read(cx).delegate().editable());
+    });
+
+    // A filter reloads through the database.
+    cx.update(|window, cx| {
+      workspace.update(cx, |this, cx| {
+        this.toggle_filter_row(window, cx);
+        this.filter_column.update(cx, |state, cx| {
+          state.set_selected_index(Some(IndexPath::new(1)), window, cx);
+        });
+        this.sync_filter_ops("name".to_string(), window, cx);
+        this.filter_op.update(cx, |state, cx| {
+          // Text ops: "starts with" sits fourth.
+          state.set_selected_index(Some(IndexPath::new(3)), window, cx);
+        });
+        this
+          .filter_value
+          .update(cx, |state, cx| state.set_value("A", window, cx));
+        this.apply_filter(cx);
+      });
+    });
+    wait_until(cx, "the filtered rows", |cx| {
+      workspace.read_with(cx, |this, cx| {
+        this
+          .active_table()
+          .is_some_and(|table| table.read(cx).delegate().rows.len() == 2)
+      })
+    });
+    cx.update(|_, cx| workspace.update(cx, |this, cx| this.clear_filters(cx)));
+    wait_until(cx, "the filters cleared", |cx| {
+      workspace.read_with(cx, |this, cx| {
+        this
+          .active_table()
+          .is_some_and(|table| table.read(cx).delegate().rows.len() == 3)
+      })
+    });
+
+    // Stage an edit, apply it through the preview dialog, reread.
+    cx.update(|window, cx| {
+      workspace.update(cx, |this, cx| {
+        let table = this.active_table().expect("a table tab");
+        table.update(cx, |table, _| {
+          table.delegate_mut().staged.edits.insert(
+            0,
+            [("name".to_string(), Some("Ada II".to_string()))]
+              .into_iter()
+              .collect(),
+          );
+        });
+        this.apply_staged(window, cx);
+      });
+    });
+    cx.run_until_parked();
+    let bounds = cx
+      .debug_bounds("confirm-apply")
+      .expect("the preview dialog");
+    cx.simulate_click(bounds.center(), Modifiers::none());
+    wait_until(cx, "the apply lands", |cx| {
+      workspace.read_with(cx, |this, _| this.status.starts_with("applied: 1 updated"))
+    });
+    wait_until(cx, "the reread", |cx| {
+      workspace.read_with(cx, |this, cx| {
+        this.active_table().is_some_and(|table| {
+          table
+            .read(cx)
+            .delegate()
+            .rows
+            .first()
+            .is_some_and(|row| row[1] == Some("Ada II".to_string()))
+        })
+      })
+    });
+
+    // The fk hop opens the referenced table filtered to the row's key.
+    cx.update(|window, cx| {
+      workspace.update(cx, |this, cx| this.hop(0, "org_id".to_string(), window, cx));
+    });
+    wait_until(cx, "the referenced org", |cx| {
+      workspace.read_with(cx, |this, cx| {
+        this
+          .active_tab()
+          .is_some_and(|tab| tab.title() == "main.orgs")
+          && this.active_table().is_some_and(|table| {
+            let state = table.read(cx);
+            let delegate = state.delegate();
+            delegate.rows.len() == 1 && delegate.rows[0][1] == Some("Acme".to_string())
+          })
+      })
+    });
+
+    // The ddl view fetches once, on first toggle.
+    cx.update(|_, cx| workspace.update(cx, |this, cx| this.toggle_ddl(true, cx)));
+    wait_until(cx, "the ddl", |cx| {
+      workspace.read_with(cx, |this, _| {
+        let Some(id) = this.tabs.active_id.as_deref() else {
+          return false;
+        };
+        matches!(
+          this.contents.get(id),
+          Some(TabContent::Table { ddl: Some(ddl), .. }) if ddl.to_lowercase().contains("create table")
+        )
+      })
+    });
+  }
+
+  /// The sql surface end to end on a real sqlite file: run fills the grid and
+  /// the history, a rerun collapses, a failure lands in both, export copies.
+  #[gpui::test]
+  async fn integration_workspace_sqlite_sql_flow(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    if soquel_core::integration_env("SOQUEL_TEST_SQLITE").is_none() {
+      return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("flow.db");
+    std::fs::File::create(&path).unwrap();
+    let profile = sqlite_profile(&path);
+    let db = crate::core::connect_with(profile.clone(), Credentials::fixed(None), cx)
+      .await
+      .expect("opens the sqlite file");
+    let session = crate::core::open_session(&db, cx).await.expect("session");
+    for sql in [
+      "create table people (id integer primary key, name text)",
+      "insert into people values (1, 'Ada'), (2, 'Alan')",
+    ] {
+      crate::core::run_session_query(&session, sql.to_string(), cx)
+        .await
+        .expect("seed");
+    }
+    crate::core::close_session(session);
+
+    let data_dir = dir.path().to_path_buf();
+    let (workspace, cx) = shell_window(cx, |window, cx| {
+      Workspace::new(db, profile, data_dir, window, cx)
+    });
+    wait_until(cx, "the schema snapshot", |cx| {
+      workspace.read_with(cx, |this, _| this.snapshot.is_some())
+    });
+
+    cx.update(|window, cx| {
+      workspace.update(cx, |this, cx| {
+        this.open_sql(window, cx);
+        let (_, editor, _) = this.active_sql().expect("a sql tab");
+        editor.update(cx, |editor, cx| {
+          editor.set_value("select name from people order by id", window, cx);
+        });
+        this.run(cx);
+      });
+    });
+    wait_until(cx, "the results", |cx| {
+      workspace.read_with(cx, |this, cx| {
+        this.history.len() == 1
+          && this
+            .active_sql()
+            .is_some_and(|(_, _, results)| results.read(cx).delegate().rows.len() == 2)
+      })
+    });
+    workspace.read_with(cx, |this, cx| {
+      assert!(this.history[0].ok);
+      let (id, _, results) = this.active_sql().expect("a sql tab");
+      // One pinned session per tab from the first run on.
+      assert!(matches!(
+        this.contents.get(&id),
+        Some(TabContent::Sql {
+          session: Some(_),
+          ..
+        })
+      ));
+      assert_eq!(
+        results.read(cx).delegate().rows[0][0],
+        Some("Ada".to_string())
+      );
+    });
+
+    // A consecutive rerun collapses into one history entry.
+    cx.update(|_, cx| workspace.update(cx, |this, cx| this.run(cx)));
+    wait_until(cx, "the rerun settles", |cx| {
+      workspace.read_with(cx, |this, _| {
+        let Some(id) = this.tabs.active_id.as_deref() else {
+          return false;
+        };
+        matches!(
+          this.contents.get(id),
+          Some(TabContent::Sql { running: false, .. })
+        )
+      })
+    });
+    workspace.read_with(cx, |this, _| assert_eq!(this.history.len(), 1));
+
+    // Export what the grid holds.
+    cx.update(|_, cx| workspace.update(cx, |this, cx| this.export_copy(ExportFormat::Csv, cx)));
+    let text = cx
+      .read_from_clipboard()
+      .and_then(|item| item.text())
+      .expect("copied");
+    assert!(text.contains("Ada"));
+    workspace.read_with(cx, |this, _| {
+      assert_eq!(this.status.to_string(), "copied 2 rows as CSV");
+    });
+
+    // A failing statement lands in the grid status and the history.
+    cx.update(|window, cx| {
+      workspace.update(cx, |this, cx| {
+        let (_, editor, _) = this.active_sql().expect("a sql tab");
+        editor.update(cx, |editor, cx| {
+          editor.set_value("select * from missing", window, cx);
+        });
+        this.run(cx);
+      });
+    });
+    wait_until(cx, "the failure lands", |cx| {
+      workspace.read_with(cx, |this, _| this.history.len() == 2 && !this.history[0].ok)
+    });
+    workspace.read_with(cx, |this, cx| {
+      let (_, _, results) = this.active_sql().expect("a sql tab");
+      assert!(results.read(cx).delegate().status.starts_with("error:"));
+    });
+
+    cx.update(|_, cx| workspace.update(cx, |this, _| this.close_sessions()));
+    cx.run_until_parked();
   }
 }
