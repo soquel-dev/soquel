@@ -1763,8 +1763,11 @@ impl Workspace {
     let active = self.tabs.active_id.clone();
     h_flex()
       .px_2()
-      .py_1()
+      // Fixed height: with no tab open, the strip must not shrink.
+      .h(px(34.))
+      .flex_none()
       .gap_1()
+      .items_center()
       .border_b_1()
       .border_color(cx.theme().border)
       .children(self.tabs.tabs.iter().map(|tab| {
