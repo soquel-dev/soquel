@@ -120,18 +120,22 @@ impl From<mysql_async::Error> for Error {
 
 impl From<redis::RedisError> for Error {
   fn from(err: redis::RedisError) -> Self {
-    Error::Database {
-      message: err.to_string(),
-    }
+    // The driver's Display appends the kind's Debug name ("...- AuthenticationFailed").
+    let kind = format!("{:?}", err.kind());
+    let message = err
+      .to_string()
+      .replace(&format!(" - {kind}: "), ": ")
+      .replace(&format!("- {kind}"), "");
+    Error::Database { message }
   }
 }
 
 impl From<mongodb::error::Error> for Error {
   fn from(err: mongodb::error::Error) -> Self {
-    // Command errors carry the server message; wrap the rest verbatim.
+    // The kind alone: the full error wraps it in "Kind: ..., labels: {}, source: ...".
     let message = match &*err.kind {
       mongodb::error::ErrorKind::Command(command) => command.message.clone(),
-      _ => err.to_string(),
+      kind => kind.to_string(),
     };
     Error::Database { message }
   }

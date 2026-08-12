@@ -535,6 +535,7 @@ impl App {
         dialogs::styled(dialog, window, cx)
           .w(px(620.))
           .p_0()
+          .gap_0()
           .close_button(false)
           .child(
             List::new(&list)

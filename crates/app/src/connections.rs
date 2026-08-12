@@ -2017,8 +2017,9 @@ fn status_banner(color: Hsla, icon: IconName, text: SharedString, cx: &App) -> A
     .bg(color.opacity(0.1))
     .text_color(color)
     .text_sm()
-    .child(Icon::new(icon).small().mt_0p5())
-    .child(div().flex_1().child(text))
+    // Line-height box so the icon centers on the first line of a wrapping message.
+    .child(h_flex().h_5().items_center().child(Icon::new(icon).small()))
+    .child(div().flex_1().min_w_0().child(text))
     .into_any_element()
 }
 
