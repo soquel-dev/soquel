@@ -297,41 +297,26 @@ impl McpPanel {
 
   fn confirm_regenerate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
     let this = cx.entity().downgrade();
-    window.open_dialog(cx, move |dialog, window, cx| {
-      let this = this.clone();
-      crate::dialogs::styled(dialog, window, cx)
-        .title("Regenerate the token?")
-        .w(px(400.))
-        .child(
-          div()
-            .text_sm()
-            .text_color(cx.theme().muted_foreground)
-            .child(
-              "The current token stops working immediately; every agent using it must be \
-               reconfigured with the new one.",
-            ),
-        )
-        .footer(
-          h_flex()
-            .gap_2()
-            .justify_end()
-            .child(
-              Button::new("regenerate-cancel")
-                .label("Cancel")
-                .on_click(|_, window, cx| window.close_dialog(cx)),
-            )
-            .child(
-              Button::new("regenerate-confirm")
-                .danger()
-                .label("Regenerate")
-                .debug_selector(|| "regenerate-confirm".into())
-                .on_click(move |_, window, cx| {
-                  window.close_dialog(cx);
-                  this.update(cx, |this, cx| this.regenerate(cx)).ok();
-                }),
-            ),
-        )
-    });
+    crate::dialogs::confirm_danger(
+      window,
+      cx,
+      "Regenerate the token?",
+      |cx| {
+        div()
+          .text_sm()
+          .text_color(cx.theme().muted_foreground)
+          .child(
+            "The current token stops working immediately; every agent using it must be \
+             reconfigured with the new one.",
+          )
+          .into_any_element()
+      },
+      "Regenerate",
+      "regenerate-confirm",
+      move |_, cx| {
+        this.update(cx, |this, cx| this.regenerate(cx)).ok();
+      },
+    );
   }
 
   fn regenerate(&mut self, cx: &mut Context<Self>) {
@@ -360,7 +345,11 @@ impl McpPanel {
     let audit = cx.new(|cx| McpAuditView::new(self.state.clone(), cx));
     window.open_dialog(cx, move |dialog, window, cx| {
       crate::dialogs::styled(dialog, window, cx)
-        .title(div().font_family("IBM Plex Mono").child("Agent activity"))
+        .title(
+          div()
+            .font_family(crate::theme::mono(cx))
+            .child("Agent activity"),
+        )
         .w(px(640.))
         .child(audit.clone())
     });
@@ -402,7 +391,7 @@ impl Render for McpPanel {
           .pr_8()
           .child(
             div()
-              .font_family("IBM Plex Mono")
+              .font_family(crate::theme::mono(cx))
               .text_sm()
               .text_color(cx.theme().muted_foreground)
               .child("agent access (mcp)"),
@@ -435,7 +424,7 @@ impl Render for McpPanel {
                   .child(div().text_sm().child("MCP server"))
                   .child(
                     div()
-                      .font_family("IBM Plex Mono")
+                      .font_family(crate::theme::mono(cx))
                       .text_xs()
                       .text_color(cx.theme().muted_foreground)
                       .truncate()
@@ -501,7 +490,7 @@ impl McpPanel {
               .py_1p5()
               .rounded(cx.theme().radius)
               .bg(cx.theme().muted.opacity(0.4))
-              .font_family("IBM Plex Mono")
+              .font_family(crate::theme::mono(cx))
               .text_xs()
               .truncate()
               .child(masked),
@@ -677,7 +666,7 @@ impl Render for McpAuditView {
             h_flex()
               .items_center()
               .gap_2()
-              .font_family("IBM Plex Mono")
+              .font_family(crate::theme::mono(cx))
               .text_xs()
               .child(div().size_1p5().flex_shrink_0().rounded_full().bg(dot))
               .child(div().font_medium().child(entry.tool.clone()))
@@ -699,7 +688,7 @@ impl Render for McpAuditView {
           .when_some(entry.detail.clone(), |this, detail| {
             this.child(
               div()
-                .font_family("IBM Plex Mono")
+                .font_family(crate::theme::mono(cx))
                 .text_xs()
                 .text_color(cx.theme().muted_foreground)
                 .truncate()
@@ -709,7 +698,7 @@ impl Render for McpAuditView {
           .when_some(entry.error.clone(), |this, error| {
             this.child(
               div()
-                .font_family("IBM Plex Mono")
+                .font_family(crate::theme::mono(cx))
                 .text_xs()
                 .text_color(cx.theme().danger)
                 .child(error),

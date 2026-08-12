@@ -211,7 +211,7 @@ impl Render for LicenceView {
       .when_some(outcome_message, |this, message| {
         this.child(
           div()
-            .font_family("IBM Plex Mono")
+            .font_family(crate::theme::mono(cx))
             .text_xs()
             .text_color(if outcome_ok {
               cx.theme().green

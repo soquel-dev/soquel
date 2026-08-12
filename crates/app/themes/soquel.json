@@ -6,6 +6,7 @@
       "mode": "light",
       "radius": 8,
       "radius.lg": 12,
+      "mono_font.family": "IBM Plex Mono",
       "colors": {
         "background": "#ffffff",
         "foreground": "#0a0a0a",
@@ -76,6 +77,7 @@
       "mode": "dark",
       "radius": 8,
       "radius.lg": 12,
+      "mono_font.family": "IBM Plex Mono",
       "colors": {
         "background": "#0a0a0a",
         "foreground": "#fafafa",

@@ -554,14 +554,7 @@ impl KvWorkspace {
     } else {
       short
     };
-    div()
-      .px_1p5()
-      .rounded(cx.theme().radius)
-      .bg(color.opacity(0.12))
-      .text_color(color)
-      .text_xs()
-      .font_family("IBM Plex Mono")
-      .child(label)
+    crate::ui::tinted_badge(label, color, cx)
   }
 
   fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -631,19 +624,9 @@ impl KvWorkspace {
                 let entry = &this.keys[ix];
                 let key = entry.key.clone();
                 let selected = this.selected_key.as_deref() == Some(entry.key.as_str());
-                h_flex()
-                  .id(ix)
-                  .mx_1()
-                  .px_2()
-                  .py_1()
-                  .gap_2()
-                  .items_center()
-                  .cursor_default()
-                  .rounded(cx.theme().radius)
+                crate::ui::list_row(ix, selected, cx)
                   .text_xs()
-                  .font_family("IBM Plex Mono")
-                  .when(selected, |row| row.bg(cx.theme().accent))
-                  .hover(|row| row.bg(cx.theme().accent.opacity(0.5)))
+                  .font_family(crate::theme::mono(cx))
                   .on_click(cx.listener(move |this, _, window, cx| {
                     this.select_key(key.clone(), window, cx);
                   }))
@@ -694,7 +677,7 @@ impl KvWorkspace {
         .border_b_1()
         .border_color(cx.theme().border.opacity(0.4))
         .text_xs()
-        .font_family("IBM Plex Mono")
+        .font_family(crate::theme::mono(cx))
         .child(
           div()
             .min_w(px(56.))
@@ -750,7 +733,7 @@ impl KvWorkspace {
             .border_b_1()
             .border_color(cx.theme().border.opacity(0.4))
             .text_xs()
-            .font_family("IBM Plex Mono")
+            .font_family(crate::theme::mono(cx))
             .child(
               div()
                 .text_color(cx.theme().muted_foreground)
@@ -770,7 +753,7 @@ impl KvWorkspace {
         .into_any_element(),
       KeyValue::Other { type_name } => div()
         .text_xs()
-        .font_family("IBM Plex Mono")
+        .font_family(crate::theme::mono(cx))
         .text_color(cx.theme().muted_foreground)
         .child(format!("unsupported type {type_name}"))
         .into_any_element(),
@@ -789,7 +772,7 @@ impl KvWorkspace {
         .items_center()
         .justify_center()
         .text_sm()
-        .font_family("IBM Plex Mono")
+        .font_family(crate::theme::mono(cx))
         .text_color(cx.theme().muted_foreground)
         .child(text)
         .into_any_element();
@@ -822,7 +805,7 @@ impl KvWorkspace {
               .flex_1()
               .min_w_0()
               .truncate()
-              .font_family("IBM Plex Mono")
+              .font_family(crate::theme::mono(cx))
               .text_sm()
               .child(detail.key.clone()),
           )
@@ -830,7 +813,7 @@ impl KvWorkspace {
             div()
               .text_color(cx.theme().muted_foreground)
               .text_xs()
-              .font_family("IBM Plex Mono")
+              .font_family(crate::theme::mono(cx))
               .child(format!("{size} {unit}")),
           )
           .child(if self.delete_armed {
@@ -855,7 +838,7 @@ impl KvWorkspace {
           .gap_2()
           .items_center()
           .text_xs()
-          .font_family("IBM Plex Mono")
+          .font_family(crate::theme::mono(cx))
           .text_color(cx.theme().muted_foreground)
           .child(format!("ttl {ttl_label}"))
           .child(div().w(px(96.)).child(Input::new(&self.ttl_input).small()))
@@ -912,7 +895,7 @@ impl KvWorkspace {
           .p_3()
           .gap_1()
           .text_xs()
-          .font_family("IBM Plex Mono")
+          .font_family(crate::theme::mono(cx))
           .when(self.console_log.is_empty(), |log| {
             log.child(
               div()
@@ -978,7 +961,7 @@ impl Render for KvWorkspace {
       .child(
         h_flex()
           .px_4()
-          .py_2()
+          .py_3()
           .justify_between()
           .items_center()
           .border_b_1()
@@ -991,7 +974,7 @@ impl Render for KvWorkspace {
               .child(
                 div()
                   .text_xs()
-                  .font_family("IBM Plex Mono")
+                  .font_family(crate::theme::mono(cx))
                   .text_color(cx.theme().muted_foreground)
                   .child(version),
               ),
@@ -1009,7 +992,7 @@ impl Render for KvWorkspace {
           div()
             .px_4()
             .py_1()
-            .text_xs()
+            .text_sm()
             .text_color(cx.theme().danger)
             .child(self.status.clone()),
         )

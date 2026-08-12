@@ -677,48 +677,32 @@ impl TunnelsView {
     let this = cx.entity().downgrade();
     dialogs::defer_on_active_window(cx, move |window, cx| {
       let this = this.clone();
-      let (id, name) = (id.clone(), name.clone());
-      window.open_dialog(cx, move |dialog, window, cx| {
-        let this = this.clone();
-        let id = id.clone();
-        dialogs::styled(dialog, window, cx)
-          .title(format!("Delete {name}?"))
-          .w(px(400.))
-          .child(
-            v_flex()
-              .gap_1()
-              .text_sm()
-              .text_color(cx.theme().muted_foreground)
-              .child("The tunnel and its stored credential are removed.")
-              .when(references > 0, |body| {
-                body.child(div().text_color(cx.theme().danger).child(format!(
-                  "{references} connection{} reference{} this tunnel and will fail to connect.",
-                  if references == 1 { "" } else { "s" },
-                  if references == 1 { "s" } else { "" },
-                )))
-              }),
-          )
-          .footer(
-            h_flex()
-              .gap_2()
-              .justify_end()
-              .child(
-                Button::new("delete-tunnel-cancel")
-                  .label("Cancel")
-                  .on_click(|_, window, cx| window.close_dialog(cx)),
-              )
-              .child(
-                Button::new("delete-tunnel-confirm")
-                  .danger()
-                  .label("Delete")
-                  .debug_selector(|| "delete-tunnel-confirm".into())
-                  .on_click(move |_, window, cx| {
-                    window.close_dialog(cx);
-                    this.update(cx, |this, cx| this.delete(id.clone(), cx)).ok();
-                  }),
-              ),
-          )
-      });
+      let id = id.clone();
+      dialogs::confirm_danger(
+        window,
+        cx,
+        format!("Delete {name}?"),
+        move |cx| {
+          v_flex()
+            .gap_1()
+            .text_sm()
+            .text_color(cx.theme().muted_foreground)
+            .child("The tunnel and its stored credential are removed.")
+            .when(references > 0, |body| {
+              body.child(div().text_color(cx.theme().danger).child(format!(
+                "{references} connection{} reference{} this tunnel and will fail to connect.",
+                if references == 1 { "" } else { "s" },
+                if references == 1 { "s" } else { "" },
+              )))
+            })
+            .into_any_element()
+        },
+        "Delete",
+        "delete-tunnel-confirm",
+        move |_, cx| {
+          this.update(cx, |this, cx| this.delete(id.clone(), cx)).ok();
+        },
+      );
     });
   }
 
@@ -747,16 +731,14 @@ pub(crate) fn command_preview(command: &str, cx: &App) -> Div {
       .gap_1()
       .items_center()
       .text_xs()
-      .font_family("IBM Plex Mono")
+      .font_family(crate::theme::mono(cx))
       .text_color(cx.theme().muted_foreground)
       .child("runs:")
-      .children(std::iter::once(spec.program).chain(spec.args).map(|arg| {
-        div()
-          .px_1()
-          .rounded(cx.theme().radius)
-          .bg(cx.theme().muted)
-          .child(arg)
-      })),
+      .children(
+        std::iter::once(spec.program)
+          .chain(spec.args)
+          .map(|arg| crate::ui::chip(arg, cx)),
+      ),
     Err(error) => div()
       .text_xs()
       .text_color(cx.theme().danger)
@@ -992,21 +974,12 @@ impl Render for TunnelsView {
                   .gap_2()
                   .items_center()
                   .child(div().font_semibold().text_sm().child(tunnel.name.clone()))
-                  .child(
-                    div()
-                      .px_1p5()
-                      .rounded(cx.theme().radius)
-                      .bg(cx.theme().muted)
-                      .text_xs()
-                      .font_family("IBM Plex Mono")
-                      .text_color(cx.theme().muted_foreground)
-                      .child(auth_label(form_values(&tunnel).method)),
-                  ),
+                  .child(crate::ui::chip(auth_label(form_values(&tunnel).method), cx)),
               )
               .child(
                 div()
                   .text_xs()
-                  .font_family("IBM Plex Mono")
+                  .font_family(crate::theme::mono(cx))
                   .text_color(cx.theme().muted_foreground)
                   .child(ssh_dsn(&tunnel)),
               ),

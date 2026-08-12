@@ -70,7 +70,7 @@ pub fn open_command_approval_dialog<V: 'static>(
         dialog
           .title(
             div()
-              .font_family("IBM Plex Mono")
+              .font_family(crate::theme::mono(cx))
               .child(format!("Run a command for {}?", prompt.target_name)),
           )
           .w(px(440.))
@@ -92,7 +92,7 @@ pub fn open_command_approval_dialog<V: 'static>(
                   .rounded(cx.theme().radius)
                   .bg(cx.theme().muted)
                   .text_xs()
-                  .font_family("IBM Plex Mono")
+                  .font_family(crate::theme::mono(cx))
                   .children(
                     std::iter::once(prompt.program.clone())
                       .chain(prompt.args.clone())

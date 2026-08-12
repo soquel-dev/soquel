@@ -1,13 +1,16 @@
 //! Global dialogs open from contexts with no Window in hand, plus the form
 //! chrome shared by the connection and tunnel dialogs.
 
+use std::rc::Rc;
+
 use gpui::{
-  AnyElement, App, AppContext, Hsla, IntoElement, ParentElement, SharedString, Styled, Window, div,
-  rems,
+  AnyElement, App, AppContext, Hsla, InteractiveElement, IntoElement, ParentElement, SharedString,
+  Styled, Window, div, px, rems,
 };
+use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::dialog::Dialog;
 use gpui_component::form::Field;
-use gpui_component::{ActiveTheme, Icon, IconName, Sizable, h_flex};
+use gpui_component::{ActiveTheme, Icon, IconName, Sizable, WindowExt, h_flex};
 
 /// Defers, then runs on whichever window is active: the dialog stack needs a
 /// Window, and palette or background callers do not have one.
@@ -26,6 +29,48 @@ pub fn styled(dialog: Dialog, window: &Window, cx: &App) -> Dialog {
   dialog
     .bg(crate::theme::panel(cx))
     .max_h(window.viewport_size().height * 0.85)
+}
+
+/// A destructive confirmation: title, rebuilt-per-frame body, Cancel, and a
+/// danger button that runs `on_confirm` after closing the dialog.
+pub fn confirm_danger(
+  window: &mut Window,
+  cx: &mut App,
+  title: impl Into<SharedString>,
+  body: impl Fn(&App) -> AnyElement + 'static,
+  confirm_label: &'static str,
+  confirm_selector: &'static str,
+  on_confirm: impl Fn(&mut Window, &mut App) + 'static,
+) {
+  let title: SharedString = title.into();
+  let on_confirm = Rc::new(on_confirm);
+  window.open_dialog(cx, move |dialog, window, cx| {
+    let on_confirm = on_confirm.clone();
+    styled(dialog, window, cx)
+      .title(title.clone())
+      .w(px(400.))
+      .child(body(cx))
+      .footer(
+        h_flex()
+          .gap_2()
+          .justify_end()
+          .child(
+            Button::new("confirm-cancel")
+              .label("Cancel")
+              .on_click(|_, window, cx| window.close_dialog(cx)),
+          )
+          .child(
+            Button::new("confirm-danger")
+              .danger()
+              .label(confirm_label)
+              .debug_selector(move || confirm_selector.to_string())
+              .on_click(move |_, window, cx| {
+                window.close_dialog(cx);
+                on_confirm(window, cx);
+              }),
+          ),
+      )
+  });
 }
 
 /// The description slot under an input: a validation error wins over the hint.

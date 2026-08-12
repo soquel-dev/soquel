@@ -97,7 +97,7 @@ pub fn open_host_key_dialog<V: 'static>(
                   .rounded(cx.theme().radius)
                   .bg(cx.theme().muted)
                   .text_xs()
-                  .font_family("IBM Plex Mono")
+                  .font_family(crate::theme::mono(cx))
                   .child(prompt.fingerprint.clone()),
               ),
           )

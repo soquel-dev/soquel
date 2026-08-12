@@ -30,6 +30,7 @@ mod test_support;
 mod theme;
 mod transfer;
 mod tunnels;
+mod ui;
 mod workspace;
 
 use gpui::*;

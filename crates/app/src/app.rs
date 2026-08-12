@@ -161,7 +161,7 @@ impl App {
         dialogs::styled(dialog, window, cx)
           .title(
             div()
-              .font_family("IBM Plex Mono")
+              .font_family(crate::theme::mono(cx))
               .child("Diagnostics and logs"),
           )
           .w(px(520.))
@@ -176,7 +176,7 @@ impl App {
       let view = cx.new(|cx| crate::licence::LicenceView::new(state, window, cx));
       window.open_dialog(cx, move |dialog, window, cx| {
         dialogs::styled(dialog, window, cx)
-          .title(div().font_family("IBM Plex Mono").child("Licence"))
+          .title(div().font_family(crate::theme::mono(cx)).child("Licence"))
           .w(px(440.))
           .child(view.clone())
       });
@@ -189,7 +189,11 @@ impl App {
       let audit = cx.new(|cx| McpAuditView::new(state, cx));
       window.open_dialog(cx, move |dialog, window, cx| {
         dialogs::styled(dialog, window, cx)
-          .title(div().font_family("IBM Plex Mono").child("Agent activity"))
+          .title(
+            div()
+              .font_family(crate::theme::mono(cx))
+              .child("Agent activity"),
+          )
           .w(px(640.))
           .child(audit.clone())
       });

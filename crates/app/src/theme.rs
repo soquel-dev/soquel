@@ -1,5 +1,10 @@
-use gpui::{App, Hsla, Window, WindowAppearance};
+use gpui::{App, Hsla, SharedString, Window, WindowAppearance};
 use gpui_component::{ActiveTheme, Theme, ThemeMode, ThemeRegistry};
+
+/// The mono family from the theme; the app never hardcodes the font name.
+pub fn mono(cx: &App) -> SharedString {
+  cx.theme().mono_font_family.clone()
+}
 
 /// Screen background; panels and cards sit on it.
 pub fn canvas(cx: &App) -> Hsla {

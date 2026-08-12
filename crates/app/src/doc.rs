@@ -689,14 +689,7 @@ fn pretty_json(text: &str) -> String {
 impl DocWorkspace {
   fn kind_badge(&self, kind: DocCollectionKind, cx: &App) -> Div {
     let (short, color) = doc_kind_badge(kind, cx);
-    div()
-      .px_1p5()
-      .rounded(cx.theme().radius)
-      .bg(color.opacity(0.12))
-      .text_color(color)
-      .text_xs()
-      .font_family("IBM Plex Mono")
-      .child(short)
+    crate::ui::tinted_badge(short, color, cx)
   }
 
   fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -746,40 +739,31 @@ impl DocWorkspace {
           .children(shown.into_iter().map(|collection| {
             let name = collection.name.clone();
             let selected = self.selected_collection.as_deref() == Some(collection.name.as_str());
-            h_flex()
-              .id(SharedString::from(format!(
-                "collection-{}",
-                collection.name
-              )))
-              .mx_1()
-              .px_2()
-              .py_1()
-              .gap_2()
-              .items_center()
-              .cursor_default()
-              .rounded(cx.theme().radius)
-              .text_xs()
-              .font_family("IBM Plex Mono")
-              .when(selected, |row| row.bg(cx.theme().accent))
-              .hover(|row| row.bg(cx.theme().accent.opacity(0.5)))
-              .on_click(cx.listener(move |this, _, _, cx| {
-                this.select_collection(name.clone(), cx);
-              }))
-              .child(self.kind_badge(collection.kind, cx))
-              .child(
+            crate::ui::list_row(
+              SharedString::from(format!("collection-{}", collection.name)),
+              selected,
+              cx,
+            )
+            .text_xs()
+            .font_family(crate::theme::mono(cx))
+            .on_click(cx.listener(move |this, _, _, cx| {
+              this.select_collection(name.clone(), cx);
+            }))
+            .child(self.kind_badge(collection.kind, cx))
+            .child(
+              div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .child(collection.name.clone()),
+            )
+            .when_some(collection.estimated_docs, |row, n| {
+              row.child(
                 div()
-                  .flex_1()
-                  .min_w_0()
-                  .truncate()
-                  .child(collection.name.clone()),
+                  .text_color(cx.theme().muted_foreground)
+                  .child(format!("~{}", compact_count(n))),
               )
-              .when_some(collection.estimated_docs, |row, n| {
-                row.child(
-                  div()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(format!("~{}", compact_count(n))),
-                )
-              })
+            })
           })),
       )
       .child(
@@ -802,7 +786,7 @@ impl DocWorkspace {
         .items_center()
         .justify_center()
         .text_sm()
-        .font_family("IBM Plex Mono")
+        .font_family(crate::theme::mono(cx))
         .text_color(cx.theme().muted_foreground)
         .child("soquel=# select a collection")
         .into_any_element();
@@ -836,7 +820,7 @@ impl DocWorkspace {
             col.child(
               div()
                 .text_xs()
-                .font_family("IBM Plex Mono")
+                .font_family(crate::theme::mono(cx))
                 .text_color(cx.theme().danger)
                 .child(error),
             )
@@ -851,22 +835,14 @@ impl DocWorkspace {
               .map(|ix| {
                 let entry = &this.docs[ix];
                 let selected = this.selected == Some(ix);
-                h_flex()
-                  .id(ix)
-                  .mx_1()
-                  .px_2()
-                  .py_1()
-                  .cursor_default()
-                  .rounded(cx.theme().radius)
-                  .when(selected, |row| row.bg(cx.theme().accent))
-                  .hover(|row| row.bg(cx.theme().accent.opacity(0.5)))
+                crate::ui::list_row(ix, selected, cx)
                   .on_click(cx.listener(move |this, _, _, cx| this.select_doc(ix, cx)))
                   .child(
                     v_flex()
                       .flex_1()
                       .min_w_0()
                       .text_xs()
-                      .font_family("IBM Plex Mono")
+                      .font_family(crate::theme::mono(cx))
                       .child(div().truncate().child(doc_id_label(entry.id.as_deref())))
                       .child(
                         div()
@@ -913,7 +889,7 @@ impl DocWorkspace {
         .items_center()
         .justify_center()
         .text_sm()
-        .font_family("IBM Plex Mono")
+        .font_family(crate::theme::mono(cx))
         .text_color(cx.theme().muted_foreground)
         .child("soquel=# select a document")
         .into_any_element();
@@ -944,7 +920,7 @@ impl DocWorkspace {
               .flex_1()
               .min_w_0()
               .truncate()
-              .font_family("IBM Plex Mono")
+              .font_family(crate::theme::mono(cx))
               .text_sm()
               .child(doc_id_label(entry.id.as_deref())),
           )
@@ -1041,7 +1017,7 @@ impl DocWorkspace {
         .items_center()
         .justify_center()
         .text_sm()
-        .font_family("IBM Plex Mono")
+        .font_family(crate::theme::mono(cx))
         .text_color(cx.theme().muted_foreground)
         .child("soquel=# select a collection")
         .into_any_element();
@@ -1066,7 +1042,7 @@ impl DocWorkspace {
           .border_b_1()
           .border_color(cx.theme().border.opacity(0.4))
           .text_xs()
-          .font_family("IBM Plex Mono")
+          .font_family(crate::theme::mono(cx))
           .child(div().w(px(160.)).truncate().child(index.name.clone()))
           .child(
             div()
@@ -1076,12 +1052,7 @@ impl DocWorkspace {
               .child(index.definition.clone()),
           )
           .child(div().w(px(56.)).child(if index.unique {
-            div()
-              .px_1p5()
-              .rounded(cx.theme().radius)
-              .bg(cx.theme().yellow.opacity(0.12))
-              .text_color(cx.theme().yellow)
-              .child("unique")
+            crate::ui::tinted_badge("unique", cx.theme().yellow, cx)
           } else {
             div()
           }))
@@ -1110,7 +1081,7 @@ impl DocWorkspace {
           .p_3()
           .gap_1()
           .text_xs()
-          .font_family("IBM Plex Mono")
+          .font_family(crate::theme::mono(cx))
           .when(self.console_log.is_empty(), |log| {
             log.child(div().text_color(cx.theme().muted_foreground).child(empty))
           })
@@ -1182,7 +1153,7 @@ impl Render for DocWorkspace {
       .child(
         h_flex()
           .px_4()
-          .py_2()
+          .py_3()
           .justify_between()
           .items_center()
           .border_b_1()
@@ -1195,7 +1166,7 @@ impl Render for DocWorkspace {
               .child(
                 div()
                   .text_xs()
-                  .font_family("IBM Plex Mono")
+                  .font_family(crate::theme::mono(cx))
                   .text_color(cx.theme().muted_foreground)
                   .child(version),
               ),
@@ -1213,7 +1184,7 @@ impl Render for DocWorkspace {
           div()
             .px_4()
             .py_1()
-            .text_xs()
+            .text_sm()
             .text_color(cx.theme().danger)
             .child(self.status.clone()),
         )

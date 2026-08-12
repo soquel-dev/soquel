@@ -92,7 +92,7 @@ impl Render for DiagnosticsView {
             .bg(cx.theme().muted)
             .px_3()
             .py_2()
-            .font_family("IBM Plex Mono")
+            .font_family(crate::theme::mono(cx))
             .text_xs()
             .child(block),
         )
@@ -100,7 +100,7 @@ impl Render for DiagnosticsView {
       .when_some(self.error.clone(), |this, error| {
         this.child(
           div()
-            .font_family("IBM Plex Mono")
+            .font_family(crate::theme::mono(cx))
             .text_xs()
             .text_color(cx.theme().danger)
             .child(error),

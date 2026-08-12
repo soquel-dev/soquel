@@ -1696,44 +1696,28 @@ impl ConnectionsView {
     let this = cx.entity().downgrade();
     dialogs::defer_on_active_window(cx, move |window, cx| {
       let this = this.clone();
-      let (id, name) = (id.clone(), name.clone());
-      window.open_dialog(cx, move |dialog, window, cx| {
-        let this = this.clone();
-        let id = id.clone();
-        dialogs::styled(dialog, window, cx)
-          .title(format!("Delete {name}?"))
-          .w(px(400.))
-          .child(
-            div()
-              .text_sm()
-              .text_color(cx.theme().muted_foreground)
-              .child(if keychain {
-                "The connection and its password in the OS keychain are removed."
-              } else {
-                "The connection is removed."
-              }),
-          )
-          .footer(
-            h_flex()
-              .gap_2()
-              .justify_end()
-              .child(
-                Button::new("delete-cancel")
-                  .label("Cancel")
-                  .on_click(|_, window, cx| window.close_dialog(cx)),
-              )
-              .child(
-                Button::new("delete-confirm")
-                  .danger()
-                  .label("Delete")
-                  .debug_selector(|| "delete-confirm".into())
-                  .on_click(move |_, window, cx| {
-                    window.close_dialog(cx);
-                    this.update(cx, |this, cx| this.delete(id.clone(), cx)).ok();
-                  }),
-              ),
-          )
-      });
+      let id = id.clone();
+      dialogs::confirm_danger(
+        window,
+        cx,
+        format!("Delete {name}?"),
+        move |cx| {
+          div()
+            .text_sm()
+            .text_color(cx.theme().muted_foreground)
+            .child(if keychain {
+              "The connection and its password in the OS keychain are removed."
+            } else {
+              "The connection is removed."
+            })
+            .into_any_element()
+        },
+        "Delete",
+        "delete-confirm",
+        move |_, cx| {
+          this.update(cx, |this, cx| this.delete(id.clone(), cx)).ok();
+        },
+      );
     });
   }
 
@@ -1751,18 +1735,11 @@ impl ConnectionsView {
   }
 
   fn env_badge(&self, env: Env, cx: &Context<Self>) -> Div {
-    let (bg, fg) = match env {
-      Env::Dev => (cx.theme().muted, cx.theme().muted_foreground),
-      Env::Staging => (cx.theme().yellow.opacity(0.15), cx.theme().yellow),
-      Env::Prod => (cx.theme().danger.opacity(0.15), cx.theme().danger),
-    };
-    div()
-      .px_1p5()
-      .rounded(cx.theme().radius)
-      .bg(bg)
-      .text_color(fg)
-      .text_xs()
-      .child(env_label(env))
+    match env {
+      Env::Dev => crate::ui::chip(env_label(env), cx),
+      Env::Staging => crate::ui::tinted_badge(env_label(env), cx.theme().yellow, cx),
+      Env::Prod => crate::ui::tinted_badge(env_label(env), cx.theme().danger, cx),
+    }
   }
 }
 
@@ -1774,7 +1751,7 @@ fn outline_badge(text: String, color: Hsla, cx: &App) -> Div {
     .border_color(color.opacity(0.3))
     .text_color(color)
     .text_xs()
-    .font_family("IBM Plex Mono")
+    .font_family(crate::theme::mono(cx))
     .child(text)
 }
 
@@ -2089,7 +2066,7 @@ impl RenderOnce for ExportForm {
         form.child(
           div()
             .text_xs()
-            .font_family("IBM Plex Mono")
+            .font_family(crate::theme::mono(cx))
             .text_color(cx.theme().danger)
             .child(error),
         )
@@ -2132,7 +2109,7 @@ impl RenderOnce for ImportForm {
       .child(
         div()
           .text_xs()
-          .font_family("IBM Plex Mono")
+          .font_family(crate::theme::mono(cx))
           .text_color(cx.theme().muted_foreground)
           .truncate()
           .child(path_text),
@@ -2183,7 +2160,7 @@ impl RenderOnce for ImportForm {
               .child(
                 div()
                   .text_sm()
-                  .font_family("IBM Plex Mono")
+                  .font_family(crate::theme::mono(cx))
                   .child(format!("{connections} connections, {tunnels} tunnels")),
               )
               .when(encrypted, |row| {
@@ -2241,7 +2218,7 @@ impl RenderOnce for ImportForm {
                       .child(
                         div()
                           .text_xs()
-                          .font_family("IBM Plex Mono")
+                          .font_family(crate::theme::mono(cx))
                           .text_color(cx.theme().muted_foreground)
                           .truncate()
                           .child(entry.entry.target.clone()),
@@ -2372,7 +2349,7 @@ impl RenderOnce for ImportForm {
         body.child(
           div()
             .text_xs()
-            .font_family("IBM Plex Mono")
+            .font_family(crate::theme::mono(cx))
             .text_color(cx.theme().danger)
             .child(error),
         )
@@ -2593,23 +2570,13 @@ impl Render for ConnectionsView {
                           .child(div().font_semibold().text_sm().child(profile.name.clone()))
                           .child(self.env_badge(profile.env, cx))
                           .when(profile.agent_access != AgentAccess::None, |row| {
-                            row.child(
-                              div()
-                                .px_1p5()
-                                .py_0p5()
-                                .rounded(cx.theme().radius)
-                                .bg(cx.theme().muted)
-                                .text_xs()
-                                .font_family("IBM Plex Mono")
-                                .text_color(cx.theme().muted_foreground)
-                                .child("agent"),
-                            )
+                            row.child(crate::ui::chip("agent", cx))
                           }),
                       )
                       .child(
                         div()
                           .text_xs()
-                          .font_family("IBM Plex Mono")
+                          .font_family(crate::theme::mono(cx))
                           .text_color(cx.theme().muted_foreground)
                           .child(dsn(&profile.params)),
                       ),

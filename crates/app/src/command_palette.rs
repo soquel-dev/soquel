@@ -176,7 +176,7 @@ impl ListDelegate for CommandPaletteDelegate {
             row.child(
               div()
                 .text_xs()
-                .font_family("IBM Plex Mono")
+                .font_family(crate::theme::mono(cx))
                 .text_color(cx.theme().muted_foreground)
                 .whitespace_nowrap()
                 .text_ellipsis()

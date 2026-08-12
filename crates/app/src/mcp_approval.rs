@@ -76,7 +76,7 @@ pub fn open_mcp_approval_dialog<V: 'static>(
         dialog
           .title(
             div()
-              .font_family("IBM Plex Mono")
+              .font_family(crate::theme::mono(cx))
               .child("An agent wants to write"),
           )
           .w(px(520.))
@@ -114,7 +114,7 @@ pub fn open_mcp_approval_dialog<V: 'static>(
                   .bg(cx.theme().muted)
                   .px_3()
                   .py_2()
-                  .font_family("IBM Plex Mono")
+                  .font_family(crate::theme::mono(cx))
                   .text_xs()
                   .child(request.operation.clone()),
               )
@@ -137,7 +137,7 @@ pub fn open_mcp_approval_dialog<V: 'static>(
                         .bg(cx.theme().muted)
                         .px_3()
                         .py_2()
-                        .font_family("IBM Plex Mono")
+                        .font_family(crate::theme::mono(cx))
                         .text_xs()
                         .child(payload),
                     ),
@@ -146,7 +146,7 @@ pub fn open_mcp_approval_dialog<V: 'static>(
               .when(more_waiting > 0, |this| {
                 this.child(
                   div()
-                    .font_family("IBM Plex Mono")
+                    .font_family(crate::theme::mono(cx))
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
                     .child(format!("{more_waiting} more waiting")),

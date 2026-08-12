@@ -1071,7 +1071,7 @@ impl Workspace {
                     .min_w_0()
                     .truncate()
                     .text_sm()
-                    .font_family("IBM Plex Mono")
+                    .font_family(crate::theme::mono(cx))
                     .child(entry.sql.clone()),
                 )
                 .child(
@@ -1194,7 +1194,7 @@ impl Workspace {
             .py_0p5()
             .gap_2()
             .items_center()
-            .font_family("IBM Plex Mono")
+            .font_family(crate::theme::mono(cx))
             .text_xs()
             .pl(px(12. + node.depth as f32 * 16.))
             .child(if node.children.is_empty() {
@@ -1275,7 +1275,7 @@ impl Workspace {
           .gap_3()
           .border_b_1()
           .border_color(cx.theme().border)
-          .font_family("IBM Plex Mono")
+          .font_family(crate::theme::mono(cx))
           .text_xs()
           .text_color(cx.theme().muted_foreground)
           .children(header.into_iter().map(|part| div().child(part))),
@@ -1573,7 +1573,7 @@ impl Workspace {
               .truncate()
               .text_sm()
               .font_semibold()
-              .font_family("IBM Plex Mono")
+              .font_family(crate::theme::mono(cx))
               .child(column_name),
           )
           .child(
@@ -1647,7 +1647,7 @@ impl Workspace {
           .overflow_y_scroll()
           .p_3()
           .text_sm()
-          .font_family("IBM Plex Mono")
+          .font_family(crate::theme::mono(cx))
           .child(text)
           .into_any_element(),
       })
@@ -1996,24 +1996,15 @@ impl Workspace {
       .border_color(cx.theme().border)
       .children(filters.iter().map(|filter| {
         let column = filter.column.clone();
-        h_flex()
-          .gap_1()
-          .px_2()
-          .py_0p5()
-          .rounded(cx.theme().radius)
-          .bg(cx.theme().muted)
-          .text_xs()
-          .font_family("IBM Plex Mono")
-          .child(filter_label(filter))
-          .child(
-            Button::new(SharedString::from(format!("rm-{column}")))
-              .ghost()
-              .xsmall()
-              .icon(Icon::new(IconName::Close))
-              .on_click(cx.listener(move |this, _, _, cx| {
-                this.remove_filter(&column, cx);
-              })),
-          )
+        crate::ui::chip(filter_label(filter), cx).gap_1().child(
+          Button::new(SharedString::from(format!("rm-{column}")))
+            .ghost()
+            .xsmall()
+            .icon(Icon::new(IconName::Close))
+            .on_click(cx.listener(move |this, _, _, cx| {
+              this.remove_filter(&column, cx);
+            })),
+        )
       }))
       .child(
         Button::new("clear-filters")
