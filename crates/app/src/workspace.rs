@@ -644,7 +644,8 @@ impl Workspace {
 
     let statements = preview_sql(&changes);
     let this = cx.entity().downgrade();
-    window.open_dialog(cx, move |dialog, _, cx| {
+    window.open_dialog(cx, move |dialog, window, cx| {
+      let dialog = crate::dialogs::styled(dialog, window, cx);
       let changes = changes.clone();
       let db = db.clone();
       let this = this.clone();
@@ -1023,7 +1024,8 @@ impl Workspace {
     });
     let this = cx.entity().downgrade();
     let search = self.history_search.clone();
-    window.open_dialog(cx, move |dialog, _, cx| {
+    window.open_dialog(cx, move |dialog, window, cx| {
+      let dialog = crate::dialogs::styled(dialog, window, cx);
       let this_entity = this.clone();
       let query = search.read(cx).value().to_string();
       let Ok(entries) = this_entity.read_with(cx, |workspace, _| {
@@ -1655,7 +1657,6 @@ impl Workspace {
     let workspace = cx.entity();
     v_flex()
       .size_full()
-      .bg(cx.theme().sidebar)
       .child(
         h_flex()
           .px_3()
@@ -1700,7 +1701,7 @@ impl Workspace {
           tree(&self.tree, move |ix, entry, selected, _, cx| {
             let item = entry.item();
             if entry.is_folder() {
-              return ListItem::new(ix).child(
+              return ListItem::new(ix).rounded(cx.theme().radius).child(
                 h_flex()
                   .gap_1()
                   .pl(px(4.))
@@ -1731,6 +1732,7 @@ impl Workspace {
             let workspace = workspace.clone();
             ListItem::new(ix)
               .selected(selected)
+              .rounded(cx.theme().radius)
               .on_click(move |_, window, app| {
                 let (schema, name) = (schema.clone(), name.clone());
                 workspace.update(app, |this, cx| {
@@ -1773,7 +1775,7 @@ impl Workspace {
     let active = self.tabs.active_id.clone();
     h_flex()
       .px_2()
-      .pt_1()
+      .py_1()
       .gap_1()
       .border_b_1()
       .border_color(cx.theme().border)
@@ -1784,10 +1786,10 @@ impl Workspace {
         h_flex()
           .id(SharedString::from(format!("tab-{id}")))
           .px_2()
-          .py_1()
+          .py_0p5()
           .gap_1()
           .items_center()
-          .rounded_t(cx.theme().radius)
+          .rounded(cx.theme().radius)
           .text_sm()
           .cursor_default()
           .when(selected, |this| {
@@ -1796,9 +1798,10 @@ impl Workspace {
               .text_color(cx.theme().accent_foreground)
           })
           .when(!selected, |this| {
-            this.text_color(cx.theme().muted_foreground)
+            this
+              .text_color(cx.theme().muted_foreground)
+              .hover(|this| this.bg(cx.theme().accent.opacity(0.5)))
           })
-          .hover(|this| this.bg(cx.theme().accent))
           .on_click(cx.listener(move |this, _, _, cx| this.activate(id.clone(), cx)))
           .child(tab.title())
           .child(
@@ -1998,8 +2001,7 @@ impl Workspace {
           .px_2()
           .py_0p5()
           .rounded(cx.theme().radius)
-          .border_1()
-          .border_color(cx.theme().border)
+          .bg(cx.theme().muted)
           .text_xs()
           .font_family("IBM Plex Mono")
           .child(filter_label(filter))
@@ -2216,7 +2218,7 @@ impl Workspace {
       .px_3()
       .py_1()
       .justify_between()
-      .bg(cx.theme().secondary)
+      .bg(theme::canvas(cx))
       .border_t_1()
       .border_color(cx.theme().border)
       .text_xs()
@@ -2232,7 +2234,7 @@ impl Render for Workspace {
       .flex_1()
       .min_h_0()
       .track_focus(&self.focus_handle)
-      .bg(cx.theme().background)
+      .bg(theme::canvas(cx))
       .on_action(cx.listener(|this, _: &RunQuery, _, cx| this.run(cx)))
       .on_action(cx.listener(|this, _: &RefreshSchema, _, cx| this.refresh_schema(cx)))
       .on_action(cx.listener(|this, _: &NextTab, _, cx| this.cycle(1, cx)))
@@ -2277,6 +2279,9 @@ impl Render for Workspace {
               resizable_panel().child(
                 v_flex()
                   .size_full()
+                  .bg(theme::panel(cx))
+                  .border_l_1()
+                  .border_color(cx.theme().border)
                   .child(self.render_tab_strip(cx))
                   .child(self.render_active_content(cx)),
               ),

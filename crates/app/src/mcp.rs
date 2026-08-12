@@ -320,8 +320,8 @@ impl McpPanel {
 
   fn open_audit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
     let audit = cx.new(|cx| McpAuditView::new(self.state.clone(), cx));
-    window.open_dialog(cx, move |dialog, _, _| {
-      dialog
+    window.open_dialog(cx, move |dialog, window, cx| {
+      crate::dialogs::styled(dialog, window, cx)
         .title(div().font_family("IBM Plex Mono").child("Agent activity"))
         .w(px(640.))
         .child(audit.clone())

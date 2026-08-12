@@ -458,7 +458,7 @@ impl TunnelsView {
       });
 
       let this = this.clone();
-      window.open_dialog(cx, move |dialog, _, cx| {
+      window.open_dialog(cx, move |dialog, window, cx| {
         let Some(strong) = this.upgrade() else {
           return dialog;
         };
@@ -475,7 +475,7 @@ impl TunnelsView {
         };
         let this_test = this.clone();
         let this_save = this.clone();
-        dialog
+        dialogs::styled(dialog, window, cx)
           .title(title)
           .w(px(460.))
           .child(TunnelForm {
@@ -821,10 +821,10 @@ impl Render for TunnelsView {
   fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
     let status = self.status.clone();
     v_flex()
-      .gap_1()
+      .gap_2()
       .child(
         h_flex()
-          .px_2()
+          .px_1()
           .pt_4()
           .pb_1()
           .justify_between()
@@ -877,6 +877,8 @@ impl Render for TunnelsView {
           .rounded(cx.theme().radius)
           .border_1()
           .border_color(cx.theme().border)
+          .bg(crate::theme::panel(cx))
+          .when(!cx.theme().mode.is_dark(), |s| s.shadow_sm())
           .child(
             div()
               .text_color(cx.theme().muted_foreground)
@@ -895,8 +897,7 @@ impl Render for TunnelsView {
                     div()
                       .px_1p5()
                       .rounded(cx.theme().radius)
-                      .border_1()
-                      .border_color(cx.theme().border)
+                      .bg(cx.theme().muted)
                       .text_xs()
                       .font_family("IBM Plex Mono")
                       .text_color(cx.theme().muted_foreground)

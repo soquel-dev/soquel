@@ -24,7 +24,8 @@ pub fn open_mcp_approval_dialog<V: 'static>(
   crate::dialogs::defer_on_active_window(cx, move |window, cx| {
     // One dialog, one answer: shared across the buttons and the dismiss path.
     let resolved = Rc::new(Cell::new(false));
-    window.open_dialog(cx, move |dialog, _, cx| {
+    window.open_dialog(cx, move |dialog, window, cx| {
+      let dialog = crate::dialogs::styled(dialog, window, cx);
       let this = this.clone();
       {
         let request = request.clone();

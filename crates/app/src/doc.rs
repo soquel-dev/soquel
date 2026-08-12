@@ -751,11 +751,13 @@ impl DocWorkspace {
                 "collection-{}",
                 collection.name
               )))
+              .mx_1()
               .px_2()
               .py_1()
               .gap_2()
               .items_center()
               .cursor_default()
+              .rounded(cx.theme().radius)
               .text_xs()
               .font_family("IBM Plex Mono")
               .when(selected, |row| row.bg(cx.theme().accent))
@@ -851,9 +853,11 @@ impl DocWorkspace {
                 let selected = this.selected == Some(ix);
                 h_flex()
                   .id(ix)
+                  .mx_1()
                   .px_2()
                   .py_1()
                   .cursor_default()
+                  .rounded(cx.theme().radius)
                   .when(selected, |row| row.bg(cx.theme().accent))
                   .hover(|row| row.bg(cx.theme().accent.opacity(0.5)))
                   .on_click(cx.listener(move |this, _, _, cx| this.select_doc(ix, cx)))
@@ -1174,7 +1178,7 @@ impl Render for DocWorkspace {
           .update(cx, |input, cx| input.focus(window, cx));
         cx.notify();
       }))
-      .bg(cx.theme().background)
+      .bg(crate::theme::canvas(cx))
       .child(
         h_flex()
           .px_4()
@@ -1228,6 +1232,9 @@ impl Render for DocWorkspace {
               resizable_panel().child(
                 v_flex()
                   .size_full()
+                  .bg(crate::theme::panel(cx))
+                  .border_l_1()
+                  .border_color(cx.theme().border)
                   .child(
                     h_flex()
                       .px_2()

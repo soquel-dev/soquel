@@ -29,7 +29,8 @@ pub fn open_host_key_dialog<V: 'static>(
 ) {
   let this = this.downgrade();
   crate::dialogs::defer_on_active_window(cx, move |window, cx| {
-    window.open_dialog(cx, move |dialog, _, cx| {
+    window.open_dialog(cx, move |dialog, window, cx| {
+      let dialog = crate::dialogs::styled(dialog, window, cx);
       let this = this.clone();
       {
         let state = state.clone();

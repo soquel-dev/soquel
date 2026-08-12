@@ -633,11 +633,13 @@ impl KvWorkspace {
                 let selected = this.selected_key.as_deref() == Some(entry.key.as_str());
                 h_flex()
                   .id(ix)
+                  .mx_1()
                   .px_2()
                   .py_1()
                   .gap_2()
                   .items_center()
                   .cursor_default()
+                  .rounded(cx.theme().radius)
                   .text_xs()
                   .font_family("IBM Plex Mono")
                   .when(selected, |row| row.bg(cx.theme().accent))
@@ -972,7 +974,7 @@ impl Render for KvWorkspace {
           .update(cx, |input, cx| input.focus(window, cx));
         cx.notify();
       }))
-      .bg(cx.theme().background)
+      .bg(crate::theme::canvas(cx))
       .child(
         h_flex()
           .px_4()
@@ -1026,6 +1028,9 @@ impl Render for KvWorkspace {
               resizable_panel().child(
                 v_flex()
                   .size_full()
+                  .bg(crate::theme::panel(cx))
+                  .border_l_1()
+                  .border_color(cx.theme().border)
                   .child(
                     h_flex()
                       .px_2()

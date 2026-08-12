@@ -14,11 +14,12 @@ use soquel_core::ApprovalAnswer;
 use soquel_core::mcp::McpApprovalRequest;
 
 use crate::actions::ToggleCommandPalette;
-use crate::command_palette::{CommandPaletteDelegate, PaletteItem};
+use crate::command_palette::{CommandPaletteDelegate, PaletteItem, PaletteSection, palette_footer};
 use crate::connections::{ConnectionsEvent, ConnectionsView, group_connections};
 use crate::core;
 use crate::dialogs;
 use crate::doc::{DocWorkspace, DocWorkspaceEvent};
+use crate::icons::SoquelIcon;
 use crate::kv::{KvWorkspace, KvWorkspaceEvent};
 use crate::mcp::{McpAuditView, McpPanel};
 use crate::mcp_approval::open_mcp_approval_dialog;
@@ -144,8 +145,10 @@ impl App {
     let make_approver = self.make_approver.clone();
     dialogs::defer_on_active_window(cx, move |window, cx| {
       let panel = cx.new(|cx| McpPanel::new(state, make_approver, window, cx));
-      window.open_dialog(cx, move |dialog, _, _| {
-        dialog.w(px(560.)).child(panel.clone())
+      window.open_dialog(cx, move |dialog, window, cx| {
+        dialogs::styled(dialog, window, cx)
+          .w(px(560.))
+          .child(panel.clone())
       });
     });
   }
@@ -154,8 +157,8 @@ impl App {
     let state = self.state.clone();
     dialogs::defer_on_active_window(cx, move |window, cx| {
       let view = cx.new(|cx| crate::diagnostics::DiagnosticsView::new(state, cx));
-      window.open_dialog(cx, move |dialog, _, _| {
-        dialog
+      window.open_dialog(cx, move |dialog, window, cx| {
+        dialogs::styled(dialog, window, cx)
           .title(
             div()
               .font_family("IBM Plex Mono")
@@ -171,8 +174,8 @@ impl App {
     let state = self.state.clone();
     dialogs::defer_on_active_window(cx, move |window, cx| {
       let view = cx.new(|cx| crate::licence::LicenceView::new(state, window, cx));
-      window.open_dialog(cx, move |dialog, _, _| {
-        dialog
+      window.open_dialog(cx, move |dialog, window, cx| {
+        dialogs::styled(dialog, window, cx)
           .title(div().font_family("IBM Plex Mono").child("Licence"))
           .w(px(440.))
           .child(view.clone())
@@ -184,8 +187,8 @@ impl App {
     let state = self.state.clone();
     dialogs::defer_on_active_window(cx, move |window, cx| {
       let audit = cx.new(|cx| McpAuditView::new(state, cx));
-      window.open_dialog(cx, move |dialog, _, _| {
-        dialog
+      window.open_dialog(cx, move |dialog, window, cx| {
+        dialogs::styled(dialog, window, cx)
           .title(div().font_family("IBM Plex Mono").child("Agent activity"))
           .w(px(640.))
           .child(audit.clone())
@@ -289,6 +292,8 @@ impl App {
       },
       hint: None,
       keywords: "toggle theme dark light".to_string(),
+      icon: Icon::new(if dark { IconName::Sun } else { IconName::Moon }),
+      section: PaletteSection::App,
       run: Rc::new(theme::toggle),
     });
     // Items live in the palette dialog: weak handles so an open palette never
@@ -298,6 +303,8 @@ impl App {
       label: "MCP server".into(),
       hint: None,
       keywords: "mcp server agent access port token".to_string(),
+      icon: Icon::new(IconName::Bot),
+      section: PaletteSection::App,
       run: Rc::new(move |_, cx| {
         panel_app.update(cx, |app, cx| app.open_mcp_panel(cx)).ok();
       }),
@@ -307,6 +314,8 @@ impl App {
       label: "Agent activity".into(),
       hint: None,
       keywords: "agent activity audit log mcp".to_string(),
+      icon: Icon::new(IconName::BookOpen),
+      section: PaletteSection::App,
       run: Rc::new(move |_, cx| {
         audit_app.update(cx, |app, cx| app.open_audit(cx)).ok();
       }),
@@ -316,6 +325,8 @@ impl App {
       label: "Licence".into(),
       hint: None,
       keywords: "licence license unlock buy activate tabs".to_string(),
+      icon: Icon::new(SoquelIcon::Lock),
+      section: PaletteSection::App,
       run: Rc::new(move |_, cx| {
         licence_app.update(cx, |app, cx| app.open_licence(cx)).ok();
       }),
@@ -325,6 +336,8 @@ impl App {
       label: "Diagnostics and logs".into(),
       hint: None,
       keywords: "diagnostics logs support bug report".to_string(),
+      icon: Icon::new(IconName::Info),
+      section: PaletteSection::App,
       run: Rc::new(move |_, cx| {
         diagnostics_app
           .update(cx, |app, cx| app.open_diagnostics(cx))
@@ -351,6 +364,8 @@ impl App {
                 target
               )
               .to_lowercase(),
+              icon: Icon::new(SoquelIcon::Database),
+              section: PaletteSection::Connections,
               run: Rc::new(move |_, cx| {
                 let id = id.clone();
                 view.update(cx, |view, cx| view.connect(id, cx)).ok();
@@ -363,6 +378,8 @@ impl App {
           label: "New connection".into(),
           hint: None,
           keywords: "new connection".to_string(),
+          icon: Icon::new(IconName::Plus),
+          section: PaletteSection::Actions,
           run: Rc::new(move |_, cx| {
             new_view
               .update(cx, |view, cx| view.open_form(None, cx))
@@ -374,6 +391,8 @@ impl App {
           label: "Import connections…".into(),
           hint: None,
           keywords: "import connections file".to_string(),
+          icon: Icon::new(IconName::FolderOpen),
+          section: PaletteSection::Actions,
           run: Rc::new(move |_, cx| {
             import_view
               .update(cx, |view, cx| view.import_via_picker(cx))
@@ -386,6 +405,8 @@ impl App {
             label: "Export connections…".into(),
             hint: None,
             keywords: "export connections file".to_string(),
+            icon: Icon::new(IconName::ExternalLink),
+            section: PaletteSection::Actions,
             run: Rc::new(move |_, cx| {
               export_view
                 .update(cx, |view, cx| view.open_export_dialog(cx))
@@ -400,6 +421,8 @@ impl App {
           label: "Run query".into(),
           hint: None,
           keywords: "run query execute".to_string(),
+          icon: Icon::new(IconName::Play),
+          section: PaletteSection::Actions,
           run: Rc::new(move |_, cx| {
             run_view.update(cx, |view, cx| view.run(cx)).ok();
           }),
@@ -409,6 +432,8 @@ impl App {
           label: "New SQL tab".into(),
           hint: None,
           keywords: "new sql tab".to_string(),
+          icon: Icon::new(IconName::Plus),
+          section: PaletteSection::Actions,
           run: Rc::new(move |window, cx| {
             sql_view
               .update(cx, |view, cx| view.open_sql(window, cx))
@@ -420,6 +445,8 @@ impl App {
           label: "Refresh schema".into(),
           hint: None,
           keywords: "refresh schema reload".to_string(),
+          icon: Icon::new(IconName::Replace),
+          section: PaletteSection::Actions,
           run: Rc::new(move |_, cx| {
             refresh_view
               .update(cx, |view, cx| view.refresh_schema(cx))
@@ -431,6 +458,8 @@ impl App {
           label: "Focus editor".into(),
           hint: None,
           keywords: "focus editor sql".to_string(),
+          icon: Icon::new(IconName::SquareTerminal),
+          section: PaletteSection::Actions,
           run: Rc::new(move |window, cx| {
             focus_view
               .update(cx, |view, cx| view.focus_editor(window, cx))
@@ -442,6 +471,8 @@ impl App {
           label: "Next tab".into(),
           hint: None,
           keywords: "next tab".to_string(),
+          icon: Icon::new(IconName::ArrowRight),
+          section: PaletteSection::Actions,
           run: Rc::new(move |_, cx| {
             next_view.update(cx, |view, cx| view.cycle(1, cx)).ok();
           }),
@@ -451,6 +482,8 @@ impl App {
           label: "Previous tab".into(),
           hint: None,
           keywords: "previous tab".to_string(),
+          icon: Icon::new(IconName::ArrowLeft),
+          section: PaletteSection::Actions,
           run: Rc::new(move |_, cx| {
             prev_view.update(cx, |view, cx| view.cycle(-1, cx)).ok();
           }),
@@ -460,6 +493,8 @@ impl App {
           label: "Back to connections".into(),
           hint: None,
           keywords: "back connections close disconnect".to_string(),
+          icon: Icon::new(IconName::ArrowLeft),
+          section: PaletteSection::Actions,
           run: Rc::new(move |window, cx| {
             app
               .update(cx, |app, cx| app.close_workspace(window, cx))
@@ -473,6 +508,8 @@ impl App {
           label: "Back to connections".into(),
           hint: None,
           keywords: "back connections close disconnect".to_string(),
+          icon: Icon::new(IconName::ArrowLeft),
+          section: PaletteSection::Actions,
           run: Rc::new(move |window, cx| {
             app
               .update(cx, |app, cx| app.close_workspace(window, cx))
@@ -492,14 +529,20 @@ impl App {
       };
       let state = cx
         .new(|cx| ListState::new(CommandPaletteDelegate::new(items), window, cx).searchable(true));
-      // No footer: the List owns enter/escape under its own key context.
+      // No buttons in the footer: the List owns enter/escape under its own key context.
       let list = state.clone();
-      window.open_dialog(cx, move |dialog, _, _| {
-        dialog.w(px(560.)).child(
-          List::new(&list)
-            .search_placeholder("Search connections and actions…")
-            .max_h(px(360.)),
-        )
+      window.open_dialog(cx, move |dialog, window, cx| {
+        dialogs::styled(dialog, window, cx)
+          .w(px(620.))
+          .p_0()
+          .close_button(false)
+          .child(
+            List::new(&list)
+              .with_size(gpui_component::Size::Large)
+              .search_placeholder("Search connections and actions…")
+              .max_h(px(400.)),
+          )
+          .footer(palette_footer(cx))
       });
       // After the dialog took focus: hand it to the query input so typing
       // filters and Enter reaches the List's own confirm, not the dialog's.
@@ -521,7 +564,7 @@ impl Render for App {
       .on_action(cx.listener(|this, _: &ToggleCommandPalette, window, cx| {
         this.open_command_palette(window, cx)
       }))
-      .bg(cx.theme().background)
+      .bg(theme::canvas(cx))
       .child(
         TitleBar::new().child(h_flex().child("soquel")).child(
           h_flex().flex_1().justify_end().pr_2().child(

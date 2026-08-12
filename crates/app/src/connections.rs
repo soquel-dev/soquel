@@ -703,7 +703,8 @@ impl ConnectionsView {
       });
       let input = input.clone();
       let this = this.clone();
-      window.open_dialog(cx, move |dialog, _, cx| {
+      window.open_dialog(cx, move |dialog, window, cx| {
+        let dialog = dialogs::styled(dialog, window, cx);
         let this = this.clone();
         let (subject, target_id, target_name, connect_id) = (
           subject,
@@ -802,7 +803,7 @@ impl ConnectionsView {
         .ok();
 
       let this = this.clone();
-      window.open_dialog(cx, move |dialog, _, cx| {
+      window.open_dialog(cx, move |dialog, window, cx| {
         let Some(strong) = this.upgrade() else {
           return dialog;
         };
@@ -814,7 +815,7 @@ impl ConnectionsView {
         };
         let this_test = this.clone();
         let this_save = this.clone();
-        dialog
+        dialogs::styled(dialog, window, cx)
           .title(title)
           .w(px(520.))
           .child(ConnectionForm {
@@ -1389,7 +1390,8 @@ impl ConnectionsView {
         })
         .ok();
       let this = this.clone();
-      window.open_dialog(cx, move |dialog, _, cx| {
+      window.open_dialog(cx, move |dialog, window, cx| {
+        let dialog = dialogs::styled(dialog, window, cx);
         let Some(strong) = this.upgrade() else {
           return dialog;
         };
@@ -1540,7 +1542,9 @@ impl ConnectionsView {
         })
         .ok();
       let this = this.clone();
-      window.open_dialog(cx, move |dialog, _, cx| import_dialog(dialog, &this, cx));
+      window.open_dialog(cx, move |dialog, window, cx| {
+        import_dialog(dialogs::styled(dialog, window, cx), &this, cx)
+      });
     });
   }
 
@@ -2303,7 +2307,7 @@ impl Render for ConnectionsView {
 
     v_flex()
       .size_full()
-      .bg(cx.theme().background)
+      .bg(crate::theme::canvas(cx))
       // A .soquel handed to the app from outside lands here: no file
       // association or single instance yet, the drop is the outside door.
       .drag_over::<ExternalPaths>(|style, _, _, cx| style.bg(cx.theme().accent))
@@ -2328,8 +2332,6 @@ impl Render for ConnectionsView {
           .py_3()
           .justify_between()
           .items_center()
-          .border_b_1()
-          .border_color(cx.theme().border)
           .child(div().font_semibold().child("Connections"))
           .child(
             h_flex()
@@ -2384,8 +2386,9 @@ impl Render for ConnectionsView {
           .flex_1()
           .min_h_0()
           .overflow_y_scroll()
-          .p_3()
-          .gap_1()
+          .px_4()
+          .py_2()
+          .gap_2()
           .when(self.profiles.is_empty(), |this| {
             this.child(
               v_flex()
@@ -2409,7 +2412,7 @@ impl Render for ConnectionsView {
             if let Some(group) = &group {
               rows.push(
                 div()
-                  .px_2()
+                  .px_1()
                   .pt_2()
                   .text_xs()
                   .font_semibold()
@@ -2437,7 +2440,9 @@ impl Render for ConnectionsView {
                   .rounded(cx.theme().radius)
                   .border_1()
                   .border_color(cx.theme().border)
-                  .hover(|s| s.bg(cx.theme().accent))
+                  .bg(crate::theme::panel(cx))
+                  .when(!cx.theme().mode.is_dark(), |s| s.shadow_sm())
+                  .hover(|s| s.bg(cx.theme().list_hover))
                   .cursor_default()
                   .on_click(cx.listener(move |this, _, _, cx| this.connect(id.clone(), cx)))
                   .child(

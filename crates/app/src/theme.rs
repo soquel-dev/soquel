@@ -1,5 +1,23 @@
-use gpui::{App, Window, WindowAppearance};
+use gpui::{App, Hsla, Window, WindowAppearance};
 use gpui_component::{ActiveTheme, Theme, ThemeMode, ThemeRegistry};
+
+/// Screen background; panels and cards sit on it.
+pub fn canvas(cx: &App) -> Hsla {
+  if cx.theme().mode.is_dark() {
+    cx.theme().background
+  } else {
+    cx.theme().secondary
+  }
+}
+
+/// Elevated surface: cards, dialogs, sidebars.
+pub fn panel(cx: &App) -> Hsla {
+  if cx.theme().mode.is_dark() {
+    cx.theme().popover
+  } else {
+    cx.theme().background
+  }
+}
 
 pub fn init(cx: &mut App) {
   ThemeRegistry::global_mut(cx)
