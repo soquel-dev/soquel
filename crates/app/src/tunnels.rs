@@ -16,7 +16,7 @@ use soquel_core::profiles::CredentialSource;
 use soquel_core::tunnels::{SshAuth, TunnelInput, TunnelProfile};
 
 use crate::core;
-use crate::dialogs;
+use crate::dialogs::{self, FormStatus};
 use crate::host_key::{self, HostKeyPrompt};
 use crate::icons::SoquelIcon;
 
@@ -130,34 +130,60 @@ pub struct TunnelFormValues {
   pub credential_command: String,
 }
 
-/// Validation and mapping in one pass.
-pub fn to_tunnel_input(values: &TunnelFormValues) -> Result<TunnelInput, String> {
+/// A form field a validation error anchors to, rendered under its input.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TunnelField {
+  Name,
+  Host,
+  Port,
+  User,
+  KeyPath,
+  Command,
+}
+
+pub type TunnelFormErrors = Vec<(TunnelField, SharedString)>;
+
+/// Validation and mapping in one pass; all field errors are collected.
+pub fn to_tunnel_input(values: &TunnelFormValues) -> Result<TunnelInput, TunnelFormErrors> {
+  let mut errors: TunnelFormErrors = Vec::new();
   let name = values.name.trim().to_string();
   if name.is_empty() {
-    return Err("Name is required".to_string());
+    errors.push((TunnelField::Name, "Name is required".into()));
   }
   let host = values.host.trim().to_string();
   if host.is_empty() {
-    return Err("Host is required".to_string());
+    errors.push((TunnelField::Host, "Host is required".into()));
   }
   let port = match values.port.trim().parse::<u32>() {
-    Ok(0) => return Err("Port is required".to_string()),
-    Ok(port) if port > 65535 => return Err("Port must be below 65536".to_string()),
+    Ok(0) => {
+      errors.push((TunnelField::Port, "Port is required".into()));
+      0
+    }
+    Ok(port) if port > 65535 => {
+      errors.push((TunnelField::Port, "Port must be below 65536".into()));
+      0
+    }
     Ok(port) => port as u16,
-    Err(_) => return Err("Port must be a whole number".to_string()),
+    Err(_) => {
+      errors.push((TunnelField::Port, "Port must be a whole number".into()));
+      0
+    }
   };
   let user = values.user.trim().to_string();
   if user.is_empty() {
-    return Err("User is required".to_string());
+    errors.push((TunnelField::User, "User is required".into()));
   }
   let key_path = values.key_path.trim().to_string();
   if values.method == AuthMethod::KeyFile && key_path.is_empty() {
-    return Err("Key path is required".to_string());
+    errors.push((TunnelField::KeyPath, "Key path is required".into()));
   }
   let needs = needs_secret(values.method);
   let command = values.credential_command.trim().to_string();
   if needs && values.credential_mode == CredentialMode::Command && command.is_empty() {
-    return Err("Command is required".to_string());
+    errors.push((TunnelField::Command, "Command is required".into()));
+  }
+  if !errors.is_empty() {
+    return Err(errors);
   }
   let auth = match values.method {
     AuthMethod::Agent => SshAuth::Agent,
@@ -237,6 +263,9 @@ pub struct TunnelsView {
   tunnels: Vec<TunnelProfile>,
   editing: Option<String>,
   status: SharedString,
+  /// Validation errors keyed by field, shown under the inputs in the dialog.
+  form_errors: TunnelFormErrors,
+  form_status: FormStatus,
   default_keys: Vec<String>,
   form_name: Entity<InputState>,
   form_host: Entity<InputState>,
@@ -322,6 +351,8 @@ impl TunnelsView {
       tunnels,
       editing: None,
       status: SharedString::default(),
+      form_errors: Vec::new(),
+      form_status: FormStatus::Idle,
       default_keys: Vec::new(),
       form_name,
       form_host,
@@ -397,6 +428,8 @@ impl TunnelsView {
   pub fn open_form(&mut self, editing: Option<TunnelProfile>, cx: &mut Context<Self>) {
     self.editing = editing.as_ref().map(|t| t.id.clone());
     self.status = SharedString::default();
+    self.form_errors.clear();
+    self.form_status = FormStatus::Idle;
     let keys = core::default_ssh_keys(cx);
     cx.spawn(async move |this, cx| {
       let keys = keys.await;
@@ -506,8 +539,12 @@ impl TunnelsView {
                       .primary()
                       .label(save_label)
                       .on_click(move |_, window, cx| {
-                        this_save.update(cx, |this, cx| this.save_form(cx)).ok();
-                        window.close_dialog(cx);
+                        let saved = this_save
+                          .update(cx, |this, cx| this.save_form(cx))
+                          .unwrap_or(false);
+                        if saved {
+                          window.close_dialog(cx);
+                        }
                       }),
                   ),
               ),
@@ -518,21 +555,24 @@ impl TunnelsView {
 
   fn run_test(&mut self, cx: &mut Context<Self>) {
     let input = match to_tunnel_input(&self.read_values(cx)) {
-      Ok(input) => input,
-      Err(message) => {
-        self.status = message.into();
+      Ok(input) => {
+        self.form_errors.clear();
+        input
+      }
+      Err(errors) => {
+        self.form_errors = errors;
         cx.notify();
         return;
       }
     };
-    self.status = "testing...".into();
+    self.form_status = FormStatus::Testing;
     cx.notify();
     let task = core::test_tunnel(self.state.clone(), input, self.editing.clone(), cx);
     self._task = cx.spawn(async move |this, cx| {
       let result = task.await;
       let _ = this.update(cx, |this, cx| {
         match result {
-          Ok(()) => this.status = "Tunnel OK".into(),
+          Ok(()) => this.form_status = FormStatus::Ok,
           Err(Error::HostKeyUntrusted {
             host,
             port,
@@ -542,7 +582,7 @@ impl TunnelsView {
             ..
           }) => {
             // The dialog owns this failure; retry re-reads the live form.
-            this.status = SharedString::default();
+            this.form_status = FormStatus::Idle;
             host_key::open_host_key_dialog(
               cx.entity(),
               this.state.clone(),
@@ -557,26 +597,30 @@ impl TunnelsView {
               |view: &mut Self, result, cx| match result {
                 Ok(()) => view.run_test(cx),
                 Err(error) => {
-                  view.status = crate::status::error(&error);
+                  view.form_status = FormStatus::Error(crate::status::message(&error));
                   cx.notify();
                 }
               },
             );
           }
-          Err(error) => this.status = crate::status::error(&error),
+          Err(error) => this.form_status = FormStatus::Error(crate::status::message(&error)),
         }
         cx.notify();
       });
     });
   }
 
-  fn save_form(&mut self, cx: &mut Context<Self>) {
+  /// False when validation refused: the dialog stays open on the field errors.
+  fn save_form(&mut self, cx: &mut Context<Self>) -> bool {
     let input = match to_tunnel_input(&self.read_values(cx)) {
-      Ok(input) => input,
-      Err(message) => {
-        self.status = message.into();
+      Ok(input) => {
+        self.form_errors.clear();
+        input
+      }
+      Err(errors) => {
+        self.form_errors = errors;
         cx.notify();
-        return;
+        return false;
       }
     };
     let task = core::save_tunnel(self.state.clone(), self.editing.clone(), input, cx);
@@ -593,6 +637,7 @@ impl TunnelsView {
         cx.notify();
       });
     });
+    true
   }
 
   fn revoke_command(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -732,14 +777,7 @@ impl RenderOnce for TunnelForm {
     let method = view.selected_method(cx);
     let mode = view.selected_mode(cx);
     let needs = needs_secret(method);
-    let status = view.status.clone();
-    let status_color = if status.starts_with("error") {
-      cx.theme().danger
-    } else if status == "Tunnel OK" {
-      cx.theme().success
-    } else {
-      cx.theme().muted_foreground
-    };
+    let form_status = view.form_status.clone();
     let command = view.form_command.read(cx).value().trim().to_string();
     let key_chips: Vec<String> = if view.default_keys.len() > 1 {
       view.default_keys.clone()
@@ -747,68 +785,87 @@ impl RenderOnce for TunnelForm {
       Vec::new()
     };
     let this_chip = this.clone();
+    let errors = view.form_errors.clone();
+    let error_for = move |target: TunnelField| -> Option<SharedString> {
+      errors
+        .iter()
+        .find(|(field, _)| *field == target)
+        .map(|(_, message)| message.clone())
+    };
+    let note = dialogs::field_note;
     // Conditional rows use .when(): the pinned rev stores
     // field().visible() but never reads it at render.
     v_form()
-      .child(field().label("Name").child(Input::new(&view.form_name)))
-      .child(field().label("Host").child(Input::new(&view.form_host)))
-      .child(field().label("Port").child(Input::new(&view.form_port)))
-      .child(field().label("User").child(Input::new(&view.form_user)))
-      .child(
+      .columns(2)
+      .child(note(
+        field()
+          .label("Name")
+          .col_span(2)
+          .child(Input::new(&view.form_name)),
+        error_for(TunnelField::Name),
+        None,
+      ))
+      .child(note(
+        field().label("Host").child(Input::new(&view.form_host)),
+        error_for(TunnelField::Host),
+        None,
+      ))
+      .child(note(
+        field().label("Port").child(Input::new(&view.form_port)),
+        error_for(TunnelField::Port),
+        None,
+      ))
+      .child(note(
+        field().label("User").child(Input::new(&view.form_user)),
+        error_for(TunnelField::User),
+        None,
+      ))
+      .child(note(
         field()
           .label("Authentication")
           .child(Select::new(&view.form_auth)),
-      )
-      .when_some(auth_hint(method), |form, hint| {
-        form.child(
-          field().child(
-            div()
-              .text_xs()
-              .text_color(cx.theme().muted_foreground)
-              .child(hint),
-          ),
-        )
-      })
+        None,
+        auth_hint(method).map(SharedString::from),
+      ))
       .when(method == AuthMethod::KeyFile, |form| {
         form
-          .child(
+          .child(note(
             field()
               .label("Key file")
+              .col_span(2)
               .child(Input::new(&view.form_key_path)),
-          )
+            error_for(TunnelField::KeyPath),
+            view.default_keys.is_empty().then(|| {
+              SharedString::from(
+                "No key found in ~/.ssh. Generate one with ssh-keygen -t ed25519, \
+                 or pick another authentication method.",
+              )
+            }),
+          ))
           .when(!key_chips.is_empty(), |form| {
-            form.child(field().child(h_flex().flex_wrap().gap_1().children(
-              key_chips.into_iter().enumerate().map(|(ix, key)| {
-                let this_chip = this_chip.clone();
-                let value = key.clone();
-                Button::new(("key-chip", ix))
-                  .ghost()
-                  .xsmall()
-                  .label(key)
-                  .on_click(move |_, window, cx| {
-                    let value = value.clone();
-                    this_chip
-                      .update(cx, |view, cx| {
-                        view
-                          .form_key_path
-                          .update(cx, |i, cx| i.set_value(value, window, cx));
-                      })
-                      .ok();
-                  })
-              }),
-            )))
-          })
-          .when(view.default_keys.is_empty(), |form| {
             form.child(
-              field().child(
-                div()
-                  .text_xs()
-                  .text_color(cx.theme().muted_foreground)
-                  .child(
-                    "No key found in ~/.ssh. Generate one with ssh-keygen -t ed25519, \
-                               or pick another authentication method.",
-                  ),
-              ),
+              field()
+                .col_span(2)
+                .child(h_flex().flex_wrap().gap_1().children(
+                  key_chips.into_iter().enumerate().map(|(ix, key)| {
+                    let this_chip = this_chip.clone();
+                    let value = key.clone();
+                    Button::new(("key-chip", ix))
+                      .ghost()
+                      .xsmall()
+                      .label(key)
+                      .on_click(move |_, window, cx| {
+                        let value = value.clone();
+                        this_chip
+                          .update(cx, |view, cx| {
+                            view
+                              .form_key_path
+                              .update(cx, |i, cx| i.set_value(value, window, cx));
+                          })
+                          .ok();
+                      })
+                  }),
+                )),
             )
           })
       })
@@ -819,45 +876,42 @@ impl RenderOnce for TunnelForm {
             .child(Select::new(&view.form_credential)),
         )
       })
+      .when(needs && mode != CredentialMode::Command, |form| {
+        form.child(note(
+          field()
+            .label(secret_label(method))
+            .child(Input::new(&view.form_secret)),
+          None,
+          credential_mode_hint(mode).map(SharedString::from),
+        ))
+      })
       .when_some(
         needs.then(|| view.state.secrets_problem.clone()).flatten(),
         |form, problem| {
           // Amber, not destructive: one mode is gone, nothing is broken.
-          form.child(field().child(div().text_xs().text_color(cx.theme().yellow).child(problem)))
+          form.child(
+            field()
+              .col_span(2)
+              .child(div().text_xs().text_color(cx.theme().yellow).child(problem)),
+          )
         },
       )
-      .when(needs && mode != CredentialMode::Command, |form| {
-        form
-          .child(
-            field()
-              .label(secret_label(method))
-              .child(Input::new(&view.form_secret)),
-          )
-          .when_some(credential_mode_hint(mode), |form, hint| {
-            form.child(
-              field().child(
-                div()
-                  .text_xs()
-                  .text_color(cx.theme().muted_foreground)
-                  .child(hint),
-              ),
-            )
-          })
-      })
       .when(needs && mode == CredentialMode::Command, |form| {
         form
-          .child(
+          .child(note(
             field()
               .label("Command")
-              .description(TUNNEL_COMMAND_HINT)
+              .col_span(2)
               .child(Input::new(&view.form_command)),
-          )
+            error_for(TunnelField::Command),
+            Some(TUNNEL_COMMAND_HINT.into()),
+          ))
           .when(!command.is_empty(), |form| {
-            form.child(field().child(command_preview(&command, cx)))
+            form.child(field().col_span(2).child(command_preview(&command, cx)))
           })
       })
-      .when(!status.is_empty(), |form| {
-        form.child(field().child(div().text_sm().text_color(status_color).child(status)))
+      .when_some(dialogs::form_status_row(&form_status, cx), |form, row| {
+        form.child(field().col_span(2).child(row))
       })
   }
 }
@@ -1058,6 +1112,12 @@ mod tests {
     }
   }
 
+  fn has_error(errors: &TunnelFormErrors, field: TunnelField, message: &str) -> bool {
+    errors
+      .iter()
+      .any(|(f, m)| *f == field && m.as_ref() == message)
+  }
+
   #[test]
   fn coerces_the_port_and_accepts_agent_auth_without_a_key_path() {
     let input = to_tunnel_input(&valid()).unwrap();
@@ -1076,7 +1136,11 @@ mod tests {
         port: port.to_string(),
         ..valid()
       };
-      assert_eq!(to_tunnel_input(&values).unwrap_err(), message);
+      assert!(has_error(
+        &to_tunnel_input(&values).unwrap_err(),
+        TunnelField::Port,
+        message
+      ));
     }
   }
 
@@ -1086,10 +1150,11 @@ mod tests {
       method: AuthMethod::KeyFile,
       ..valid()
     };
-    assert_eq!(
-      to_tunnel_input(&values).unwrap_err(),
+    assert!(has_error(
+      &to_tunnel_input(&values).unwrap_err(),
+      TunnelField::KeyPath,
       "Key path is required"
-    );
+    ));
   }
 
   #[test]
@@ -1188,10 +1253,11 @@ mod tests {
       credential_mode: CredentialMode::Command,
       ..valid()
     };
-    assert_eq!(
-      to_tunnel_input(&missing).unwrap_err(),
+    assert!(has_error(
+      &to_tunnel_input(&missing).unwrap_err(),
+      TunnelField::Command,
       "Command is required"
-    );
+    ));
 
     let agent = TunnelFormValues {
       credential_mode: CredentialMode::Command,

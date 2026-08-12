@@ -5,15 +5,14 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::checkbox::Checkbox;
-use gpui_component::form::{Field, field, v_form};
+use gpui_component::form::{field, v_form};
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::notification::Notification;
 use gpui_component::radio::{Radio, RadioGroup};
 use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::switch::Switch;
 use gpui_component::{
-  ActiveTheme, Disableable, Icon, IconName, IndexPath, Sizable, StyledExt, WindowExt, h_flex,
-  v_flex,
+  ActiveTheme, Disableable, IndexPath, Sizable, StyledExt, WindowExt, h_flex, v_flex,
 };
 use soquel_core::AppState;
 use soquel_core::error::{Error, SecretSubject};
@@ -25,7 +24,7 @@ use soquel_core::transfer::{DuplicateStrategy, ImportPreview};
 
 use crate::command_approval::{self, CommandApprovalPrompt};
 use crate::core::{self, Db};
-use crate::dialogs;
+use crate::dialogs::{self, FormStatus};
 use crate::host_key::{self, HostKeyPrompt};
 use crate::icons::SoquelIcon;
 use crate::transfer::{self, EntryKind};
@@ -271,16 +270,6 @@ enum FormField {
 }
 
 type FormErrors = Vec<(FormField, SharedString)>;
-
-/// Test feedback shown inside the dialog, styled by outcome.
-#[derive(Clone, PartialEq, Eq, Debug, Default)]
-enum FormStatus {
-  #[default]
-  Idle,
-  Testing,
-  Ok,
-  Error(SharedString),
-}
 
 /// What a pasted connection URL prefills; fields the kind does not use stay at
 /// their defaults and are ignored by `form_input`.
@@ -1823,19 +1812,7 @@ impl RenderOnce for ConnectionForm {
         .find(|(field, _)| *field == target)
         .map(|(_, message)| message.clone())
     };
-    // The description slot under the input: a validation error wins over the hint.
-    let note = |f: Field, error: Option<SharedString>, hint: Option<SharedString>| -> Field {
-      match (error, hint) {
-        (Some(message), _) => f.description_fn(move |_, cx| {
-          div()
-            .text_color(cx.theme().danger)
-            .child(message.clone())
-            .into_any_element()
-        }),
-        (None, Some(text)) => f.description(text),
-        (None, None) => f,
-      }
-    };
+    let note = dialogs::field_note;
     v_form()
       .columns(2)
       .child(note(
@@ -2031,53 +2008,10 @@ impl RenderOnce for ConnectionForm {
               })
           })
       })
-      .when(form_status != FormStatus::Idle, |form| {
-        form.child(
-          field().col_span(2).child(match form_status.clone() {
-            FormStatus::Idle => div().into_any_element(),
-            FormStatus::Testing => h_flex()
-              .gap_2()
-              .text_xs()
-              .text_color(cx.theme().muted_foreground)
-              .child("Testing connection…")
-              .into_any_element(),
-            FormStatus::Ok => status_banner(
-              cx.theme().green,
-              IconName::CircleCheck,
-              "Connection ok".into(),
-              cx,
-            ),
-            FormStatus::Error(message) => {
-              status_banner(cx.theme().red, IconName::CircleX, message, cx)
-            }
-          }),
-        )
+      .when_some(dialogs::form_status_row(&form_status, cx), |form, row| {
+        form.child(field().col_span(2).child(row))
       })
   }
-}
-
-/// A tinted outcome row at the bottom of the form.
-fn status_banner(color: Hsla, icon: IconName, text: SharedString, cx: &App) -> AnyElement {
-  // Pinned line height so the icon box matches the first text line exactly.
-  let line = rems(1.25);
-  h_flex()
-    .items_start()
-    .gap_2()
-    .px_3()
-    .py_2()
-    .rounded(cx.theme().radius)
-    .bg(color.opacity(0.1))
-    .text_color(color)
-    .text_sm()
-    .line_height(line)
-    .child(
-      h_flex()
-        .h(line)
-        .items_center()
-        .child(Icon::new(icon).small()),
-    )
-    .child(div().flex_1().min_w_0().child(text))
-    .into_any_element()
 }
 
 /// The export body; the dialog builder keeps only the chrome around it.
