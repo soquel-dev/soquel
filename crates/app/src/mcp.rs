@@ -295,7 +295,46 @@ impl McpPanel {
     window.push_notification("Setup command copied", cx);
   }
 
-  fn regenerate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+  fn confirm_regenerate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    let this = cx.entity().downgrade();
+    window.open_dialog(cx, move |dialog, window, cx| {
+      let this = this.clone();
+      crate::dialogs::styled(dialog, window, cx)
+        .title("Regenerate the token?")
+        .w(px(400.))
+        .child(
+          div()
+            .text_sm()
+            .text_color(cx.theme().muted_foreground)
+            .child(
+              "The current token stops working immediately; every agent using it must be \
+               reconfigured with the new one.",
+            ),
+        )
+        .footer(
+          h_flex()
+            .gap_2()
+            .justify_end()
+            .child(
+              Button::new("regenerate-cancel")
+                .label("Cancel")
+                .on_click(|_, window, cx| window.close_dialog(cx)),
+            )
+            .child(
+              Button::new("regenerate-confirm")
+                .danger()
+                .label("Regenerate")
+                .debug_selector(|| "regenerate-confirm".into())
+                .on_click(move |_, window, cx| {
+                  window.close_dialog(cx);
+                  this.update(cx, |this, cx| this.regenerate(cx)).ok();
+                }),
+            ),
+        )
+    });
+  }
+
+  fn regenerate(&mut self, cx: &mut Context<Self>) {
     let task = core::mcp_regenerate_token(self.state.clone(), cx);
     self._task = cx.spawn(async move |this, cx| {
       let result = task.await;
@@ -307,7 +346,6 @@ impl McpPanel {
         cx.notify();
       });
     });
-    let _ = window;
   }
 
   fn revoke(&mut self, session: String, connection_id: String, cx: &mut Context<Self>) {
@@ -548,7 +586,7 @@ impl McpPanel {
           .small()
           .label("Regenerate token")
           .debug_selector(|| "mcp-regenerate".into())
-          .on_click(cx.listener(|this, _, window, cx| this.regenerate(window, cx))),
+          .on_click(cx.listener(|this, _, window, cx| this.confirm_regenerate(window, cx))),
       )
   }
 }
