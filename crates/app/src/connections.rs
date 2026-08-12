@@ -860,30 +860,34 @@ impl ConnectionsView {
           .footer(
             h_flex()
               .gap_2()
-              .justify_end()
+              .justify_between()
               .child(
                 Button::new("form-test")
-                  .ghost()
-                  .label("Test")
+                  .outline()
+                  .label("Test connection")
                   .on_click(move |_, _, cx| {
                     this_test.update(cx, |this, cx| this.test_form(cx)).ok();
                   }),
               )
               .child(
-                Button::new("form-cancel")
-                  .label("Cancel")
-                  .on_click(|_, window, cx| window.close_dialog(cx)),
-              )
-              .child(Button::new("form-save").primary().label("Save").on_click(
-                move |_, window, cx| {
-                  let saved = this_save
-                    .update(cx, |this, cx| this.save_form(cx))
-                    .unwrap_or(false);
-                  if saved {
-                    window.close_dialog(cx);
-                  }
-                },
-              )),
+                h_flex()
+                  .gap_2()
+                  .child(
+                    Button::new("form-cancel")
+                      .label("Cancel")
+                      .on_click(|_, window, cx| window.close_dialog(cx)),
+                  )
+                  .child(Button::new("form-save").primary().label("Save").on_click(
+                    move |_, window, cx| {
+                      let saved = this_save
+                        .update(cx, |this, cx| this.save_form(cx))
+                        .unwrap_or(false);
+                      if saved {
+                        window.close_dialog(cx);
+                      }
+                    },
+                  )),
+              ),
           )
       });
     });

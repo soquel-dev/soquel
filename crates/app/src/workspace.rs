@@ -714,9 +714,8 @@ impl Workspace {
         }
         Err(error) => {
           // Staging is kept: the transaction rolled back server-side.
-          table.update(cx, |table, cx| {
-            table.delegate_mut().status = crate::status::error(&error);
-            cx.notify();
+          let _ = this.update(cx, |_, cx| {
+            crate::status::toast_error(&error, cx);
           });
         }
       }
