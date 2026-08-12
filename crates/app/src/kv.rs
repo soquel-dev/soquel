@@ -1354,7 +1354,7 @@ mod tests {
     assert_eq!(fake.scan_script.lock().unwrap().len(), 10);
   }
 
-  #[gpui::test]
+  #[gpui::test(iterations = 10)]
   fn a_superseded_scan_keeps_only_the_newest_result(cx: &mut gpui::TestAppContext) {
     let fake = FakeKv::new(&[
       ("alpha", string_value("1"), None),
@@ -1432,7 +1432,7 @@ mod tests {
     });
   }
 
-  #[gpui::test]
+  #[gpui::test(iterations = 10)]
   fn save_string_writes_and_reloads_keeping_the_ttl(cx: &mut gpui::TestAppContext) {
     let fake = FakeKv::new(&[("s", string_value("hello"), Some(90_000.0))]);
     let (view, cx) = kv_view(fake.clone(), cx);
@@ -1514,7 +1514,7 @@ mod tests {
     assert_eq!(fake.ttl_of("s"), None);
   }
 
-  #[gpui::test]
+  #[gpui::test(iterations = 10)]
   fn deleting_clears_the_selection_and_rescans(cx: &mut gpui::TestAppContext) {
     let fake = FakeKv::new(&[
       ("s", string_value("1"), None),
@@ -1539,7 +1539,7 @@ mod tests {
     });
   }
 
-  #[gpui::test]
+  #[gpui::test(iterations = 10)]
   fn the_console_logs_replies_and_errors_and_rescans(cx: &mut gpui::TestAppContext) {
     let fake = FakeKv::new(&[("s", string_value("1"), None)]);
     let (view, cx) = kv_view(fake, cx);

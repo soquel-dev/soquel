@@ -1723,7 +1723,7 @@ mod tests {
     });
   }
 
-  #[gpui::test]
+  #[gpui::test(iterations = 10)]
   fn a_superseded_find_keeps_only_the_newest_result(cx: &mut gpui::TestAppContext) {
     let fake = FakeDoc::new(&[("app", &[("users", users())])]);
     let (view, cx) = doc_view(fake, Some("app"), cx);
@@ -1791,7 +1791,7 @@ mod tests {
     });
   }
 
-  #[gpui::test]
+  #[gpui::test(iterations = 10)]
   fn editing_saves_the_draft_and_reloads_the_detail(cx: &mut gpui::TestAppContext) {
     let fake = FakeDoc::new(&[("app", &[("users", users())])]);
     let (view, cx) = doc_view(fake.clone(), Some("app"), cx);
@@ -1851,7 +1851,7 @@ mod tests {
     });
   }
 
-  #[gpui::test]
+  #[gpui::test(iterations = 10)]
   fn deleting_a_doc_clears_the_selection_and_refreshes(cx: &mut gpui::TestAppContext) {
     let fake = FakeDoc::new(&[("app", &[("users", users())])]);
     let (view, cx) = doc_view(fake.clone(), Some("app"), cx);
