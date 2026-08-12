@@ -359,6 +359,20 @@ impl DocWorkspace {
             None => d.name.clone(),
           })
           .collect();
+        this
+          .update(cx, |this, cx| {
+            this.db_names = names.clone();
+            // No database on the profile: default to the first one, and load
+            // what selecting it by hand would have loaded.
+            if this.doc_db.is_none() {
+              this.doc_db = names.first().cloned();
+              if this.doc_db.is_some() {
+                this.load_collections(cx);
+              }
+            }
+            cx.notify();
+          })
+          .ok();
         let Ok(current) = this.read_with(cx, |view, _| {
           view
             .doc_db
@@ -367,15 +381,6 @@ impl DocWorkspace {
         }) else {
           return;
         };
-        this
-          .update(cx, |this, cx| {
-            this.db_names = names.clone();
-            if this.doc_db.is_none() {
-              this.doc_db = names.first().cloned();
-            }
-            cx.notify();
-          })
-          .ok();
         db_select.update(cx, |select, cx| {
           select.set_items(labels, window, cx);
           if let Some(ix) = current {
@@ -1278,9 +1283,660 @@ impl Render for DocWorkspace {
 
 #[cfg(test)]
 mod tests {
+  use std::collections::BTreeMap;
+  use std::sync::Mutex;
+
   use ::core::prelude::v1::test;
+  use soquel_core::connectors::{Connection, DocBrowse, DocDatabase, DocPage, DocQueryResult};
+  use soquel_core::error::Error;
+  use soquel_core::profiles::ConnectorKind;
 
   use super::*;
+  use crate::test_support::shell_window;
+
+  #[derive(Clone)]
+  struct DocRecord {
+    id: Option<String>,
+    doc: String,
+  }
+
+  type SeedCollections<'a> = &'a [(&'a str, Vec<DocRecord>)];
+
+  /// In-memory document store: every future resolves on its first poll, so the
+  /// view runs fully deterministic under `run_until_parked`.
+  struct FakeDoc {
+    dbs: Mutex<BTreeMap<String, BTreeMap<String, Vec<DocRecord>>>>,
+  }
+
+  impl FakeDoc {
+    fn new(dbs: &[(&str, SeedCollections<'_>)]) -> Arc<Self> {
+      Arc::new(Self {
+        dbs: Mutex::new(
+          dbs
+            .iter()
+            .map(|(db, collections)| {
+              (
+                db.to_string(),
+                collections
+                  .iter()
+                  .map(|(name, docs)| (name.to_string(), docs.clone()))
+                  .collect(),
+              )
+            })
+            .collect(),
+        ),
+      })
+    }
+
+    fn collection(&self, db: &str, collection: &str) -> Result<Vec<DocRecord>, Error> {
+      self
+        .dbs
+        .lock()
+        .unwrap()
+        .get(db)
+        .and_then(|collections| collections.get(collection))
+        .cloned()
+        .ok_or_else(|| Error::Unsupported {
+          message: format!("no such collection {db}.{collection}"),
+        })
+    }
+
+    fn matches(record: &DocRecord, filter: &serde_json::Map<String, serde_json::Value>) -> bool {
+      let Ok(doc) = serde_json::from_str::<serde_json::Value>(&record.doc) else {
+        return false;
+      };
+      filter
+        .iter()
+        .all(|(key, value)| doc.get(key) == Some(value))
+    }
+
+    fn filtered(
+      &self,
+      db: &str,
+      collection: &str,
+      filter: Option<&str>,
+    ) -> Result<Vec<DocRecord>, Error> {
+      let docs = self.collection(db, collection)?;
+      let Some(filter) = filter.filter(|f| !f.trim().is_empty()) else {
+        return Ok(docs);
+      };
+      let serde_json::Value::Object(filter) =
+        serde_json::from_str(filter).map_err(|_| Error::Unsupported {
+          message: "find: the filter is not extended json".to_string(),
+        })?
+      else {
+        return Err(Error::Unsupported {
+          message: "find: the filter must be an object".to_string(),
+        });
+      };
+      Ok(
+        docs
+          .into_iter()
+          .filter(|record| Self::matches(record, &filter))
+          .collect(),
+      )
+    }
+  }
+
+  #[async_trait::async_trait]
+  impl Connection for FakeDoc {
+    async fn health(&self) -> Result<(), Error> {
+      Ok(())
+    }
+    async fn close(&self) -> Result<(), Error> {
+      Ok(())
+    }
+    fn doc(&self) -> Option<&dyn DocBrowse> {
+      Some(self)
+    }
+  }
+
+  #[async_trait::async_trait]
+  impl DocBrowse for FakeDoc {
+    async fn databases(&self) -> Result<Vec<DocDatabase>, Error> {
+      Ok(
+        self
+          .dbs
+          .lock()
+          .unwrap()
+          .keys()
+          .map(|name| DocDatabase {
+            name: name.clone(),
+            size_bytes: Some(2048.0),
+            empty: false,
+          })
+          .collect(),
+      )
+    }
+
+    async fn collections(&self, db: &str) -> Result<Vec<DocCollection>, Error> {
+      let dbs = self.dbs.lock().unwrap();
+      let collections = dbs.get(db).ok_or_else(|| Error::Unsupported {
+        message: format!("no such database {db}"),
+      })?;
+      Ok(
+        collections
+          .iter()
+          .map(|(name, docs)| DocCollection {
+            name: name.clone(),
+            kind: DocCollectionKind::Collection,
+            estimated_docs: Some(docs.len() as f64),
+            capped: false,
+          })
+          .collect(),
+      )
+    }
+
+    async fn find_docs(&self, request: &DocFindRequest) -> Result<DocPage, Error> {
+      let docs = self.filtered(&request.db, &request.collection, request.filter.as_deref())?;
+      let offset: usize = request
+        .cursor
+        .as_deref()
+        .and_then(|cursor| cursor.parse().ok())
+        .unwrap_or(0);
+      let end = (offset + request.limit as usize).min(docs.len());
+      let page: Vec<DocEntry> = docs[offset..end]
+        .iter()
+        .map(|record| DocEntry {
+          id: record.id.clone(),
+          doc: record.doc.clone(),
+        })
+        .collect();
+      Ok(DocPage {
+        docs: page,
+        cursor: (end < docs.len()).then(|| end.to_string()),
+      })
+    }
+
+    async fn doc_detail(&self, db: &str, collection: &str, id: &str) -> Result<DocDetail, Error> {
+      let docs = self.collection(db, collection)?;
+      let record = docs
+        .iter()
+        .find(|record| record.id.as_deref() == Some(id))
+        .ok_or_else(|| Error::Unsupported {
+          message: format!("no such document {id}"),
+        })?;
+      Ok(DocDetail {
+        id: record.id.clone(),
+        relaxed: record.doc.clone(),
+        canonical: record.doc.clone(),
+      })
+    }
+
+    async fn replace_doc(
+      &self,
+      db: &str,
+      collection: &str,
+      id: &str,
+      doc: &str,
+    ) -> Result<(), Error> {
+      let mut dbs = self.dbs.lock().unwrap();
+      let docs = dbs
+        .get_mut(db)
+        .and_then(|collections| collections.get_mut(collection))
+        .ok_or_else(|| Error::Unsupported {
+          message: format!("no such collection {db}.{collection}"),
+        })?;
+      let record = docs
+        .iter_mut()
+        .find(|record| record.id.as_deref() == Some(id))
+        .ok_or_else(|| Error::Unsupported {
+          message: format!("no such document {id}"),
+        })?;
+      record.doc = doc.to_string();
+      Ok(())
+    }
+
+    async fn delete_doc(&self, db: &str, collection: &str, id: &str) -> Result<(), Error> {
+      let mut dbs = self.dbs.lock().unwrap();
+      let docs = dbs
+        .get_mut(db)
+        .and_then(|collections| collections.get_mut(collection))
+        .ok_or_else(|| Error::Unsupported {
+          message: format!("no such collection {db}.{collection}"),
+        })?;
+      let before = docs.len();
+      docs.retain(|record| record.id.as_deref() != Some(id));
+      if docs.len() == before {
+        return Err(Error::Unsupported {
+          message: format!("no such document {id}"),
+        });
+      }
+      Ok(())
+    }
+
+    async fn indexes(&self, _: &str, collection: &str) -> Result<Vec<IndexInfo>, Error> {
+      if collection == "users" {
+        Ok(vec![IndexInfo {
+          name: "email_1".to_string(),
+          definition: "{ email: 1 }".to_string(),
+          unique: true,
+        }])
+      } else {
+        Ok(Vec::new())
+      }
+    }
+
+    async fn count_docs(
+      &self,
+      db: &str,
+      collection: &str,
+      filter: Option<&str>,
+    ) -> Result<DocCount, Error> {
+      let docs = self.filtered(db, collection, filter)?;
+      Ok(DocCount {
+        count: docs.len() as f64,
+        // Real connectors estimate when unfiltered.
+        exact: filter.is_some(),
+      })
+    }
+
+    async fn run_query(
+      &self,
+      db: &str,
+      collection: &str,
+      source: &str,
+    ) -> Result<DocQueryResult, Error> {
+      let value: serde_json::Value =
+        serde_json::from_str(source).map_err(|_| Error::Unsupported {
+          message: "console: not extended json".to_string(),
+        })?;
+      let docs = match value {
+        serde_json::Value::Object(_) => self.filtered(db, collection, Some(source))?,
+        serde_json::Value::Array(_) => self.collection(db, collection)?,
+        _ => {
+          return Err(Error::Unsupported {
+            message: "console: an object or a pipeline".to_string(),
+          });
+        }
+      };
+      Ok(DocQueryResult {
+        docs: docs.into_iter().map(|record| record.doc).collect(),
+        truncated: false,
+        duration_ms: 3.0,
+      })
+    }
+  }
+
+  fn record(id: i64, body: &str) -> DocRecord {
+    DocRecord {
+      id: Some(id.to_string()),
+      doc: format!("{{\"_id\":{id},{}", body.trim_start_matches('{')),
+    }
+  }
+
+  fn users() -> Vec<DocRecord> {
+    vec![
+      record(1, "{\"name\":\"Ada\",\"plan\":\"pro\"}"),
+      record(2, "{\"name\":\"Alan\",\"plan\":\"free\"}"),
+      record(3, "{\"name\":\"Grace\",\"plan\":\"pro\"}"),
+    ]
+  }
+
+  fn fake_profile(database: Option<&str>) -> ConnectionProfile {
+    ConnectionProfile {
+      id: "doc-fake".to_string(),
+      name: "doc fake".to_string(),
+      env: soquel_core::profiles::Env::Dev,
+      group: None,
+      agent_access: Default::default(),
+      credential: Default::default(),
+      params: soquel_core::profiles::ConnectorParams::Mongo(soquel_core::profiles::MongoParams {
+        host: "localhost".to_string(),
+        port: 27017,
+        database: database.map(str::to_string),
+        username: None,
+        auth_source: None,
+        tls: false,
+        tunnel_id: None,
+      }),
+    }
+  }
+
+  fn doc_view<'a>(
+    fake: Arc<FakeDoc>,
+    database: Option<&str>,
+    cx: &'a mut gpui::TestAppContext,
+  ) -> (Entity<DocWorkspace>, &'a mut gpui::VisualTestContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let state = std::sync::Arc::new(soquel_core::AppState::for_tests(
+      dir.path(),
+      Box::new(soquel_core::secrets::InMemoryStore::default()),
+    ));
+    let db = crate::core::fake_db(fake, ConnectorKind::Mongo);
+    let profile = fake_profile(database);
+    shell_window(cx, move |window, cx| {
+      DocWorkspace::new(state, db, profile, window, cx)
+    })
+  }
+
+  #[gpui::test]
+  fn collections_load_for_the_profiles_database(cx: &mut gpui::TestAppContext) {
+    let fake = FakeDoc::new(&[
+      ("app", &[("users", users()), ("events", Vec::new())]),
+      ("other", &[("misc", Vec::new())]),
+    ]);
+    let (view, cx) = doc_view(fake, Some("app"), cx);
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+      let this = view.read(cx);
+      assert_eq!(this.doc_db.as_deref(), Some("app"));
+      assert_eq!(this.db_names, vec!["app", "other"]);
+      let names: Vec<&str> = this.collections.iter().map(|c| c.name.as_str()).collect();
+      assert_eq!(names, vec!["events", "users"]);
+    });
+  }
+
+  #[gpui::test]
+  fn the_first_database_is_picked_without_a_profile_default(cx: &mut gpui::TestAppContext) {
+    let fake = FakeDoc::new(&[("alpha", &[("a", Vec::new())]), ("beta", &[])]);
+    let (view, cx) = doc_view(fake, None, cx);
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+      let this = view.read(cx);
+      assert_eq!(this.doc_db.as_deref(), Some("alpha"));
+      assert_eq!(this.collections.len(), 1);
+    });
+  }
+
+  #[gpui::test]
+  fn selecting_a_collection_pages_docs_and_counts(cx: &mut gpui::TestAppContext) {
+    let many: Vec<DocRecord> = (0..250)
+      .map(|ix| record(ix, "{\"plan\":\"pro\"}"))
+      .collect();
+    let fake = FakeDoc::new(&[("app", &[("users", many)])]);
+    let (view, cx) = doc_view(fake, Some("app"), cx);
+    cx.run_until_parked();
+
+    cx.update(|_, cx| {
+      view.update(cx, |view, cx| {
+        view.select_collection("users".to_string(), cx)
+      })
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+      let this = view.read(cx);
+      assert_eq!(this.docs.len(), 100);
+      assert_eq!(this.doc_cursor.as_deref(), Some("100"));
+      assert!(!this.doc_loading);
+      // The unfiltered count is an estimate.
+      assert!(matches!(this.doc_count, Some(DocCount { count, exact: false }) if count == 250.0));
+      // The indexes loaded alongside.
+      assert!(this.indexes.iter().any(|index| index.name == "email_1"));
+    });
+
+    // "load more" extends until the cursor closes.
+    cx.update(|_, cx| view.update(cx, |view, cx| view.find(false, cx)));
+    cx.run_until_parked();
+    cx.update(|_, cx| assert_eq!(view.read(cx).docs.len(), 200));
+    cx.update(|_, cx| view.update(cx, |view, cx| view.find(false, cx)));
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+      let this = view.read(cx);
+      assert_eq!(this.docs.len(), 250);
+      assert!(this.doc_cursor.is_none());
+    });
+  }
+
+  #[gpui::test]
+  fn a_bad_filter_lands_in_the_error_line_and_keeps_the_docs(cx: &mut gpui::TestAppContext) {
+    let fake = FakeDoc::new(&[("app", &[("users", users())])]);
+    let (view, cx) = doc_view(fake, Some("app"), cx);
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+      view.update(cx, |view, cx| {
+        view.select_collection("users".to_string(), cx)
+      })
+    });
+    cx.run_until_parked();
+
+    cx.update(|window, cx| {
+      view.update(cx, |view, cx| {
+        view
+          .doc_filter
+          .update(cx, |input, cx| input.set_value("not json", window, cx));
+        view.find(true, cx);
+      });
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+      let this = view.read(cx);
+      assert!(this.filter_error.is_some());
+      assert_eq!(this.docs.len(), 3, "the stale docs stay visible");
+    });
+
+    // A valid filter narrows and counts exactly.
+    cx.update(|window, cx| {
+      view.update(cx, |view, cx| {
+        view.doc_filter.update(cx, |input, cx| {
+          input.set_value("{\"plan\":\"pro\"}", window, cx)
+        });
+        view.find(true, cx);
+      });
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+      let this = view.read(cx);
+      assert!(this.filter_error.is_none());
+      assert_eq!(this.docs.len(), 2);
+      assert!(matches!(this.doc_count, Some(DocCount { count, exact: true }) if count == 2.0));
+    });
+  }
+
+  #[gpui::test]
+  fn a_superseded_find_keeps_only_the_newest_result(cx: &mut gpui::TestAppContext) {
+    let fake = FakeDoc::new(&[("app", &[("users", users())])]);
+    let (view, cx) = doc_view(fake, Some("app"), cx);
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+      view.update(cx, |view, cx| {
+        view.select_collection("users".to_string(), cx)
+      })
+    });
+    cx.run_until_parked();
+
+    cx.update(|window, cx| {
+      view.update(cx, |view, cx| {
+        view.doc_filter.update(cx, |input, cx| {
+          input.set_value("{\"plan\":\"pro\"}", window, cx)
+        });
+        view.find(true, cx);
+        view.doc_filter.update(cx, |input, cx| {
+          input.set_value("{\"plan\":\"free\"}", window, cx)
+        });
+        view.find(true, cx);
+      });
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+      let this = view.read(cx);
+      assert_eq!(this.docs.len(), 1);
+      assert!(this.docs[0].doc.contains("Alan"));
+    });
+  }
+
+  #[gpui::test]
+  fn selecting_a_doc_loads_the_detail_and_no_id_stays_read_only(cx: &mut gpui::TestAppContext) {
+    let mut docs = users();
+    docs.push(DocRecord {
+      id: None,
+      doc: "{\"name\":\"ghost\"}".to_string(),
+    });
+    let fake = FakeDoc::new(&[("app", &[("users", docs)])]);
+    let (view, cx) = doc_view(fake, Some("app"), cx);
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+      view.update(cx, |view, cx| {
+        view.select_collection("users".to_string(), cx)
+      })
+    });
+    cx.run_until_parked();
+
+    cx.update(|_, cx| view.update(cx, |view, cx| view.select_doc(0, cx)));
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+      let this = view.read(cx);
+      assert_eq!(this.selected, Some(0));
+      let detail = this.detail.as_ref().expect("addressable detail");
+      assert!(detail.relaxed.contains("Ada"));
+    });
+
+    // No `_id`: selected, but there is no address to fetch a detail for.
+    cx.update(|_, cx| view.update(cx, |view, cx| view.select_doc(3, cx)));
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+      let this = view.read(cx);
+      assert_eq!(this.selected, Some(3));
+      assert!(this.detail.is_none());
+    });
+  }
+
+  #[gpui::test]
+  fn editing_saves_the_draft_and_reloads_the_detail(cx: &mut gpui::TestAppContext) {
+    let fake = FakeDoc::new(&[("app", &[("users", users())])]);
+    let (view, cx) = doc_view(fake.clone(), Some("app"), cx);
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+      view.update(cx, |view, cx| {
+        view.select_collection("users".to_string(), cx)
+      })
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| view.update(cx, |view, cx| view.select_doc(0, cx)));
+    cx.run_until_parked();
+
+    cx.update(|window, cx| {
+      view.update(cx, |view, cx| view.start_edit(window, cx));
+    });
+    cx.update(|_, cx| {
+      let this = view.read(cx);
+      assert!(this.editing);
+      // The editor starts from the pretty-printed canonical form.
+      assert!(
+        this
+          .doc_editor
+          .read(cx)
+          .value()
+          .contains("\"name\": \"Ada\"")
+      );
+    });
+
+    cx.update(|window, cx| {
+      view.update(cx, |view, cx| {
+        view.doc_editor.update(cx, |input, cx| {
+          input.set_value(
+            "{\"_id\":1,\"name\":\"Ada II\",\"plan\":\"max\"}",
+            window,
+            cx,
+          )
+        });
+        view.save_doc(cx);
+      });
+    });
+    cx.run_until_parked();
+    assert!(
+      fake.collection("app", "users").unwrap()[0]
+        .doc
+        .contains("Ada II")
+    );
+    cx.update(|_, cx| {
+      let this = view.read(cx);
+      assert!(!this.editing);
+      assert!(
+        this
+          .detail
+          .as_ref()
+          .is_some_and(|detail| detail.relaxed.contains("Ada II"))
+      );
+    });
+  }
+
+  #[gpui::test]
+  fn deleting_a_doc_clears_the_selection_and_refreshes(cx: &mut gpui::TestAppContext) {
+    let fake = FakeDoc::new(&[("app", &[("users", users())])]);
+    let (view, cx) = doc_view(fake.clone(), Some("app"), cx);
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+      view.update(cx, |view, cx| {
+        view.select_collection("users".to_string(), cx)
+      })
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| view.update(cx, |view, cx| view.select_doc(0, cx)));
+    cx.run_until_parked();
+
+    cx.update(|_, cx| view.update(cx, |view, cx| view.delete_doc(cx)));
+    cx.run_until_parked();
+    assert_eq!(fake.collection("app", "users").unwrap().len(), 2);
+    cx.update(|_, cx| {
+      let this = view.read(cx);
+      assert!(this.selected.is_none());
+      assert!(this.detail.is_none());
+      assert_eq!(this.docs.len(), 2);
+      // The sidebar estimate refreshed with the collection reload.
+      assert!(matches!(
+        this.collections.first().map(|c| c.estimated_docs),
+        Some(Some(count)) if count == 2.0
+      ));
+    });
+  }
+
+  #[gpui::test]
+  fn the_console_answers_finds_and_rejects_garbage(cx: &mut gpui::TestAppContext) {
+    let fake = FakeDoc::new(&[("app", &[("users", users())])]);
+    let (view, cx) = doc_view(fake, Some("app"), cx);
+    cx.run_until_parked();
+
+    // No collection selected: the console refuses to guess.
+    cx.update(|window, cx| {
+      view.update(cx, |view, cx| {
+        view
+          .console_input
+          .update(cx, |input, cx| input.set_value("{}", window, cx));
+        view.run_console(window, cx);
+      });
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| assert!(view.read(cx).console_log.is_empty()));
+
+    cx.update(|_, cx| {
+      view.update(cx, |view, cx| {
+        view.select_collection("users".to_string(), cx)
+      })
+    });
+    cx.run_until_parked();
+
+    let run = |cx: &mut gpui::VisualTestContext, source: &str| {
+      let source = source.to_string();
+      cx.update(|window, cx| {
+        view.update(cx, |view, cx| {
+          view
+            .console_input
+            .update(cx, |input, cx| input.set_value(source, window, cx));
+          view.run_console(window, cx);
+        });
+      });
+      cx.run_until_parked();
+    };
+
+    run(cx, "{\"plan\":\"pro\"}");
+    cx.update(|_, cx| {
+      let this = view.read(cx);
+      let entry = this.console_log.last().expect("a log entry");
+      assert!(entry.ok);
+      assert_eq!(entry.prompt, "app.users");
+      assert_eq!(entry.lines.len(), 2);
+      assert_eq!(entry.summary.as_deref(), Some("2 docs · 3 ms"));
+      assert_eq!(this.console_input.read(cx).value().to_string(), "");
+    });
+
+    run(cx, "garbage");
+    cx.update(|_, cx| {
+      let entry = view.read(cx).console_log.last().expect("a log entry");
+      assert!(!entry.ok);
+      assert!(entry.lines[0].contains("not extended json"));
+    });
+  }
 
   #[test]
   fn id_label_unwraps_extjson_wrappers() {

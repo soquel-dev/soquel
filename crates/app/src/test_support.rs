@@ -30,14 +30,15 @@ pub fn shell_window<V: Render + 'static>(
   cx.update(|cx| cx.set_reduce_motion(true));
   let mut inner = None;
   let (_root, cx) = cx.add_window_view(|window, cx| {
+    // The test platform never activates windows, and both the dialogs'
+    // deferred open and view tasks routing through `cx.active_window()` bail
+    // when it is None. Activate before the view spawns its first task.
+    window.activate_window();
     let view = cx.new(|cx| build(window, cx));
     inner = Some(view.clone());
     let shell = cx.new(|_| Shell { child: view.into() });
     Root::new(shell, window, cx)
   });
-  // The test platform never activates windows, and the dialogs' deferred
-  // open bails when `cx.active_window()` is None.
-  cx.update(|window, _| window.activate_window());
   (inner.unwrap(), cx)
 }
 

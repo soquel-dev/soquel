@@ -542,6 +542,13 @@ pub fn import_connections(
   })
 }
 
+/// Test-only Db over a fake connection: view tests drive fully in-memory
+/// connectors, resolved inline on the deterministic scheduler.
+#[cfg(test)]
+pub fn fake_db(conn: Arc<dyn Connection>, kind: ConnectorKind) -> Db {
+  Db(conn, kind)
+}
+
 /// Test-only direct connect, bypassing the stores.
 #[cfg(test)]
 pub fn connect_with(

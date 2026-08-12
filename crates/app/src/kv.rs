@@ -1069,9 +1069,564 @@ impl Render for KvWorkspace {
 
 #[cfg(test)]
 mod tests {
+  use std::sync::Mutex;
+
   use ::core::prelude::v1::test;
+  use soquel_core::connectors::{Connection, HashField, KeyScanPage, KvBrowse, KvDatabaseKeys};
+  use soquel_core::error::Error;
+  use soquel_core::profiles::ConnectorKind;
 
   use super::*;
+  use crate::test_support::shell_window;
+
+  /// In-memory kv connection: every future resolves on its first poll, so the
+  /// view runs fully deterministic under `run_until_parked`.
+  struct FakeKv {
+    keys: Mutex<std::collections::BTreeMap<String, (KeyValue, Option<f64>)>>,
+    /// When non-empty, scan_keys pops these pages instead of reading `keys`.
+    scan_script: Mutex<Vec<KeyScanPage>>,
+    patterns: Mutex<Vec<String>>,
+  }
+
+  impl FakeKv {
+    fn new(seed: &[(&str, KeyValue, Option<f64>)]) -> Arc<Self> {
+      Arc::new(Self {
+        keys: Mutex::new(
+          seed
+            .iter()
+            .map(|(key, value, ttl)| (key.to_string(), (value.clone(), *ttl)))
+            .collect(),
+        ),
+        scan_script: Mutex::new(Vec::new()),
+        patterns: Mutex::new(Vec::new()),
+      })
+    }
+
+    fn entry(key: &str, value: &KeyValue, ttl_ms: Option<f64>) -> KeyEntry {
+      KeyEntry {
+        key: key.to_string(),
+        kind: value_kind(value),
+        ttl_ms,
+      }
+    }
+
+    fn matches(pattern: &str, key: &str) -> bool {
+      let needle = pattern.trim_matches('*');
+      needle.is_empty() || key.contains(needle)
+    }
+
+    fn missing(key: &str) -> Error {
+      Error::Unsupported {
+        message: format!("no such key {key}"),
+      }
+    }
+
+    fn ttl_of(&self, key: &str) -> Option<f64> {
+      self.keys.lock().unwrap().get(key).and_then(|entry| entry.1)
+    }
+  }
+
+  #[async_trait::async_trait]
+  impl Connection for FakeKv {
+    async fn health(&self) -> Result<(), Error> {
+      Ok(())
+    }
+    async fn close(&self) -> Result<(), Error> {
+      Ok(())
+    }
+    fn kv(&self) -> Option<&dyn KvBrowse> {
+      Some(self)
+    }
+  }
+
+  #[async_trait::async_trait]
+  impl KvBrowse for FakeKv {
+    async fn databases(&self) -> Result<KvDatabases, Error> {
+      let keys = self.keys.lock().unwrap();
+      Ok(KvDatabases {
+        current: 0,
+        total: 16,
+        used: vec![KvDatabaseKeys {
+          db: 0,
+          keys: keys.len() as f64,
+        }],
+      })
+    }
+
+    async fn scan_keys(
+      &self,
+      pattern: &str,
+      _: Option<&str>,
+      _: u32,
+    ) -> Result<KeyScanPage, Error> {
+      self.patterns.lock().unwrap().push(pattern.to_string());
+      let scripted = {
+        let mut script = self.scan_script.lock().unwrap();
+        if script.is_empty() {
+          None
+        } else {
+          Some(script.remove(0))
+        }
+      };
+      if let Some(page) = scripted {
+        return Ok(page);
+      }
+      let keys = self.keys.lock().unwrap();
+      Ok(KeyScanPage {
+        keys: keys
+          .iter()
+          .filter(|(key, _)| Self::matches(pattern, key))
+          .map(|(key, (value, ttl))| Self::entry(key, value, *ttl))
+          .collect(),
+        cursor: None,
+      })
+    }
+
+    async fn key_detail(&self, key: &str) -> Result<KeyDetail, Error> {
+      let keys = self.keys.lock().unwrap();
+      let (value, ttl_ms) = keys.get(key).ok_or_else(|| Self::missing(key))?;
+      let size = match value {
+        KeyValue::String { value } => value.len() as f64,
+        other => sample_len(other).unwrap_or(0) as f64,
+      };
+      Ok(KeyDetail {
+        key: key.to_string(),
+        ttl_ms: *ttl_ms,
+        size,
+        value: value.clone(),
+      })
+    }
+
+    async fn set_string(&self, key: &str, value: &str) -> Result<(), Error> {
+      let mut keys = self.keys.lock().unwrap();
+      let ttl = keys.get(key).and_then(|entry| entry.1);
+      keys.insert(
+        key.to_string(),
+        (
+          KeyValue::String {
+            value: value.to_string(),
+          },
+          ttl,
+        ),
+      );
+      Ok(())
+    }
+
+    async fn delete_key(&self, key: &str) -> Result<(), Error> {
+      self
+        .keys
+        .lock()
+        .unwrap()
+        .remove(key)
+        .map(|_| ())
+        .ok_or_else(|| Self::missing(key))
+    }
+
+    async fn set_ttl(&self, key: &str, ttl_ms: Option<f64>) -> Result<(), Error> {
+      let mut keys = self.keys.lock().unwrap();
+      let entry = keys.get_mut(key).ok_or_else(|| Self::missing(key))?;
+      entry.1 = ttl_ms;
+      Ok(())
+    }
+
+    async fn run_command(&self, command: &str) -> Result<Vec<String>, Error> {
+      let parts: Vec<&str> = command.split_whitespace().collect();
+      match parts.as_slice() {
+        ["PING"] => Ok(vec!["PONG".to_string()]),
+        ["SET", key, value] => {
+          self.keys.lock().unwrap().insert(
+            key.to_string(),
+            (
+              KeyValue::String {
+                value: value.to_string(),
+              },
+              None,
+            ),
+          );
+          Ok(vec!["OK".to_string()])
+        }
+        _ => Err(Error::Unsupported {
+          message: format!("fake console: unknown command {command}"),
+        }),
+      }
+    }
+  }
+
+  fn string_value(value: &str) -> KeyValue {
+    KeyValue::String {
+      value: value.to_string(),
+    }
+  }
+
+  fn fake_profile() -> ConnectionProfile {
+    ConnectionProfile {
+      id: "kv-fake".to_string(),
+      name: "kv fake".to_string(),
+      env: soquel_core::profiles::Env::Dev,
+      group: None,
+      agent_access: Default::default(),
+      credential: Default::default(),
+      params: soquel_core::profiles::ConnectorParams::Redis(soquel_core::profiles::RedisParams {
+        host: "localhost".to_string(),
+        port: 6379,
+        db: 0,
+        username: None,
+        tls: false,
+        tunnel_id: None,
+      }),
+    }
+  }
+
+  fn kv_view(
+    fake: Arc<FakeKv>,
+    cx: &mut gpui::TestAppContext,
+  ) -> (Entity<KvWorkspace>, &mut gpui::VisualTestContext) {
+    // The state is only reached by db switching, which these tests skip.
+    let dir = tempfile::tempdir().unwrap();
+    let state = std::sync::Arc::new(soquel_core::AppState::for_tests(
+      dir.path(),
+      Box::new(soquel_core::secrets::InMemoryStore::default()),
+    ));
+    let db = crate::core::fake_db(fake, ConnectorKind::Redis);
+    shell_window(cx, move |window, cx| {
+      KvWorkspace::new(state, db, fake_profile(), window, cx)
+    })
+  }
+
+  #[gpui::test]
+  fn scan_drains_empty_match_pages_until_keys_arrive(cx: &mut gpui::TestAppContext) {
+    let fake = FakeKv::new(&[]);
+    *fake.scan_script.lock().unwrap() = vec![
+      KeyScanPage {
+        keys: Vec::new(),
+        cursor: Some("1".to_string()),
+      },
+      KeyScanPage {
+        keys: Vec::new(),
+        cursor: Some("2".to_string()),
+      },
+      KeyScanPage {
+        keys: vec![FakeKv::entry("a", &string_value("x"), None)],
+        cursor: Some("3".to_string()),
+      },
+    ];
+    let (view, cx) = kv_view(fake.clone(), cx);
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+      let view = view.read(cx);
+      assert_eq!(view.keys.len(), 1);
+      assert_eq!(view.cursor.as_deref(), Some("3"));
+      assert!(!view.scanning);
+    });
+
+    // "scan more" continues from the cursor and extends the list.
+    *fake.scan_script.lock().unwrap() = vec![KeyScanPage {
+      keys: vec![FakeKv::entry("b", &string_value("y"), None)],
+      cursor: None,
+    }];
+    cx.update(|_, cx| view.update(cx, |view, cx| view.scan(false, cx)));
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+      let view = view.read(cx);
+      assert_eq!(view.keys.len(), 2);
+      assert!(view.cursor.is_none());
+    });
+  }
+
+  #[gpui::test]
+  fn the_scan_hop_cap_holds_on_a_hostile_keyspace(cx: &mut gpui::TestAppContext) {
+    let fake = FakeKv::new(&[]);
+    *fake.scan_script.lock().unwrap() = (0..60)
+      .map(|ix| KeyScanPage {
+        keys: Vec::new(),
+        cursor: Some(ix.to_string()),
+      })
+      .collect();
+    let (view, cx) = kv_view(fake.clone(), cx);
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+      let view = view.read(cx);
+      assert!(view.keys.is_empty());
+      // 50 hops, then the cap: the cursor stays open for "scan more".
+      assert_eq!(view.cursor.as_deref(), Some("49"));
+      assert!(!view.scanning);
+    });
+    assert_eq!(fake.scan_script.lock().unwrap().len(), 10);
+  }
+
+  #[gpui::test]
+  fn a_superseded_scan_keeps_only_the_newest_result(cx: &mut gpui::TestAppContext) {
+    let fake = FakeKv::new(&[
+      ("alpha", string_value("1"), None),
+      ("beta", string_value("2"), None),
+    ]);
+    let (view, cx) = kv_view(fake, cx);
+    cx.run_until_parked();
+    cx.update(|_, cx| assert_eq!(view.read(cx).keys.len(), 2));
+
+    // Two scans before the executor runs: the first lands stale and is dropped.
+    cx.update(|window, cx| {
+      view.update(cx, |view, cx| {
+        view
+          .search
+          .update(cx, |input, cx| input.set_value("alpha", window, cx));
+        view.scan(true, cx);
+        view
+          .search
+          .update(cx, |input, cx| input.set_value("beta", window, cx));
+        view.scan(true, cx);
+      });
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+      let keys: Vec<&str> = view.read(cx).keys.iter().map(|k| k.key.as_str()).collect();
+      assert_eq!(keys, vec!["beta"]);
+    });
+  }
+
+  #[gpui::test]
+  fn selecting_a_key_fills_the_drafts_from_the_detail(cx: &mut gpui::TestAppContext) {
+    let fake = FakeKv::new(&[
+      ("s", string_value("hello"), Some(90_000.0)),
+      (
+        "h",
+        KeyValue::Hash {
+          entries: vec![HashField {
+            field: "f".to_string(),
+            value: "v".to_string(),
+          }],
+        },
+        None,
+      ),
+    ]);
+    let (view, cx) = kv_view(fake, cx);
+    cx.run_until_parked();
+
+    cx.update(|window, cx| {
+      view.update(cx, |view, cx| view.select_key("s".to_string(), window, cx));
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+      let this = view.read(cx);
+      assert!(!this.detail_loading);
+      let detail = this.detail.as_ref().expect("string detail");
+      assert_eq!(detail.key, "s");
+      assert_eq!(detail.size, 5.0);
+      assert_eq!(this.string_draft.read(cx).value().to_string(), "hello");
+      assert_eq!(this.ttl_input.read(cx).value().to_string(), "90");
+    });
+
+    // A collection key leaves the string draft and ttl empty.
+    cx.update(|window, cx| {
+      view.update(cx, |view, cx| view.select_key("h".to_string(), window, cx));
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+      let this = view.read(cx);
+      assert!(matches!(
+        this.detail.as_ref().map(|d| &d.value),
+        Some(KeyValue::Hash { .. })
+      ));
+      assert_eq!(this.string_draft.read(cx).value().to_string(), "");
+      assert_eq!(this.ttl_input.read(cx).value().to_string(), "");
+    });
+  }
+
+  #[gpui::test]
+  fn save_string_writes_and_reloads_keeping_the_ttl(cx: &mut gpui::TestAppContext) {
+    let fake = FakeKv::new(&[("s", string_value("hello"), Some(90_000.0))]);
+    let (view, cx) = kv_view(fake.clone(), cx);
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+      view.update(cx, |view, cx| view.select_key("s".to_string(), window, cx));
+    });
+    cx.run_until_parked();
+
+    cx.update(|window, cx| {
+      view.update(cx, |view, cx| {
+        view
+          .string_draft
+          .update(cx, |input, cx| input.set_value("world", window, cx));
+        view.save_string(cx);
+      });
+    });
+    cx.run_until_parked();
+    assert!(
+      matches!(&fake.keys.lock().unwrap()["s"], (KeyValue::String { value }, Some(ttl)) if value == "world" && *ttl == 90_000.0)
+    );
+    cx.update(|_, cx| {
+      let this = view.read(cx);
+      assert!(matches!(
+        this.detail.as_ref().map(|d| &d.value),
+        Some(KeyValue::String { value }) if value == "world"
+      ));
+    });
+  }
+
+  #[gpui::test]
+  fn ttl_validates_then_applies_and_persist_clears(cx: &mut gpui::TestAppContext) {
+    let fake = FakeKv::new(&[("s", string_value("hello"), None)]);
+    let (view, cx) = kv_view(fake.clone(), cx);
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+      view.update(cx, |view, cx| view.select_key("s".to_string(), window, cx));
+    });
+    cx.run_until_parked();
+
+    // Garbage never reaches the connection.
+    cx.update(|window, cx| {
+      view.update(cx, |view, cx| {
+        view
+          .ttl_input
+          .update(cx, |input, cx| input.set_value("nope", window, cx));
+        view.submit_ttl(cx);
+      });
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+      assert_eq!(
+        view.read(cx).status.to_string(),
+        "TTL must be a positive number of seconds"
+      );
+    });
+    assert_eq!(fake.ttl_of("s"), None);
+
+    // Seconds convert to milliseconds and the detail reloads.
+    cx.update(|window, cx| {
+      view.update(cx, |view, cx| {
+        view
+          .ttl_input
+          .update(cx, |input, cx| input.set_value("5", window, cx));
+        view.submit_ttl(cx);
+      });
+    });
+    cx.run_until_parked();
+    assert_eq!(fake.ttl_of("s"), Some(5_000.0));
+    cx.update(|_, cx| {
+      let this = view.read(cx);
+      assert_eq!(this.detail.as_ref().and_then(|d| d.ttl_ms), Some(5_000.0));
+      assert_eq!(this.ttl_input.read(cx).value().to_string(), "5");
+    });
+
+    // Persist clears the expiry.
+    cx.update(|_, cx| view.update(cx, |view, cx| view.apply_ttl(None, cx)));
+    cx.run_until_parked();
+    assert_eq!(fake.ttl_of("s"), None);
+  }
+
+  #[gpui::test]
+  fn deleting_clears_the_selection_and_rescans(cx: &mut gpui::TestAppContext) {
+    let fake = FakeKv::new(&[
+      ("s", string_value("1"), None),
+      ("t", string_value("2"), None),
+    ]);
+    let (view, cx) = kv_view(fake.clone(), cx);
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+      view.update(cx, |view, cx| view.select_key("s".to_string(), window, cx));
+    });
+    cx.run_until_parked();
+
+    cx.update(|_, cx| view.update(cx, |view, cx| view.delete_key(cx)));
+    cx.run_until_parked();
+    assert!(!fake.keys.lock().unwrap().contains_key("s"));
+    cx.update(|_, cx| {
+      let this = view.read(cx);
+      assert!(this.selected_key.is_none());
+      assert!(this.detail.is_none());
+      let keys: Vec<&str> = this.keys.iter().map(|k| k.key.as_str()).collect();
+      assert_eq!(keys, vec!["t"]);
+    });
+  }
+
+  #[gpui::test]
+  fn the_console_logs_replies_and_errors_and_rescans(cx: &mut gpui::TestAppContext) {
+    let fake = FakeKv::new(&[("s", string_value("1"), None)]);
+    let (view, cx) = kv_view(fake, cx);
+    cx.run_until_parked();
+
+    // Empty input runs nothing.
+    cx.update(|window, cx| {
+      view.update(cx, |view, cx| view.run_console(window, cx));
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| assert!(view.read(cx).console_log.is_empty()));
+
+    let run = |cx: &mut gpui::VisualTestContext, command: &str| {
+      let command = command.to_string();
+      cx.update(|window, cx| {
+        view.update(cx, |view, cx| {
+          view
+            .console_input
+            .update(cx, |input, cx| input.set_value(command, window, cx));
+          view.run_console(window, cx);
+        });
+      });
+      cx.run_until_parked();
+    };
+
+    run(cx, "PING");
+    cx.update(|_, cx| {
+      let this = view.read(cx);
+      let entry = this.console_log.last().expect("a log entry");
+      assert!(entry.ok);
+      assert_eq!(entry.lines, vec!["PONG"]);
+      assert_eq!(this.console_input.read(cx).value().to_string(), "");
+    });
+
+    run(cx, "WHATEVER");
+    cx.update(|_, cx| {
+      let this = view.read(cx);
+      let entry = this.console_log.last().expect("a log entry");
+      assert!(!entry.ok);
+      assert!(entry.lines[0].contains("unknown command"));
+    });
+
+    run(cx, "SET fresh 1");
+    cx.update(|_, cx| {
+      let this = view.read(cx);
+      assert!(this.console_log.last().is_some_and(|entry| entry.ok));
+      // A console write rescans: the new key shows up in the sidebar.
+      assert!(this.keys.iter().any(|k| k.key == "fresh"));
+    });
+  }
+
+  #[gpui::test]
+  fn glob_toggles_the_scan_pattern(cx: &mut gpui::TestAppContext) {
+    let fake = FakeKv::new(&[("cache:a", string_value("1"), None)]);
+    let (view, cx) = kv_view(fake.clone(), cx);
+    cx.run_until_parked();
+    assert_eq!(
+      fake.patterns.lock().unwrap().last().map(String::as_str),
+      Some("")
+    );
+
+    cx.update(|window, cx| {
+      view.update(cx, |view, cx| {
+        view
+          .search
+          .update(cx, |input, cx| input.set_value("cache", window, cx));
+        view.scan(true, cx);
+      });
+    });
+    cx.run_until_parked();
+    assert_eq!(
+      fake.patterns.lock().unwrap().last().map(String::as_str),
+      Some("*cache*")
+    );
+
+    cx.update(|_, cx| {
+      view.update(cx, |view, cx| {
+        view.glob = true;
+        view.scan(true, cx);
+      });
+    });
+    cx.run_until_parked();
+    assert_eq!(
+      fake.patterns.lock().unwrap().last().map(String::as_str),
+      Some("cache")
+    );
+  }
 
   #[test]
   fn contains_wraps_and_escapes_glob_specials() {
