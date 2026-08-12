@@ -360,6 +360,8 @@ impl Render for McpPanel {
         h_flex()
           .justify_between()
           .items_center()
+          // Clear the dialog's absolute close button.
+          .pr_8()
           .child(
             div()
               .font_family("IBM Plex Mono")

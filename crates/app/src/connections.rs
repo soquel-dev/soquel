@@ -5,7 +5,7 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::checkbox::Checkbox;
-use gpui_component::form::{field, v_form};
+use gpui_component::form::{Field, field, v_form};
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::notification::Notification;
 use gpui_component::radio::{Radio, RadioGroup};
@@ -257,6 +257,20 @@ fn mysql_url_ssl_mode(value: &str) -> Option<SslMode> {
   }
 }
 
+/// A form field a validation error anchors to, rendered under its input.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FormField {
+  Name,
+  Host,
+  Port,
+  Database,
+  User,
+  Path,
+  Command,
+}
+
+type FormErrors = Vec<(FormField, SharedString)>;
+
 /// What a pasted connection URL prefills; fields the kind does not use stay at
 /// their defaults and are ignored by `form_input`.
 #[derive(Debug, Clone, PartialEq)]
@@ -350,6 +364,10 @@ pub struct ConnectionsView {
   connecting: Option<String>,
   status: SharedString,
   editing: Option<String>,
+  /// Validation errors keyed by field, shown under the inputs in the dialog.
+  form_errors: FormErrors,
+  /// Test feedback shown inside the dialog, never on the page behind it.
+  form_status: SharedString,
   form_name: Entity<InputState>,
   form_group: Entity<InputState>,
   form_host: Entity<InputState>,
@@ -542,6 +560,8 @@ impl ConnectionsView {
       connecting: None,
       status: SharedString::default(),
       editing: None,
+      form_errors: Vec::new(),
+      form_status: SharedString::default(),
       form_name,
       form_group,
       form_host,
@@ -794,6 +814,8 @@ impl ConnectionsView {
   pub(crate) fn open_form(&mut self, editing: Option<ConnectionProfile>, cx: &mut Context<Self>) {
     self.editing = editing.as_ref().map(|p| p.id.clone());
     self.status = SharedString::default();
+    self.form_errors.clear();
+    self.form_status = SharedString::default();
     let this = cx.entity().downgrade();
     dialogs::defer_on_active_window(cx, move |window, cx| {
       this
@@ -840,8 +862,12 @@ impl ConnectionsView {
               )
               .child(Button::new("form-save").primary().label("Save").on_click(
                 move |_, window, cx| {
-                  this_save.update(cx, |this, cx| this.save_form(cx)).ok();
-                  window.close_dialog(cx);
+                  let saved = this_save
+                    .update(cx, |this, cx| this.save_form(cx))
+                    .unwrap_or(false);
+                  if saved {
+                    window.close_dialog(cx);
+                  }
                 },
               )),
           )
@@ -1011,12 +1037,12 @@ impl ConnectionsView {
       return;
     }
     let Some(parsed) = parse_connection_url(&raw) else {
-      self.status =
+      self.form_status =
         "Not a connection URL. Use postgres://, mysql://, redis:// or mongodb://.".into();
       cx.notify();
       return;
     };
-    self.status = SharedString::default();
+    self.form_status = SharedString::default();
     let engine_ix = ENGINE_CHOICES
       .iter()
       .position(|choice| choice.id == engine_choice_for_kind(parsed.kind))
@@ -1124,10 +1150,11 @@ impl ConnectionsView {
     });
   }
 
-  fn form_input(&self, cx: &Context<Self>) -> Result<ConnectionInput, String> {
+  fn form_input(&self, cx: &Context<Self>) -> Result<ConnectionInput, FormErrors> {
+    let mut errors: FormErrors = Vec::new();
     let name = self.form_name.read(cx).value().trim().to_string();
     if name.is_empty() {
-      return Err("Name is required".to_string());
+      errors.push((FormField::Name, "Name is required".into()));
     }
     let kind = self.selected_kind(cx);
     let group = self.form_group.read(cx).value().trim().to_string();
@@ -1152,10 +1179,12 @@ impl ConnectionsView {
 
     let host = self.form_host.read(cx).value().trim().to_string();
     let port_text = self.form_port.read(cx).value().trim().to_string();
-    let parse_port = || {
-      port_text
-        .parse::<u16>()
-        .map_err(|_| "the port is not a number".to_string())
+    let parse_port = |errors: &mut FormErrors| match port_text.parse::<u16>() {
+      Ok(port) => port,
+      Err(_) => {
+        errors.push((FormField::Port, "the port is not a number".into()));
+        0
+      }
     };
     let optional = |input: &Entity<InputState>| {
       let value = input.read(cx).value().trim().to_string();
@@ -1167,13 +1196,13 @@ impl ConnectionsView {
       ConnectorKind::Sqlite => {
         let path = self.form_path.read(cx).value().trim().to_string();
         if path.is_empty() {
-          return Err("Database file is required".to_string());
+          errors.push((FormField::Path, "Database file is required".into()));
         }
         ConnectorParams::Sqlite { path }
       }
       ConnectorKind::Redis => {
         if host.is_empty() {
-          return Err("Host is required".to_string());
+          errors.push((FormField::Host, "Host is required".into()));
         }
         let db = self
           .form_db_index
@@ -1184,7 +1213,7 @@ impl ConnectionsView {
           .unwrap_or(0);
         ConnectorParams::Redis(RedisParams {
           host,
-          port: parse_port()?,
+          port: parse_port(&mut errors),
           db,
           username: optional(&self.form_user),
           tls: self.form_tls,
@@ -1193,11 +1222,11 @@ impl ConnectionsView {
       }
       ConnectorKind::Mongo => {
         if host.is_empty() {
-          return Err("Host is required".to_string());
+          errors.push((FormField::Host, "Host is required".into()));
         }
         ConnectorParams::Mongo(MongoParams {
           host,
-          port: parse_port()?,
+          port: parse_port(&mut errors),
           database: optional(&self.form_database),
           username: optional(&self.form_user),
           auth_source: optional(&self.form_auth_source),
@@ -1208,8 +1237,14 @@ impl ConnectionsView {
       ConnectorKind::Postgres | ConnectorKind::Mysql => {
         let database = self.form_database.read(cx).value().trim().to_string();
         let user = self.form_user.read(cx).value().trim().to_string();
-        if host.is_empty() || database.is_empty() || user.is_empty() {
-          return Err("host, database and user are required".to_string());
+        if host.is_empty() {
+          errors.push((FormField::Host, "Host is required".into()));
+        }
+        if database.is_empty() {
+          errors.push((FormField::Database, "Database is required".into()));
+        }
+        if user.is_empty() {
+          errors.push((FormField::User, "User is required".into()));
         }
         let ssl_mode = self
           .form_ssl
@@ -1220,7 +1255,7 @@ impl ConnectionsView {
           .unwrap_or(SslMode::Prefer);
         let params = SqlServerParams {
           host,
-          port: parse_port()?,
+          port: parse_port(&mut errors),
           database,
           user,
           ssl_mode,
@@ -1247,7 +1282,7 @@ impl ConnectionsView {
         CredentialMode::Command => {
           let command = self.form_command.read(cx).value().trim().to_string();
           if command.is_empty() {
-            return Err("Command is required".to_string());
+            errors.push((FormField::Command, "Command is required".into()));
           }
           CredentialSource::Command {
             command,
@@ -1258,6 +1293,10 @@ impl ConnectionsView {
       let password = self.form_password.read(cx).value().to_string();
       (credential, (!password.is_empty()).then_some(password))
     };
+
+    if !errors.is_empty() {
+      return Err(errors);
+    }
 
     Ok(ConnectionInput {
       name,
@@ -1272,21 +1311,24 @@ impl ConnectionsView {
 
   fn test_form(&mut self, cx: &mut Context<Self>) {
     let input = match self.form_input(cx) {
-      Ok(input) => input,
-      Err(message) => {
-        self.status = message.into();
+      Ok(input) => {
+        self.form_errors.clear();
+        input
+      }
+      Err(errors) => {
+        self.form_errors = errors;
         cx.notify();
         return;
       }
     };
-    self.status = "testing...".into();
+    self.form_status = "testing...".into();
     cx.notify();
     let task = core::test_input(self.state.clone(), input, self.editing.clone(), cx);
     self._task = cx.spawn(async move |this, cx| {
       let result = task.await;
       let _ = this.update(cx, |this, cx| {
         match result {
-          Ok(()) => this.status = "connection ok".into(),
+          Ok(()) => this.form_status = "connection ok".into(),
           Err(Error::HostKeyUntrusted {
             host,
             port,
@@ -1296,7 +1338,7 @@ impl ConnectionsView {
             ..
           }) => {
             // The trust dialog owns this failure; retry re-reads the live form.
-            this.status = SharedString::default();
+            this.form_status = SharedString::default();
             host_key::open_host_key_dialog(
               cx.entity(),
               this.state.clone(),
@@ -1311,26 +1353,30 @@ impl ConnectionsView {
               |view: &mut Self, result, cx| match result {
                 Ok(()) => view.test_form(cx),
                 Err(error) => {
-                  view.status = crate::status::error(&error);
+                  view.form_status = crate::status::error(&error);
                   cx.notify();
                 }
               },
             );
           }
-          Err(error) => this.status = crate::status::error(&error),
+          Err(error) => this.form_status = crate::status::error(&error),
         }
         cx.notify();
       });
     });
   }
 
-  fn save_form(&mut self, cx: &mut Context<Self>) {
+  /// False when validation refused: the dialog stays open on the field errors.
+  fn save_form(&mut self, cx: &mut Context<Self>) -> bool {
     let input = match self.form_input(cx) {
-      Ok(input) => input,
-      Err(message) => {
-        self.status = message.into();
+      Ok(input) => {
+        self.form_errors.clear();
+        input
+      }
+      Err(errors) => {
+        self.form_errors = errors;
         cx.notify();
-        return;
+        return false;
       }
     };
     let task = core::save_connection(self.state.clone(), self.editing.clone(), input, cx);
@@ -1344,6 +1390,7 @@ impl ConnectionsView {
         cx.notify();
       });
     });
+    true
   }
 
   fn revoke_command(
@@ -1692,7 +1739,7 @@ impl RenderOnce for ConnectionForm {
   fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
     let this = self.view.downgrade();
     let view = self.view.read(cx);
-    let status = view.status.clone();
+    let form_status = view.form_status.clone();
     let mode = view.selected_mode(cx);
     let kind = view.selected_kind(cx);
     let is_server = kind != ConnectorKind::Sqlite;
@@ -1708,24 +1755,46 @@ impl RenderOnce for ConnectionForm {
     let command = view.form_command.read(cx).value().trim().to_string();
     let this_tls = this.clone();
     let this_browse = this.clone();
-    let hint = |text: SharedString, cx: &App| {
-      field().label("").child(
-        div()
-          .text_xs()
-          .text_color(cx.theme().muted_foreground)
-          .child(text),
-      )
+    let errors = view.form_errors.clone();
+    let error_for = move |target: FormField| -> Option<SharedString> {
+      errors
+        .iter()
+        .find(|(field, _)| *field == target)
+        .map(|(_, message)| message.clone())
+    };
+    // The description slot under the input: a validation error wins over the hint.
+    let note = |f: Field, error: Option<SharedString>, hint: Option<SharedString>| -> Field {
+      match (error, hint) {
+        (Some(message), _) => f.description_fn(move |_, cx| {
+          div()
+            .text_color(cx.theme().danger)
+            .child(message.clone())
+            .into_any_element()
+        }),
+        (None, Some(text)) => f.description(text),
+        (None, None) => f,
+      }
     };
     v_form()
-      .label_width(px(96.))
-      .child(field().label("Name").child(Input::new(&view.form_name)))
+      .columns(2)
+      .child(note(
+        field().label("Name").child(Input::new(&view.form_name)),
+        error_for(FormField::Name),
+        None,
+      ))
       .child(field().label("Group").child(Input::new(&view.form_group)))
       .child(
         field()
           .label("Engine")
+          .col_span(2)
           .child(Select::new(&view.form_engine)),
       )
-      .child(field().label("From URL").child(Input::new(&view.form_url)))
+      .child(
+        field()
+          .label("From URL")
+          .col_span(2)
+          .child(Input::new(&view.form_url)),
+      )
       .child(field().label("Env").child(Select::new(&view.form_env)))
       .child(
         field()
@@ -1734,8 +1803,8 @@ impl RenderOnce for ConnectionForm {
       )
       .when(kind == ConnectorKind::Sqlite, |form| {
         let this_browse = this_browse.clone();
-        form.child(
-          field().label("Database file").child(
+        form.child(note(
+          field().label("Database file").col_span(2).child(
             h_flex()
               .w_full()
               .gap_2()
@@ -1752,19 +1821,31 @@ impl RenderOnce for ConnectionForm {
                   }),
               ),
           ),
-        )
+          error_for(FormField::Path),
+          None,
+        ))
       })
       .when(is_server, |form| {
         form
-          .child(field().label("Host").child(Input::new(&view.form_host)))
-          .child(field().label("Port").child(Input::new(&view.form_port)))
+          .child(note(
+            field().label("Host").child(Input::new(&view.form_host)),
+            error_for(FormField::Host),
+            None,
+          ))
+          .child(note(
+            field().label("Port").child(Input::new(&view.form_port)),
+            error_for(FormField::Port),
+            None,
+          ))
       })
       .when(kind == ConnectorKind::Redis, |form| {
-        form.child(
-          field()
-            .label("DB index")
-            .child(Input::new(&view.form_db_index)),
-        )
+        form
+          .child(
+            field()
+              .label("DB index")
+              .child(Input::new(&view.form_db_index)),
+          )
+          .child(field().label("User").child(Input::new(&view.form_user)))
       })
       .when(kind == ConnectorKind::Mongo, |form| {
         form
@@ -1778,15 +1859,22 @@ impl RenderOnce for ConnectionForm {
               .label("Auth source")
               .child(Input::new(&view.form_auth_source)),
           )
+          .child(field().label("User").child(Input::new(&view.form_user)))
       })
       .when(is_sql, |form| {
         form
-          .child(
+          .child(note(
             field()
               .label("Database")
               .child(Input::new(&view.form_database)),
-          )
-          .child(field().label("User").child(Input::new(&view.form_user)))
+            error_for(FormField::Database),
+            None,
+          ))
+          .child(note(
+            field().label("User").child(Input::new(&view.form_user)),
+            error_for(FormField::User),
+            None,
+          ))
           .child(field().label("SSL").child(Select::new(&view.form_ssl)))
           .when(ssl_mode == SslMode::VerifyFull, |form| {
             form.child(
@@ -1799,24 +1887,22 @@ impl RenderOnce for ConnectionForm {
       .when(
         matches!(kind, ConnectorKind::Redis | ConnectorKind::Mongo),
         |form| {
-          form
-            .child(field().label("User").child(Input::new(&view.form_user)))
-            .child(
-              field()
-                .label("TLS")
-                .child(Switch::new("form-tls").checked(tls).on_click({
-                  let this_tls = this_tls.clone();
-                  move |checked, _, cx| {
-                    let checked = *checked;
-                    this_tls
-                      .update(cx, |view, cx| {
-                        view.form_tls = checked;
-                        cx.notify();
-                      })
-                      .ok();
-                  }
-                })),
-            )
+          form.child(
+            field()
+              .label("TLS")
+              .child(Switch::new("form-tls").checked(tls).on_click({
+                let this_tls = this_tls.clone();
+                move |checked, _, cx| {
+                  let checked = *checked;
+                  this_tls
+                    .update(cx, |view, cx| {
+                      view.form_tls = checked;
+                      cx.notify();
+                    })
+                    .ok();
+                }
+              })),
+          )
         },
       )
       .when(is_server, |form| {
@@ -1837,43 +1923,49 @@ impl RenderOnce for ConnectionForm {
           .when_some(view.state.secrets_problem.clone(), |form, problem| {
             form.child(
               field()
-                .label("")
+                .col_span(2)
                 .child(div().text_xs().text_color(cx.theme().yellow).child(problem)),
             )
           })
           .when(mode != CredentialMode::Command, |form| {
-            form
-              .child(
-                field()
-                  .label(if mode == CredentialMode::Prompt {
-                    "(for Test only)"
-                  } else {
-                    ""
-                  })
-                  .child(Input::new(&view.form_password)),
-              )
-              .when_some(credential_mode_hint(mode), |form, text| {
-                form.child(hint(text.into(), cx))
-              })
+            form.child(note(
+              field()
+                .col_span(2)
+                .when(mode == CredentialMode::Prompt, |f| {
+                  f.label("Password (used by Test only)")
+                })
+                .child(Input::new(&view.form_password)),
+              None,
+              credential_mode_hint(mode).map(SharedString::from),
+            ))
           })
           .when(mode == CredentialMode::Command, |form| {
             form
-              .child(
+              .child(note(
                 field()
                   .label("Command")
+                  .col_span(2)
                   .child(Input::new(&view.form_command)),
-              )
-              .child(field().label("").child(command_preview(
+                error_for(FormField::Command),
+                credential_command_caveat(kind).map(SharedString::from),
+              ))
+              .child(field().col_span(2).child(command_preview(
                 &command,
                 CONNECTION_COMMAND_HINT,
                 cx,
               )))
-              .when_some(credential_command_caveat(kind), |form, caveat| {
-                form.child(hint(caveat.into(), cx))
-              })
           })
       })
-      .when(!status.is_empty(), |form| form.child(hint(status, cx)))
+      .when(!form_status.is_empty(), |form| {
+        form.child(
+          field().col_span(2).child(
+            div()
+              .text_xs()
+              .text_color(cx.theme().muted_foreground)
+              .child(form_status),
+          ),
+        )
+      })
   }
 }
 
@@ -2544,6 +2636,12 @@ mod tests {
 
   use super::*;
 
+  fn has_error(errors: &FormErrors, field: FormField, message: &str) -> bool {
+    errors
+      .iter()
+      .any(|(f, m)| *f == field && m.as_ref() == message)
+  }
+
   fn profile(name: &str, group: Option<&str>) -> ConnectionProfile {
     ConnectionProfile {
       id: name.to_string(),
@@ -2734,7 +2832,11 @@ mod tests {
         view
           .form_port
           .update(cx, |i, cx| i.set_value("not-a-port", window, cx));
-        assert!(view.form_input(cx).unwrap_err().contains("port"));
+        assert!(has_error(
+          &view.form_input(cx).unwrap_err(),
+          FormField::Port,
+          "the port is not a number"
+        ));
 
         view
           .form_port
@@ -2764,7 +2866,11 @@ mod tests {
     cx.update(|window, cx| {
       view.update(cx, |view, cx| {
         // An empty form refuses on the name first.
-        assert_eq!(view.form_input(cx).unwrap_err(), "Name is required");
+        assert!(has_error(
+          &view.form_input(cx).unwrap_err(),
+          FormField::Name,
+          "Name is required"
+        ));
         let mut profile = profile("warehouse", None);
         profile.agent_access = AgentAccess::WriteWithApproval;
         view.prefill_form(Some(&profile), window, cx);
@@ -2804,17 +2910,22 @@ mod tests {
 
         // sqlite: its file is required; host/db/user are not asked.
         set_engine(view, ConnectorKind::Sqlite, window, cx);
-        assert_eq!(
-          view.form_input(cx).unwrap_err(),
+        assert!(has_error(
+          &view.form_input(cx).unwrap_err(),
+          FormField::Path,
           "Database file is required"
-        );
+        ));
 
         // redis: only host+port, and host is required.
         set_engine(view, ConnectorKind::Redis, window, cx);
         view
           .form_host
           .update(cx, |i, cx| i.set_value("", window, cx));
-        assert_eq!(view.form_input(cx).unwrap_err(), "Host is required");
+        assert!(has_error(
+          &view.form_input(cx).unwrap_err(),
+          FormField::Host,
+          "Host is required"
+        ));
 
         // A server kind refuses a non-numeric port.
         set_engine(view, ConnectorKind::Mysql, window, cx);
@@ -2830,19 +2941,24 @@ mod tests {
         view
           .form_port
           .update(cx, |i, cx| i.set_value("nope", window, cx));
-        assert_eq!(view.form_input(cx).unwrap_err(), "the port is not a number");
+        assert!(has_error(
+          &view.form_input(cx).unwrap_err(),
+          FormField::Port,
+          "the port is not a number"
+        ));
 
-        // mysql/postgres need host, database and user.
+        // mysql/postgres need host, database and user, each named on its field.
         view
           .form_port
           .update(cx, |i, cx| i.set_value("3306", window, cx));
         view
           .form_database
           .update(cx, |i, cx| i.set_value("", window, cx));
-        assert_eq!(
-          view.form_input(cx).unwrap_err(),
-          "host, database and user are required"
-        );
+        assert!(has_error(
+          &view.form_input(cx).unwrap_err(),
+          FormField::Database,
+          "Database is required"
+        ));
 
         // sqlite has no auth: it forces keychain and drops any typed password.
         set_engine(view, ConnectorKind::Sqlite, window, cx);
@@ -3010,9 +3126,9 @@ mod tests {
           .update(cx, |i, cx| i.set_value("ftp://nope", window, cx));
         view.apply_url(window, cx);
         assert!(
-          view.status.contains("Not a connection URL"),
+          view.form_status.contains("Not a connection URL"),
           "got: {}",
-          view.status
+          view.form_status
         );
       });
     });
@@ -3284,7 +3400,11 @@ mod tests {
           s.set_selected_index(Some(IndexPath::new(command_ix)), window, cx)
         });
 
-        assert_eq!(view.form_input(cx).unwrap_err(), "Command is required");
+        assert!(has_error(
+          &view.form_input(cx).unwrap_err(),
+          FormField::Command,
+          "Command is required"
+        ));
 
         view
           .form_command

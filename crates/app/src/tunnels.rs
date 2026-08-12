@@ -777,11 +777,7 @@ impl RenderOnce for TunnelForm {
         needs.then(|| view.state.secrets_problem.clone()).flatten(),
         |form, problem| {
           // Amber, not destructive: one mode is gone, nothing is broken.
-          form.child(
-            field()
-              .label("")
-              .child(div().text_xs().text_color(cx.theme().yellow).child(problem)),
-          )
+          form.child(field().child(div().text_xs().text_color(cx.theme().yellow).child(problem)))
         },
       )
       .when(needs && mode != CredentialMode::Command, |form| {
