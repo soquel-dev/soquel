@@ -837,9 +837,23 @@ impl ConnectionsView {
         };
         let this_test = this.clone();
         let this_save = this.clone();
+        let this_ok = this.clone();
         dialogs::styled(dialog, window, cx)
           .title(title)
           .w(px(520.))
+          // A half-filled form is too easy to lose to a stray click.
+          .overlay_closable(false)
+          .on_ok(move |_, window, cx| {
+            let Some(strong) = this_ok.upgrade() else {
+              return true;
+            };
+            // Enter on the URL field prefills; it must not submit the rest.
+            if strong.read(cx).form_url.focus_handle(cx).is_focused(window) {
+              strong.update(cx, |view, cx| view.apply_url(window, cx));
+              return false;
+            }
+            strong.update(cx, |view, cx| view.save_form(cx))
+          })
           .child(ConnectionForm {
             view: strong.clone(),
           })
@@ -4133,6 +4147,30 @@ mod tests {
       window.notifications(cx).len()
     });
     assert_eq!(count, 1, "the toast reached the window's list");
+  }
+
+  #[gpui::test]
+  fn enter_submits_the_form_and_a_stray_click_does_not_close_it(cx: &mut TestAppContext) {
+    let (_dir, state) = test_state();
+    let (view, cx) = crate::test_support::shell_window(cx, {
+      let state = state.clone();
+      move |window, cx| ConnectionsView::new(state, window, cx)
+    });
+    cx.update(|_, cx| view.update(cx, |view, cx| view.open_form(None, cx)));
+    crate::test_support::wait_until(cx, "the form dialog", |cx| {
+      cx.update(|window, cx| window.has_active_dialog(cx))
+    });
+
+    // Enter submits like a web form: the empty form refuses and stays open.
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+    cx.update(|_, cx| assert!(!view.read(cx).form_errors.is_empty()));
+
+    // A click on the overlay must not throw the form away.
+    cx.simulate_click(gpui::point(px(5.), px(300.)), Modifiers::none());
+    cx.run_until_parked();
+    assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
   }
 
   #[gpui::test]

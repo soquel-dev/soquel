@@ -505,9 +505,17 @@ impl TunnelsView {
         };
         let this_test = this.clone();
         let this_save = this.clone();
+        let this_ok = this.clone();
         dialogs::styled(dialog, window, cx)
           .title(title)
           .w(px(460.))
+          // A half-filled form is too easy to lose to a stray click.
+          .overlay_closable(false)
+          .on_ok(move |_, _, cx| {
+            this_ok
+              .update(cx, |view, cx| view.save_form(cx))
+              .unwrap_or(true)
+          })
           .child(TunnelForm {
             view: strong.clone(),
           })
