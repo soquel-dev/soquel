@@ -693,6 +693,17 @@ impl DocWorkspace {
     crate::ui::tinted_badge(short, color, cx)
   }
 
+  pub(crate) fn footer_connection(&self) -> String {
+    match &self.server_version {
+      Some(version) => {
+        let (engine, version) =
+          crate::connections::server_badge(soquel_core::profiles::ConnectorKind::Mongo, version);
+        format!("{} - {engine} {version}", self.name)
+      }
+      None => self.name.to_string(),
+    }
+  }
+
   fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
     let filter = self.collection_filter.read(cx).value().to_lowercase();
     let shown: Vec<DocCollection> = self
@@ -704,6 +715,31 @@ impl DocWorkspace {
     let count = self.collections.len();
     v_flex()
       .size_full()
+      .child(
+        h_flex()
+          .px_2()
+          .py_2()
+          .justify_between()
+          .items_center()
+          .child(
+            Button::new("doc-back")
+              .ghost()
+              .xsmall()
+              .icon(Icon::new(IconName::ChevronLeft))
+              .label("Connections")
+              .on_click(cx.listener(|_, _, _, cx| cx.emit(DocWorkspaceEvent::Close))),
+          )
+          .child(
+            Button::new("doc-refresh")
+              .ghost()
+              .xsmall()
+              .icon(Icon::new(crate::icons::SoquelIcon::RefreshCw))
+              .on_click(cx.listener(|this, _, _, cx| {
+                this.load_databases(cx);
+                this.load_collections(cx);
+              })),
+          ),
+      )
       .child(
         h_flex()
           .px_2()
@@ -1121,11 +1157,6 @@ impl DocWorkspace {
 
 impl Render for DocWorkspace {
   fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-    let version = self
-      .server_version
-      .clone()
-      .map(|v| format!("Mongo {v}"))
-      .unwrap_or_else(|| "Mongo".to_string());
     let view = self.view;
     let toggle = |id: &'static str, label: &'static str, target: DocView| {
       Button::new(id)
@@ -1151,30 +1182,6 @@ impl Render for DocWorkspace {
         cx.notify();
       }))
       .bg(crate::theme::canvas(cx))
-      .child(
-        h_flex()
-          .px_3()
-          .py_3()
-          .gap_2()
-          .items_center()
-          .border_b_1()
-          .border_color(cx.theme().border)
-          .child(
-            Button::new("doc-back")
-              .ghost()
-              .xsmall()
-              .icon(Icon::new(IconName::ChevronLeft))
-              .on_click(cx.listener(|_, _, _, cx| cx.emit(DocWorkspaceEvent::Close))),
-          )
-          .child(div().font_semibold().text_sm().child(self.name.clone()))
-          .child(
-            div()
-              .text_xs()
-              .font_family(crate::theme::mono(cx))
-              .text_color(cx.theme().muted_foreground)
-              .child(version),
-          ),
-      )
       .when(!self.status.is_empty(), |this| {
         this.child(
           div()

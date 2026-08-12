@@ -1,8 +1,10 @@
 use std::rc::Rc;
 use std::sync::Arc;
 
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::kbd::Kbd;
 use gpui_component::list::{List, ListState};
 use gpui_component::{
   ActiveTheme, Icon, IconName, Root, Sizable, TitleBar, WindowExt, h_flex, v_flex,
@@ -525,6 +527,63 @@ impl App {
     items
   }
 
+  fn render_footer(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    let (connection, status) = match &self.screen {
+      Screen::Connections(_) => (None, SharedString::default()),
+      Screen::Workspace { view, .. } => {
+        let view = view.read(cx);
+        (Some(view.footer_connection()), view.footer_status(cx))
+      }
+      Screen::KvWorkspace { view, .. } => (
+        Some(view.read(cx).footer_connection()),
+        SharedString::default(),
+      ),
+      Screen::DocWorkspace { view, .. } => (
+        Some(view.read(cx).footer_connection()),
+        SharedString::default(),
+      ),
+    };
+    let palette_key = Kbd::binding_for_action(&ToggleCommandPalette, None, window);
+    h_flex()
+      .px_3()
+      .py_1()
+      .gap_3()
+      .items_center()
+      .bg(theme::canvas(cx))
+      .border_t_1()
+      .border_color(cx.theme().border)
+      .text_xs()
+      .text_color(cx.theme().muted_foreground)
+      .child(
+        div()
+          .font_family(theme::mono(cx))
+          .child(concat!("soquel ", env!("CARGO_PKG_VERSION"))),
+      )
+      .when_some(connection, |bar, connection| bar.child(connection))
+      .when(!status.is_empty(), |bar| bar.child(status))
+      .child(div().flex_1())
+      .child(
+        Button::new("footer-theme")
+          .ghost()
+          .xsmall()
+          .icon(Icon::new(if cx.theme().mode.is_dark() {
+            IconName::Sun
+          } else {
+            IconName::Moon
+          }))
+          .on_click(cx.listener(|_, _, window, cx| theme::toggle(window, cx))),
+      )
+      .when_some(palette_key, |bar, kbd| {
+        bar.child(
+          Button::new("footer-palette")
+            .ghost()
+            .xsmall()
+            .child(kbd)
+            .on_click(cx.listener(|this, _, window, cx| this.open_command_palette(window, cx))),
+        )
+      })
+  }
+
   fn open_command_palette(&mut self, _: &mut Window, cx: &mut Context<Self>) {
     let this = cx.entity().downgrade();
     dialogs::defer_on_active_window(cx, move |window, cx| {
@@ -570,27 +629,14 @@ impl Render for App {
         this.open_command_palette(window, cx)
       }))
       .bg(theme::canvas(cx))
-      .child(
-        TitleBar::new().child(h_flex().child("soquel")).child(
-          h_flex().flex_1().justify_end().pr_2().child(
-            Button::new("toggle-theme")
-              .ghost()
-              .xsmall()
-              .icon(Icon::new(if cx.theme().mode.is_dark() {
-                IconName::Sun
-              } else {
-                IconName::Moon
-              }))
-              .on_click(cx.listener(|_, _, window, cx| theme::toggle(window, cx))),
-          ),
-        ),
-      )
-      .child(match &self.screen {
+      .child(TitleBar::new().child(h_flex().child("soquel")))
+      .child(div().flex_1().min_h_0().child(match &self.screen {
         Screen::Connections(view) => view.clone().into_any_element(),
         Screen::Workspace { view, .. } => view.clone().into_any_element(),
         Screen::KvWorkspace { view, .. } => view.clone().into_any_element(),
         Screen::DocWorkspace { view, .. } => view.clone().into_any_element(),
-      })
+      }))
+      .child(self.render_footer(window, cx))
       .children(dialog_layer)
       .children(notification_layer)
   }

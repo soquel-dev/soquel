@@ -2181,30 +2181,23 @@ impl Workspace {
     }
   }
 
-  fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-    let status = self
+  /// The active grid's line for the app footer, or the view's own status.
+  pub(crate) fn footer_status(&self, cx: &App) -> SharedString {
+    self
       .active_grid()
       .map(|grid| grid.read(cx).delegate().status.clone())
-      .unwrap_or_else(|| self.status.clone());
-    let connection = match &self.server_version {
+      .unwrap_or_else(|| self.status.clone())
+  }
+
+  pub(crate) fn footer_connection(&self) -> String {
+    match &self.server_version {
       Some(version) => {
         let (engine, version) =
           crate::connections::server_badge(self.profile.params.kind(), version);
         format!("{} - {engine} {version}", self.profile.name)
       }
       None => self.profile.name.clone(),
-    };
-    h_flex()
-      .px_3()
-      .py_1()
-      .justify_between()
-      .bg(theme::canvas(cx))
-      .border_t_1()
-      .border_color(cx.theme().border)
-      .text_xs()
-      .text_color(cx.theme().muted_foreground)
-      .child(div().child(status))
-      .child(div().child(connection))
+    }
   }
 }
 
@@ -2268,7 +2261,6 @@ impl Render for Workspace {
             ),
         ),
       )
-      .child(self.render_status_bar(cx))
   }
 }
 
