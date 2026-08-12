@@ -971,6 +971,26 @@ impl DocWorkspace {
                 .on_click(cx.listener(|this, _, window, cx| this.start_edit(window, cx))),
             )
           })
+          .when(self.editing, |header| {
+            header
+              .child(
+                Button::new("cancel-edit")
+                  .ghost()
+                  .xsmall()
+                  .label("Cancel")
+                  .on_click(cx.listener(|this, _, _, cx| {
+                    this.editing = false;
+                    cx.notify();
+                  })),
+              )
+              .child(
+                Button::new("save-doc")
+                  .primary()
+                  .xsmall()
+                  .label("Save document")
+                  .on_click(cx.listener(|this, _, _, cx| this.save_doc(cx))),
+              )
+          })
           .when(addressable, |header| {
             header.child(if self.delete_armed {
               Button::new("delete-doc")
@@ -1006,33 +1026,11 @@ impl DocWorkspace {
           .flex_1()
           .min_h_0()
           .p_2()
-          .gap_2()
           .child(
             div()
               .flex_1()
               .min_h_0()
               .child(Input::new(&self.doc_editor).h_full()),
-          )
-          .child(
-            h_flex()
-              .gap_2()
-              .child(
-                Button::new("save-doc")
-                  .primary()
-                  .xsmall()
-                  .label("Save document")
-                  .on_click(cx.listener(|this, _, _, cx| this.save_doc(cx))),
-              )
-              .child(
-                Button::new("cancel-edit")
-                  .ghost()
-                  .xsmall()
-                  .label("Cancel")
-                  .on_click(cx.listener(|this, _, _, cx| {
-                    this.editing = false;
-                    cx.notify();
-                  })),
-              ),
           )
           .into_any_element()
       } else {
