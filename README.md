@@ -57,10 +57,13 @@ Agents get read tools for every supported engine (schema and DDL, SQL queries, t
 Prerequisites: Rust (stable), [`just`](https://github.com/casey/just), and gpui's system libraries on Linux (xkbcommon, wayland, xcb, fontconfig; see the CI workflow for the exact apt set).
 
 ```bash
-just dev        # cargo run -p soquel-app
+just dev                   # cargo run -p soquel-app
 
-just db-dev     # local dev databases (docker compose), see AGENTS.md for seeds
-just db-test    # throwaway seeded databases for the test suites
+just db-dev                # local dev databases (docker compose)
+just db-dev-seed           # seed all dev databases, or pass pg/mysql/redis/mongo
+just seed-dev-connections  # add Docker dev connections and store passwords in the dev keychain
+just reset-dev-connections # remove those generated connections and their passwords
+just db-test               # throwaway seeded databases for the test suites
 just test-integration
 ```
 

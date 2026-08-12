@@ -40,3 +40,11 @@ db-dev-down:
 # (Re)seed the dev databases; no engine = all. e.g. `just db-dev-seed pg`.
 db-dev-seed engine="":
     bash scripts/dev-seed/seed.sh {{ engine }}
+
+# Remove generated Docker dev connections and their stored passwords.
+reset-dev-connections:
+    cargo run -p soquel-core --bin soquel-dev-connections -- reset
+
+# Recreate Docker dev connections and store their passwords in the keychain.
+seed-dev-connections:
+    cargo run -p soquel-core --bin soquel-dev-connections -- seed
