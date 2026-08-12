@@ -1007,7 +1007,12 @@ impl DocWorkspace {
           .min_h_0()
           .p_2()
           .gap_2()
-          .child(div().flex_1().min_h_0().child(Input::new(&self.doc_editor)))
+          .child(
+            div()
+              .flex_1()
+              .min_h_0()
+              .child(Input::new(&self.doc_editor).h_full()),
+          )
           .child(
             h_flex()
               .gap_2()

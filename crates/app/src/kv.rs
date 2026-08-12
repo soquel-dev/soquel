@@ -161,7 +161,11 @@ impl KvWorkspace {
     let focus_handle = cx.focus_handle();
     window.focus(&focus_handle, cx);
     let search = cx.new(|cx| InputState::new(window, cx).placeholder("search keys"));
-    let string_draft = cx.new(|cx| InputState::new(window, cx).multi_line(true));
+    let string_draft = cx.new(|cx| {
+      InputState::new(window, cx)
+        .multi_line(true)
+        .auto_grow(3, 16)
+    });
     let ttl_input = cx.new(|cx| InputState::new(window, cx).placeholder("seconds"));
     let console_input = cx.new(|cx| InputState::new(window, cx).placeholder("redis command"));
     let db_select = cx.new(|cx| SelectState::new(vec!["db 0".to_string()], None, window, cx));
