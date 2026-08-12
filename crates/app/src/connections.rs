@@ -362,7 +362,8 @@ pub struct ConnectionsView {
   state: Arc<AppState>,
   profiles: Vec<ConnectionProfile>,
   connecting: Option<String>,
-  status: SharedString,
+  /// The last page-level error; the user sees it as a toast.
+  last_error: SharedString,
   editing: Option<String>,
   /// Validation errors keyed by field, shown under the inputs in the dialog.
   form_errors: FormErrors,
@@ -557,7 +558,7 @@ impl ConnectionsView {
       state,
       profiles,
       connecting: None,
-      status: SharedString::default(),
+      last_error: SharedString::default(),
       editing: None,
       form_errors: Vec::new(),
       form_status: FormStatus::Idle,
@@ -615,7 +616,7 @@ impl ConnectionsView {
       return;
     }
     self.connecting = Some(id.clone());
-    self.status = SharedString::default();
+    self.last_error = SharedString::default();
     cx.notify();
     let task = core::connect_id(self.state.clone(), id.clone(), cx);
     self._task = cx.spawn(async move |this, cx| {
@@ -658,7 +659,7 @@ impl ConnectionsView {
               move |view: &mut Self, result, cx| match result {
                 Ok(()) => view.connect(id.clone(), cx),
                 Err(error) => {
-                  view.status = crate::status::error(&error);
+                  view.last_error = crate::status::toast_error(&error, cx);
                   cx.notify();
                 }
               },
@@ -688,14 +689,14 @@ impl ConnectionsView {
               move |view: &mut Self, result, cx| match result {
                 Ok(()) => view.connect(id.clone(), cx),
                 Err(error) => {
-                  view.status = crate::status::error(&error);
+                  view.last_error = crate::status::toast_error(&error, cx);
                   cx.notify();
                 }
               },
             );
           }
           Err(error) => {
-            this.status = crate::status::error(&error);
+            this.last_error = crate::status::toast_error(&error, cx);
           }
         }
         cx.notify();
@@ -812,7 +813,7 @@ impl ConnectionsView {
 
   pub(crate) fn open_form(&mut self, editing: Option<ConnectionProfile>, cx: &mut Context<Self>) {
     self.editing = editing.as_ref().map(|p| p.id.clone());
-    self.status = SharedString::default();
+    self.last_error = SharedString::default();
     self.form_errors.clear();
     self.form_status = FormStatus::Idle;
     let this = cx.entity().downgrade();
@@ -1385,7 +1386,7 @@ impl ConnectionsView {
       let _ = this.update(cx, |this, cx| {
         match result {
           Ok(_) => this.refresh(cx),
-          Err(error) => this.status = crate::status::error(&error),
+          Err(error) => this.last_error = crate::status::toast_error(&error, cx),
         }
         cx.notify();
       });
@@ -1413,7 +1414,7 @@ impl ConnectionsView {
       }
       Err(error) => {
         let _ = this.update(cx, |this, cx| {
-          this.status = crate::status::error(&error);
+          this.last_error = crate::status::toast_error(&error, cx);
           cx.notify();
         });
       }
@@ -1560,8 +1561,10 @@ impl ConnectionsView {
         // No portal (WSLg): the drop path still works.
         Ok(Err(error)) => {
           let _ = this.update(cx, |this, cx| {
-            this.status =
-              crate::status::error(&format!("{error}; drop the file on the window instead"));
+            this.last_error = crate::status::toast_error(
+              &format!("{error}; drop the file on the window instead"),
+              cx,
+            );
             cx.notify();
           });
         }
@@ -1727,7 +1730,7 @@ impl ConnectionsView {
       let result = task.await;
       let _ = this.update(cx, |this, cx| {
         if let Err(error) = result {
-          this.status = crate::status::error(&error);
+          this.last_error = crate::status::toast_error(&error, cx);
         }
         this.refresh(cx);
       });
@@ -2436,7 +2439,7 @@ impl Render for ConnectionsView {
         if known {
           this.open_import_dialog(path, cx);
         } else {
-          this.status = "error: drop a .soquel export".into();
+          this.last_error = crate::status::toast_error(&"Drop a .soquel export", cx);
           cx.notify();
         }
       }))
@@ -2484,16 +2487,6 @@ impl Render for ConnectionsView {
               ),
           ),
       )
-      .when(!self.status.is_empty(), |this| {
-        this.child(
-          div()
-            .px_4()
-            .py_1()
-            .text_sm()
-            .text_color(cx.theme().danger)
-            .child(self.status.clone()),
-        )
-      })
       .child(
         v_flex()
           .id("connection-list")
@@ -3254,8 +3247,8 @@ mod tests {
     // The retry ran: the connect fails on the closed port, not on approval.
     crate::test_support::wait_until(cx, "the retried connect to fail", |cx| {
       cx.update(|_, cx| {
-        let status = view.read(cx).status.clone();
-        status.starts_with("error") && !status.contains("approved")
+        let error = view.read(cx).last_error.clone();
+        !error.is_empty() && !error.contains("approved")
       })
     });
   }
@@ -3376,12 +3369,12 @@ mod tests {
     cx.simulate_keystrokes("enter");
 
     crate::test_support::wait_until(cx, "the retried connect to fail on the port", |cx| {
-      cx.update(|_, cx| view.read(cx).status.starts_with("error"))
+      cx.update(|_, cx| !view.read(cx).last_error.is_empty())
     });
     // The retry got past SecretRequired: the failure is the closed port.
     cx.update(|_, cx| {
-      let status = view.read(cx).status.clone();
-      assert!(!status.contains("password"), "unexpected: {status}");
+      let error = view.read(cx).last_error.clone();
+      assert!(!error.contains("password"), "unexpected: {error}");
     });
   }
 
@@ -3997,7 +3990,7 @@ mod tests {
     cx.run_until_parked();
     assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
     cx.update(|_, cx| {
-      assert!(view.read(cx).status.contains(".soquel"));
+      assert!(view.read(cx).last_error.contains(".soquel"));
     });
 
     cx.simulate_event(FileDropEvent::Entered {
@@ -4118,8 +4111,8 @@ mod tests {
     // The retry got past the approval and died on the closed ssh port.
     crate::test_support::wait_until(cx, "the retried connect to fail", |cx| {
       cx.update(|_, cx| {
-        let status = view.read(cx).status.clone();
-        status.starts_with("error") && !status.contains("approved")
+        let error = view.read(cx).last_error.clone();
+        !error.is_empty() && !error.contains("approved")
       })
     });
   }
@@ -4152,7 +4145,7 @@ mod tests {
     cx.update(|_, cx| {
       let view = view.read(cx);
       assert!(view.connecting.is_none(), "edit must not connect");
-      assert!(view.status.is_empty());
+      assert!(view.last_error.is_empty());
     });
   }
 }

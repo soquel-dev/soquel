@@ -1,7 +1,22 @@
 //! Status-line errors also land in the log: the status is overwritten by the
 //! next operation, the log line survives into a diagnostics bundle.
 
-use gpui::SharedString;
+use gpui::{App, SharedString};
+use gpui_component::WindowExt;
+use gpui_component::notification::Notification;
+
+/// Log, toast on the active window, and hand back the bare message.
+#[track_caller]
+pub fn toast_error(error: &impl std::fmt::Display, cx: &mut App) -> SharedString {
+  let caller = std::panic::Location::caller();
+  log::warn!("{}:{}: {error}", caller.file(), caller.line());
+  let message: SharedString = format!("{error}").into();
+  let toast = message.clone();
+  crate::dialogs::defer_on_active_window(cx, move |window, cx| {
+    window.push_notification(Notification::error(toast), cx);
+  });
+  message
+}
 
 /// "error: X" for a status line, warned to the log with the caller's location.
 #[track_caller]

@@ -262,7 +262,6 @@ pub struct TunnelsView {
   state: Arc<AppState>,
   tunnels: Vec<TunnelProfile>,
   editing: Option<String>,
-  status: SharedString,
   /// Validation errors keyed by field, shown under the inputs in the dialog.
   form_errors: TunnelFormErrors,
   form_status: FormStatus,
@@ -350,7 +349,6 @@ impl TunnelsView {
       state,
       tunnels,
       editing: None,
-      status: SharedString::default(),
       form_errors: Vec::new(),
       form_status: FormStatus::Idle,
       default_keys: Vec::new(),
@@ -427,7 +425,6 @@ impl TunnelsView {
 
   pub fn open_form(&mut self, editing: Option<TunnelProfile>, cx: &mut Context<Self>) {
     self.editing = editing.as_ref().map(|t| t.id.clone());
-    self.status = SharedString::default();
     self.form_errors.clear();
     self.form_status = FormStatus::Idle;
     let keys = core::default_ssh_keys(cx);
@@ -628,11 +625,10 @@ impl TunnelsView {
       let result = task.await;
       let _ = this.update(cx, |this, cx| {
         match result {
-          Ok(_) => {
-            this.status = SharedString::default();
-            this.refresh(cx);
+          Ok(_) => this.refresh(cx),
+          Err(error) => {
+            crate::status::toast_error(&error, cx);
           }
-          Err(error) => this.status = crate::status::error(&error),
         }
         cx.notify();
       });
@@ -653,8 +649,8 @@ impl TunnelsView {
         });
       }
       Err(error) => {
-        let _ = this.update(cx, |this, cx| {
-          this.status = crate::status::error(&error);
+        let _ = this.update(cx, |_, cx| {
+          crate::status::toast_error(&error, cx);
           cx.notify();
         });
       }
@@ -712,7 +708,7 @@ impl TunnelsView {
       let result = task.await;
       let _ = this.update(cx, |this, cx| {
         if let Err(error) = result {
-          this.status = crate::status::error(&error);
+          crate::status::toast_error(&error, cx);
         }
         this.refresh(cx);
       });
@@ -900,7 +896,6 @@ impl RenderOnce for TunnelForm {
 
 impl Render for TunnelsView {
   fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-    let status = self.status.clone();
     v_flex()
       .gap_2()
       .child(
@@ -924,15 +919,6 @@ impl Render for TunnelsView {
               .on_click(cx.listener(|this, _, _, cx| this.open_form(None, cx))),
           ),
       )
-      .when(!status.is_empty(), |this| {
-        this.child(
-          div()
-            .px_2()
-            .text_sm()
-            .text_color(cx.theme().danger)
-            .child(status),
-        )
-      })
       .when(self.tunnels.is_empty(), |this| {
         this.child(
           div()

@@ -241,7 +241,7 @@ impl Workspace {
       db,
       snapshot: None,
       server_version,
-      status: "connected".into(),
+      status: SharedString::default(),
       filter_open: false,
       filter_column,
       filter_op,
