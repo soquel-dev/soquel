@@ -1698,6 +1698,56 @@ impl ConnectionsView {
     });
   }
 
+  fn confirm_delete(&mut self, id: String, cx: &mut Context<Self>) {
+    let Some(profile) = self.profiles.iter().find(|p| p.id == id) else {
+      return;
+    };
+    let name = profile.name.clone();
+    let keychain = matches!(profile.credential, CredentialSource::Keychain);
+    let this = cx.entity().downgrade();
+    dialogs::defer_on_active_window(cx, move |window, cx| {
+      let this = this.clone();
+      let (id, name) = (id.clone(), name.clone());
+      window.open_dialog(cx, move |dialog, window, cx| {
+        let this = this.clone();
+        let id = id.clone();
+        dialogs::styled(dialog, window, cx)
+          .title(format!("Delete {name}?"))
+          .w(px(400.))
+          .child(
+            div()
+              .text_sm()
+              .text_color(cx.theme().muted_foreground)
+              .child(if keychain {
+                "The connection and its password in the OS keychain are removed."
+              } else {
+                "The connection is removed."
+              }),
+          )
+          .footer(
+            h_flex()
+              .gap_2()
+              .justify_end()
+              .child(
+                Button::new("delete-cancel")
+                  .label("Cancel")
+                  .on_click(|_, window, cx| window.close_dialog(cx)),
+              )
+              .child(
+                Button::new("delete-confirm")
+                  .danger()
+                  .label("Delete")
+                  .debug_selector(|| "delete-confirm".into())
+                  .on_click(move |_, window, cx| {
+                    window.close_dialog(cx);
+                    this.update(cx, |this, cx| this.delete(id.clone(), cx)).ok();
+                  }),
+              ),
+          )
+      });
+    });
+  }
+
   fn delete(&mut self, id: String, cx: &mut Context<Self>) {
     let task = core::delete_connection(self.state.clone(), id, cx);
     self._task = cx.spawn(async move |this, cx| {
@@ -2673,9 +2723,13 @@ impl Render for ConnectionsView {
                       .ghost()
                       .xsmall()
                       .label("Delete")
+                      .debug_selector({
+                        let id = profile.id.clone();
+                        move || format!("delete-{id}")
+                      })
                       .on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
-                        this.delete(delete_id.clone(), cx);
+                        this.confirm_delete(delete_id.clone(), cx);
                       })),
                   )
                   .into_any_element(),

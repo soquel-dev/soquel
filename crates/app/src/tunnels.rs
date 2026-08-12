@@ -616,6 +616,67 @@ impl TunnelsView {
     });
   }
 
+  fn confirm_delete(&mut self, id: String, cx: &mut Context<Self>) {
+    let Some(tunnel) = self.tunnels.iter().find(|t| t.id == id) else {
+      return;
+    };
+    let name = tunnel.name.clone();
+    let references = core::list_connections(&self.state)
+      .iter()
+      .filter(|p| {
+        p.params
+          .remote()
+          .is_some_and(|remote| remote.tunnel_id == Some(id.as_str()))
+      })
+      .count();
+    let this = cx.entity().downgrade();
+    dialogs::defer_on_active_window(cx, move |window, cx| {
+      let this = this.clone();
+      let (id, name) = (id.clone(), name.clone());
+      window.open_dialog(cx, move |dialog, window, cx| {
+        let this = this.clone();
+        let id = id.clone();
+        dialogs::styled(dialog, window, cx)
+          .title(format!("Delete {name}?"))
+          .w(px(400.))
+          .child(
+            v_flex()
+              .gap_1()
+              .text_sm()
+              .text_color(cx.theme().muted_foreground)
+              .child("The tunnel and its stored credential are removed.")
+              .when(references > 0, |body| {
+                body.child(div().text_color(cx.theme().danger).child(format!(
+                  "{references} connection{} reference{} this tunnel and will fail to connect.",
+                  if references == 1 { "" } else { "s" },
+                  if references == 1 { "s" } else { "" },
+                )))
+              }),
+          )
+          .footer(
+            h_flex()
+              .gap_2()
+              .justify_end()
+              .child(
+                Button::new("delete-tunnel-cancel")
+                  .label("Cancel")
+                  .on_click(|_, window, cx| window.close_dialog(cx)),
+              )
+              .child(
+                Button::new("delete-tunnel-confirm")
+                  .danger()
+                  .label("Delete")
+                  .debug_selector(|| "delete-tunnel-confirm".into())
+                  .on_click(move |_, window, cx| {
+                    window.close_dialog(cx);
+                    this.update(cx, |this, cx| this.delete(id.clone(), cx)).ok();
+                  }),
+              ),
+          )
+      });
+    });
+  }
+
   fn delete(&mut self, id: String, cx: &mut Context<Self>) {
     let task = core::delete_tunnel(self.state.clone(), id, cx);
     self._task = cx.spawn(async move |this, cx| {
@@ -922,8 +983,12 @@ impl Render for TunnelsView {
               .ghost()
               .xsmall()
               .label("Delete")
+              .debug_selector({
+                let id = tunnel.id.clone();
+                move || format!("delete-tunnel-{id}")
+              })
               .on_click(cx.listener(move |this, _, _, cx| {
-                this.delete(delete_id.clone(), cx);
+                this.confirm_delete(delete_id.clone(), cx);
               })),
           )
       }))
@@ -1233,6 +1298,56 @@ mod tests {
         .unwrap()
         .is_approved(&key, line)
     );
+  }
+
+  #[gpui::test]
+  fn deleting_a_tunnel_asks_for_confirmation(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let state = std::sync::Arc::new(soquel_core::AppState::for_tests(
+      dir.path(),
+      Box::new(soquel_core::secrets::InMemoryStore::default()),
+    ));
+    let tunnel = soquel_core::ops::create_tunnel(
+      &state,
+      &TunnelInput {
+        name: "bastion".to_string(),
+        host: "bastion.internal".to_string(),
+        port: 22,
+        user: "deploy".to_string(),
+        auth: SshAuth::Agent,
+        credential: CredentialSource::Keychain,
+        secret: None,
+      },
+    )
+    .unwrap();
+
+    let (_view, cx) = crate::test_support::shell_window(cx, {
+      let state = state.clone();
+      move |window, cx| TunnelsView::new(state, window, cx)
+    });
+    cx.run_until_parked();
+
+    let bounds = cx
+      .debug_bounds(crate::test_support::selector(format!(
+        "delete-tunnel-{}",
+        tunnel.id
+      )))
+      .expect("the row carries the delete button");
+    cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+    cx.run_until_parked();
+
+    // The click only asks; nothing is deleted yet.
+    assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+    assert_eq!(core::list_tunnels(&state).len(), 1);
+
+    let confirm = cx
+      .debug_bounds("delete-tunnel-confirm")
+      .expect("the dialog carries the confirm button");
+    cx.simulate_click(confirm.center(), gpui::Modifiers::none());
+    cx.run_until_parked();
+
+    assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+    assert!(core::list_tunnels(&state).is_empty());
   }
 
   #[gpui::test]
