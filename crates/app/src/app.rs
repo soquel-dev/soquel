@@ -601,16 +601,11 @@ impl App {
             Button::new("footer-theme")
               .ghost()
               .xsmall()
-              // As a child, not .icon(): the icon-size preset renders the thin
-              // strokes a step grayer than the neighboring labels.
-              .child(
-                Icon::new(if cx.theme().mode.is_dark() {
-                  IconName::Sun
-                } else {
-                  IconName::Moon
-                })
-                .size_4(),
-              )
+              .icon(Icon::new(if cx.theme().mode.is_dark() {
+                IconName::Sun
+              } else {
+                IconName::Moon
+              }))
               .on_click(cx.listener(|_, _, window, cx| theme::toggle(window, cx))),
           )
           .when_some(palette_key, |buttons, label| {
