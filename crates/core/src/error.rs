@@ -137,7 +137,25 @@ impl From<mongodb::error::Error> for Error {
       mongodb::error::ErrorKind::Command(command) => command.message.clone(),
       kind => kind.to_string(),
     };
-    Error::Database { message }
+    Error::Database {
+      message: strip_mongo_topology(message),
+    }
+  }
+}
+
+/// Server-selection messages embed the whole topology debug; keep the summary
+/// and the first per-server cause.
+fn strip_mongo_topology(message: String) -> String {
+  let Some((summary, topology)) = message.split_once(" Topology: {") else {
+    return message;
+  };
+  let summary = summary.trim_end().trim_end_matches(',');
+  match topology
+    .split_once("Error: Kind: ")
+    .map(|(_, rest)| rest.split(", labels").next().unwrap_or(rest))
+  {
+    Some(cause) => format!("{summary} ({cause})"),
+    None => summary.to_string(),
   }
 }
 
@@ -170,5 +188,29 @@ impl From<keyring::Error> for Error {
     Error::Secret {
       message: format!("keychain: {err}"),
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn server_selection_keeps_the_summary_and_the_cause() {
+    let raw = "Server selection timeout: No available servers. Topology: { Type: Single, \
+               Servers: [ { Address: localhost:27017, Type: Unknown, Error: Kind: I/O error: \
+               Connection refused (os error 61), labels: {\"RetryableError\"}, source: None }] }"
+      .to_string();
+    assert_eq!(
+      strip_mongo_topology(raw),
+      "Server selection timeout: No available servers. \
+       (I/O error: Connection refused (os error 61))"
+    );
+  }
+
+  #[test]
+  fn a_message_without_topology_passes_through() {
+    let raw = "SCRAM failure: Authentication failed.".to_string();
+    assert_eq!(strip_mongo_topology(raw.clone()), raw);
   }
 }

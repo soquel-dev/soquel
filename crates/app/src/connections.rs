@@ -1364,13 +1364,13 @@ impl ConnectionsView {
               |view: &mut Self, result, cx| match result {
                 Ok(()) => view.test_form(cx),
                 Err(error) => {
-                  view.form_status = FormStatus::Error(crate::status::error(&error));
+                  view.form_status = FormStatus::Error(crate::status::message(&error));
                   cx.notify();
                 }
               },
             );
           }
-          Err(error) => this.form_status = FormStatus::Error(crate::status::error(&error)),
+          Err(error) => this.form_status = FormStatus::Error(crate::status::message(&error)),
         }
         cx.notify();
       });
@@ -2008,6 +2008,8 @@ impl RenderOnce for ConnectionForm {
 
 /// A tinted outcome row at the bottom of the form.
 fn status_banner(color: Hsla, icon: IconName, text: SharedString, cx: &App) -> AnyElement {
+  // Pinned line height so the icon box matches the first text line exactly.
+  let line = rems(1.25);
   h_flex()
     .items_start()
     .gap_2()
@@ -2017,8 +2019,13 @@ fn status_banner(color: Hsla, icon: IconName, text: SharedString, cx: &App) -> A
     .bg(color.opacity(0.1))
     .text_color(color)
     .text_sm()
-    // Line-height box so the icon centers on the first line of a wrapping message.
-    .child(h_flex().h_5().items_center().child(Icon::new(icon).small()))
+    .line_height(line)
+    .child(
+      h_flex()
+        .h(line)
+        .items_center()
+        .child(Icon::new(icon).small()),
+    )
     .child(div().flex_1().min_w_0().child(text))
     .into_any_element()
 }
