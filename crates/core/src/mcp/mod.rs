@@ -197,6 +197,16 @@ pub async fn regenerate_token(state: &AppState) -> Result<String, Error> {
   Ok(token)
 }
 
+/// Sync peek for status surfaces: the bound port while running, None otherwise.
+/// `try_lock` so a frame render never waits; a contended lock reads as off.
+pub fn running_port(state: &AppState) -> Option<u16> {
+  state
+    .mcp
+    .try_lock()
+    .ok()
+    .and_then(|running| running.as_ref().map(|r| r.port))
+}
+
 pub async fn status(state: &AppState) -> Result<McpStatus, Error> {
   let running = state.mcp.lock().await;
   let port = running

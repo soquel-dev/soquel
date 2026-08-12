@@ -569,6 +569,30 @@ impl App {
       .when_some(connection, |bar, connection| bar.child(connection))
       .when(!status.is_empty(), |bar| bar.child(status))
       .child(div().flex_1())
+      .child({
+        let running_port = core::mcp_running_port(&self.state);
+        Button::new("footer-mcp")
+          .ghost()
+          .xsmall()
+          .on_click(cx.listener(|this, _, _, cx| this.open_mcp_panel(cx)))
+          .child(
+            h_flex()
+              .gap_1p5()
+              .items_center()
+              .child(div().w_1p5().h_1p5().rounded_full().bg(match running_port {
+                Some(_) => cx.theme().green,
+                None => cx.theme().muted_foreground.opacity(0.5),
+              }))
+              .child(
+                div()
+                  .font_family(theme::mono(cx))
+                  .child(match running_port {
+                    Some(port) => format!("mcp :{port}"),
+                    None => "mcp".to_string(),
+                  }),
+              ),
+          )
+      })
       .child(
         Button::new("footer-theme")
           .ghost()

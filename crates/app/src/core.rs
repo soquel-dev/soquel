@@ -341,6 +341,10 @@ pub fn mcp_configured_port(state: &AppState) -> u16 {
   soquel_core::mcp::configured_port(state)
 }
 
+pub fn mcp_running_port(state: &AppState) -> Option<u16> {
+  soquel_core::mcp::running_port(state)
+}
+
 pub fn mcp_status(
   state: Arc<AppState>,
   cx: &impl AppContext,
