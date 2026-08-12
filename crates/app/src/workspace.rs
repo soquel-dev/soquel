@@ -2204,8 +2204,7 @@ impl Workspace {
 impl Render for Workspace {
   fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
     v_flex()
-      .flex_1()
-      .min_h_0()
+      .size_full()
       .track_focus(&self.focus_handle)
       .bg(theme::canvas(cx))
       .on_action(cx.listener(|this, _: &RunQuery, _, cx| this.run(cx)))

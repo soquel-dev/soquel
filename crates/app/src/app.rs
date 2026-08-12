@@ -543,7 +543,14 @@ impl App {
         SharedString::default(),
       ),
     };
-    let palette_key = Kbd::binding_for_action(&ToggleCommandPalette, None, window);
+    let palette_key = window
+      .highest_precedence_binding_for_action(&ToggleCommandPalette)
+      .and_then(|binding| {
+        binding
+          .keystrokes()
+          .first()
+          .map(|key| Kbd::format(key.as_keystroke()))
+      });
     h_flex()
       .px_3()
       .py_1()
@@ -573,12 +580,12 @@ impl App {
           }))
           .on_click(cx.listener(|_, _, window, cx| theme::toggle(window, cx))),
       )
-      .when_some(palette_key, |bar, kbd| {
+      .when_some(palette_key, |bar, label| {
         bar.child(
           Button::new("footer-palette")
             .ghost()
             .xsmall()
-            .child(kbd)
+            .label(label)
             .on_click(cx.listener(|this, _, window, cx| this.open_command_palette(window, cx))),
         )
       })
