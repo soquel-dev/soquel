@@ -930,9 +930,9 @@ impl Render for TunnelsView {
       .when(self.tunnels.is_empty(), |this| {
         this.child(
           div()
-            .px_2()
-            .py_2()
-            .text_sm()
+            .px_1()
+            .py_1()
+            .text_xs()
             .text_color(cx.theme().muted_foreground)
             .child("No tunnels. Reach databases behind a bastion by referencing a tunnel from a connection."),
         )

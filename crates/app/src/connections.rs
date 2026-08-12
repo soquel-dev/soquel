@@ -12,7 +12,7 @@ use gpui_component::radio::{Radio, RadioGroup};
 use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::switch::Switch;
 use gpui_component::{
-  ActiveTheme, Disableable, IndexPath, Sizable, StyledExt, WindowExt, h_flex, v_flex,
+  ActiveTheme, Disableable, Icon, IndexPath, Sizable, StyledExt, WindowExt, h_flex, v_flex,
 };
 use soquel_core::AppState;
 use soquel_core::error::{Error, SecretSubject};
@@ -2462,48 +2462,51 @@ impl Render for ConnectionsView {
         }
       }))
       .child(
-        h_flex()
-          .px_4()
-          .py_3()
-          .justify_between()
-          .items_center()
-          .child(div().font_semibold().child("Connections"))
-          .child(
-            h_flex()
-              .gap_2()
-              .child(
-                Button::new("open-mcp")
-                  .ghost()
-                  .small()
-                  .label("Agents…")
-                  .debug_selector(|| "open-mcp".into())
-                  .on_click(cx.listener(|_, _, _, cx| cx.emit(ConnectionsEvent::OpenMcpPanel))),
-              )
-              .child(
-                Button::new("open-import")
-                  .ghost()
-                  .small()
-                  .label("Import…")
-                  .debug_selector(|| "open-import".into())
-                  .on_click(cx.listener(|this, _, _, cx| this.import_via_picker(cx))),
-              )
-              .child(
-                Button::new("open-export")
-                  .ghost()
-                  .small()
-                  .label("Export…")
-                  .disabled(self.profiles.is_empty())
-                  .debug_selector(|| "open-export".into())
-                  .on_click(cx.listener(|this, _, _, cx| this.open_export_dialog(cx))),
-              )
-              .child(
-                Button::new("new-connection")
-                  .primary()
-                  .small()
-                  .label("New connection")
-                  .on_click(cx.listener(|this, _, _, cx| this.open_form(None, cx))),
-              ),
-          ),
+        h_flex().px_6().pt_4().pb_2().child(
+          h_flex()
+            .w_full()
+            .max_w(px(720.))
+            .mx_auto()
+            .justify_between()
+            .items_center()
+            .child(div().font_semibold().child("Connections"))
+            .child(
+              h_flex()
+                .gap_2()
+                .child(
+                  Button::new("open-mcp")
+                    .ghost()
+                    .small()
+                    .label("Agents…")
+                    .debug_selector(|| "open-mcp".into())
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(ConnectionsEvent::OpenMcpPanel))),
+                )
+                .child(
+                  Button::new("open-import")
+                    .ghost()
+                    .small()
+                    .label("Import…")
+                    .debug_selector(|| "open-import".into())
+                    .on_click(cx.listener(|this, _, _, cx| this.import_via_picker(cx))),
+                )
+                .child(
+                  Button::new("open-export")
+                    .ghost()
+                    .small()
+                    .label("Export…")
+                    .disabled(self.profiles.is_empty())
+                    .debug_selector(|| "open-export".into())
+                    .on_click(cx.listener(|this, _, _, cx| this.open_export_dialog(cx))),
+                )
+                .child(
+                  Button::new("new-connection")
+                    .primary()
+                    .small()
+                    .label("New connection")
+                    .on_click(cx.listener(|this, _, _, cx| this.open_form(None, cx))),
+                ),
+            ),
+        ),
       )
       .child(
         v_flex()
@@ -2511,145 +2514,184 @@ impl Render for ConnectionsView {
           .flex_1()
           .min_h_0()
           .overflow_y_scroll()
-          .px_4()
+          .px_6()
           .py_2()
-          .gap_2()
-          .when(self.profiles.is_empty(), |this| {
-            this.child(
-              v_flex()
-                .items_center()
-                .py_12()
-                .gap_2()
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
-                .child("No connections yet. Add your first database.")
-                .child(
-                  Button::new("empty-import")
-                    .ghost()
-                    .small()
-                    .label("Import a file")
-                    .on_click(cx.listener(|this, _, _, cx| this.import_via_picker(cx))),
-                ),
-            )
-          })
-          .children(groups.into_iter().flat_map(|(group, profiles)| {
-            let mut rows: Vec<AnyElement> = Vec::new();
-            if let Some(group) = &group {
-              rows.push(
-                div()
-                  .px_1()
-                  .pt_2()
-                  .text_xs()
-                  .font_semibold()
-                  .text_color(cx.theme().muted_foreground)
-                  .child(group.clone())
-                  .into_any_element(),
-              );
-            }
-            for profile in profiles {
-              let id = profile.id.clone();
-              let edit_profile = profile.clone();
-              let edit_selector_id = profile.id.clone();
-              let delete_id = profile.id.clone();
-              let revoke_id = profile.id.clone();
-              let selector_id = profile.id.clone();
-              let has_command = matches!(profile.credential, CredentialSource::Command { .. });
-              let is_connecting = connecting.as_deref() == Some(profile.id.as_str());
-              rows.push(
-                h_flex()
-                  .id(SharedString::from(format!("conn-{id}")))
-                  .px_3()
-                  .py_2()
-                  .gap_3()
-                  .items_center()
-                  .rounded(cx.theme().radius)
-                  .border_1()
-                  .border_color(cx.theme().border)
-                  .bg(crate::theme::panel(cx))
-                  .when(!cx.theme().mode.is_dark(), |s| s.shadow_sm())
-                  .hover(|s| s.bg(cx.theme().list_hover))
-                  .cursor_default()
-                  .on_click(cx.listener(move |this, _, _, cx| this.connect(id.clone(), cx)))
-                  .child(
-                    v_flex()
-                      .flex_1()
-                      .min_w_0()
-                      .child(
-                        h_flex()
-                          .gap_2()
-                          .items_center()
-                          .child(div().font_semibold().text_sm().child(profile.name.clone()))
-                          .child(self.env_badge(profile.env, cx))
-                          .when(profile.agent_access != AgentAccess::None, |row| {
-                            row.child(crate::ui::chip("agent", cx))
-                          }),
-                      )
-                      .child(
-                        div()
-                          .text_xs()
-                          .font_family(crate::theme::mono(cx))
-                          .text_color(cx.theme().muted_foreground)
-                          .child(dsn(&profile.params)),
-                      ),
-                  )
-                  .when(is_connecting, |this| {
-                    this.child(
+          .child(
+            v_flex()
+              .w_full()
+              .max_w(px(720.))
+              .mx_auto()
+              .gap_2()
+              .when(self.profiles.is_empty(), |this| {
+                this.child(
+                  v_flex()
+                    .items_center()
+                    .pt_20()
+                    .gap_4()
+                    .child(
                       div()
-                        .text_xs()
+                        .p_3()
+                        .rounded(cx.theme().radius_lg)
+                        .bg(cx.theme().muted)
                         .text_color(cx.theme().muted_foreground)
-                        .child("connecting..."),
+                        .child(Icon::new(SoquelIcon::Database).size_6()),
                     )
-                  })
-                  .child(
-                    Button::new(SharedString::from(format!("edit-{}", profile.id)))
-                      .ghost()
-                      .xsmall()
-                      .label("Edit")
-                      .debug_selector(move || format!("edit-{edit_selector_id}"))
-                      .on_click(cx.listener(move |this, _, _, cx| {
-                        // The row's own click connects: this click is ours.
-                        cx.stop_propagation();
-                        this.open_form(Some(edit_profile.clone()), cx);
-                      })),
-                  )
-                  .when(has_command, |row| {
-                    row.child(
-                      Button::new(SharedString::from(format!("revoke-conn-{}", profile.id)))
-                        .ghost()
-                        .xsmall()
-                        .label("Revoke command")
-                        .debug_selector(move || format!("revoke-conn-{selector_id}"))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                          cx.stop_propagation();
-                          this.revoke_command(
-                            SecretSubject::Connection,
-                            revoke_id.clone(),
-                            window,
-                            cx,
-                          );
-                        })),
+                    .child(
+                      div()
+                        .text_lg()
+                        .font_semibold()
+                        .child("Add your first database"),
                     )
-                  })
-                  .child(
-                    Button::new(SharedString::from(format!("delete-{}", profile.id)))
-                      .ghost()
-                      .xsmall()
-                      .label("Delete")
-                      .debug_selector({
-                        let id = profile.id.clone();
-                        move || format!("delete-{id}")
+                    .child(
+                      div()
+                        .text_sm()
+                        .text_center()
+                        .max_w(px(420.))
+                        .text_color(cx.theme().muted_foreground)
+                        .child(
+                          "PostgreSQL, MySQL, SQLite, Redis or MongoDB. Profiles stay on this \
+                           machine; secrets live in the OS keychain.",
+                        ),
+                    )
+                    .child(
+                      h_flex()
+                        .gap_2()
+                        .pt_2()
+                        .child(
+                          Button::new("empty-new-connection")
+                            .primary()
+                            .label("New connection")
+                            .on_click(cx.listener(|this, _, _, cx| this.open_form(None, cx))),
+                        )
+                        .child(
+                          Button::new("empty-import")
+                            .ghost()
+                            .label("Import a file")
+                            .on_click(cx.listener(|this, _, _, cx| this.import_via_picker(cx))),
+                        ),
+                    ),
+                )
+              })
+              .children(groups.into_iter().flat_map(|(group, profiles)| {
+                let mut rows: Vec<AnyElement> = Vec::new();
+                if let Some(group) = &group {
+                  rows.push(
+                    div()
+                      .px_1()
+                      .pt_2()
+                      .text_xs()
+                      .font_semibold()
+                      .text_color(cx.theme().muted_foreground)
+                      .child(group.clone())
+                      .into_any_element(),
+                  );
+                }
+                for profile in profiles {
+                  let id = profile.id.clone();
+                  let edit_profile = profile.clone();
+                  let edit_selector_id = profile.id.clone();
+                  let delete_id = profile.id.clone();
+                  let revoke_id = profile.id.clone();
+                  let selector_id = profile.id.clone();
+                  let has_command = matches!(profile.credential, CredentialSource::Command { .. });
+                  let is_connecting = connecting.as_deref() == Some(profile.id.as_str());
+                  rows.push(
+                    h_flex()
+                      .id(SharedString::from(format!("conn-{id}")))
+                      .px_3()
+                      .py_2()
+                      .gap_3()
+                      .items_center()
+                      .rounded(cx.theme().radius)
+                      .border_1()
+                      .border_color(cx.theme().border)
+                      .bg(crate::theme::panel(cx))
+                      .when(!cx.theme().mode.is_dark(), |s| s.shadow_sm())
+                      .hover(|s| s.bg(cx.theme().list_hover))
+                      .cursor_default()
+                      .on_click(cx.listener(move |this, _, _, cx| this.connect(id.clone(), cx)))
+                      .child(
+                        v_flex()
+                          .flex_1()
+                          .min_w_0()
+                          .child(
+                            h_flex()
+                              .gap_2()
+                              .items_center()
+                              .child(div().font_semibold().text_sm().child(profile.name.clone()))
+                              .child(crate::ui::chip(kind_short(profile.params.kind()), cx))
+                              .child(self.env_badge(profile.env, cx))
+                              .when(profile.agent_access != AgentAccess::None, |row| {
+                                row.child(crate::ui::chip("agent", cx))
+                              }),
+                          )
+                          .child(
+                            div()
+                              .text_xs()
+                              .font_family(crate::theme::mono(cx))
+                              .text_color(cx.theme().muted_foreground)
+                              .child(dsn(&profile.params)),
+                          ),
+                      )
+                      .when(is_connecting, |this| {
+                        this.child(
+                          div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("connecting..."),
+                        )
                       })
-                      .on_click(cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        this.confirm_delete(delete_id.clone(), cx);
-                      })),
-                  )
-                  .into_any_element(),
-              );
-            }
-            rows
-          }))
-          .child(self.tunnels_section.clone()),
+                      .child(
+                        Button::new(SharedString::from(format!("edit-{}", profile.id)))
+                          .ghost()
+                          .xsmall()
+                          .label("Edit")
+                          .debug_selector(move || format!("edit-{edit_selector_id}"))
+                          .on_click(cx.listener(move |this, _, _, cx| {
+                            // The row's own click connects: this click is ours.
+                            cx.stop_propagation();
+                            this.open_form(Some(edit_profile.clone()), cx);
+                          })),
+                      )
+                      .when(has_command, |row| {
+                        row.child(
+                          Button::new(SharedString::from(format!("revoke-conn-{}", profile.id)))
+                            .ghost()
+                            .xsmall()
+                            .label("Revoke command")
+                            .debug_selector(move || format!("revoke-conn-{selector_id}"))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                              cx.stop_propagation();
+                              this.revoke_command(
+                                SecretSubject::Connection,
+                                revoke_id.clone(),
+                                window,
+                                cx,
+                              );
+                            })),
+                        )
+                      })
+                      .child(
+                        Button::new(SharedString::from(format!("delete-{}", profile.id)))
+                          .ghost()
+                          .xsmall()
+                          .label("Delete")
+                          .debug_selector({
+                            let id = profile.id.clone();
+                            move || format!("delete-{id}")
+                          })
+                          .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.confirm_delete(delete_id.clone(), cx);
+                          })),
+                      )
+                      .into_any_element(),
+                  );
+                }
+                rows
+              }))
+              .child(self.tunnels_section.clone()),
+          ),
       )
   }
 }
