@@ -11,7 +11,8 @@ use gpui_component::resizable::{ResizableState, h_resizable, resizable_panel};
 use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::text::TextView;
 use gpui_component::{
-  ActiveTheme, Disableable, IndexPath, Selectable, Sizable, StyledExt, h_flex, v_flex,
+  ActiveTheme, Disableable, Icon, IconName, IndexPath, Selectable, Sizable, StyledExt, h_flex,
+  v_flex,
 };
 use soquel_core::AppState;
 use soquel_core::connectors::{
@@ -1152,31 +1153,26 @@ impl Render for DocWorkspace {
       .bg(crate::theme::canvas(cx))
       .child(
         h_flex()
-          .px_4()
+          .px_3()
           .py_3()
-          .justify_between()
+          .gap_2()
           .items_center()
           .border_b_1()
           .border_color(cx.theme().border)
           .child(
-            h_flex()
-              .gap_2()
-              .items_center()
-              .child(div().font_semibold().text_sm().child(self.name.clone()))
-              .child(
-                div()
-                  .text_xs()
-                  .font_family(crate::theme::mono(cx))
-                  .text_color(cx.theme().muted_foreground)
-                  .child(version),
-              ),
-          )
-          .child(
-            Button::new("doc-disconnect")
+            Button::new("doc-back")
               .ghost()
               .xsmall()
-              .label("Disconnect")
+              .icon(Icon::new(IconName::ChevronLeft))
               .on_click(cx.listener(|_, _, _, cx| cx.emit(DocWorkspaceEvent::Close))),
+          )
+          .child(div().font_semibold().text_sm().child(self.name.clone()))
+          .child(
+            div()
+              .text_xs()
+              .font_family(crate::theme::mono(cx))
+              .text_color(cx.theme().muted_foreground)
+              .child(version),
           ),
       )
       .when(!self.status.is_empty(), |this| {

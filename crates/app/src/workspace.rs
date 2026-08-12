@@ -1659,34 +1659,23 @@ impl Workspace {
       .size_full()
       .child(
         h_flex()
-          .px_3()
+          .px_2()
           .py_2()
           .justify_between()
           .items_center()
           .child(
-            h_flex()
-              .gap_1()
-              .items_center()
-              .child(
-                Button::new("back-to-connections")
-                  .ghost()
-                  .xsmall()
-                  .icon(Icon::new(IconName::ChevronLeft))
-                  .on_click(cx.listener(|_, _, _, cx| cx.emit(WorkspaceEvent::Close))),
-              )
-              .child(
-                div()
-                  .text_xs()
-                  .font_semibold()
-                  .text_color(cx.theme().muted_foreground)
-                  .child("TABLES"),
-              ),
+            Button::new("back-to-connections")
+              .ghost()
+              .xsmall()
+              .icon(Icon::new(IconName::ChevronLeft))
+              .label("Connections")
+              .on_click(cx.listener(|_, _, _, cx| cx.emit(WorkspaceEvent::Close))),
           )
           .child(
             Button::new("refresh-schema")
               .ghost()
               .xsmall()
-              .label("refresh")
+              .icon(Icon::new(SoquelIcon::RefreshCw))
               .on_click(cx.listener(|this, _, _, cx| this.refresh_schema(cx))),
           ),
       )
@@ -1694,7 +1683,7 @@ impl Workspace {
         div()
           .px_2()
           .pb_1()
-          .child(Input::new(&self.tree_filter).xsmall()),
+          .child(Input::new(&self.tree_filter).small()),
       )
       .child(
         v_flex().flex_1().min_h_0().px_1().child(
