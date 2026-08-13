@@ -541,7 +541,8 @@ impl KvWorkspace {
       .child(
         h_flex()
           .px_2()
-          .py_1p5()
+          .h(px(34.))
+          .flex_none()
           .justify_between()
           .items_center()
           .border_b_1()
@@ -975,8 +976,10 @@ impl Render for KvWorkspace {
                   .child(
                     h_flex()
                       .px_2()
-                      .py_1()
+                      .h(px(34.))
+                      .flex_none()
                       .gap_1()
+                      .items_center()
                       .border_b_1()
                       .border_color(cx.theme().border)
                       .child(

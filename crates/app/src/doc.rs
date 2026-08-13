@@ -702,7 +702,8 @@ impl DocWorkspace {
       .child(
         h_flex()
           .px_2()
-          .py_1p5()
+          .h(px(34.))
+          .flex_none()
           .justify_between()
           .items_center()
           .border_b_1()
@@ -811,13 +812,14 @@ impl DocWorkspace {
       .child(
         v_flex()
           .px_2()
-          .py_1p5()
-          .gap_1()
           .border_b_1()
           .border_color(cx.theme().border)
           .child(
             h_flex()
+              .h(px(34.))
+              .flex_none()
               .gap_1()
+              .items_center()
               .child(div().flex_1().child(Input::new(&self.doc_filter).small()))
               .child(
                 Button::new("doc-run")
@@ -830,6 +832,7 @@ impl DocWorkspace {
           .when_some(self.filter_error.clone(), |col, error| {
             col.child(
               div()
+                .pb_1p5()
                 .text_xs()
                 .font_family(crate::theme::mono(cx))
                 .text_color(cx.theme().danger)
@@ -921,7 +924,8 @@ impl DocWorkspace {
       .child(
         h_flex()
           .px_3()
-          .py_2()
+          .h(px(34.))
+          .flex_none()
           .gap_2()
           .items_center()
           .border_b_1()
@@ -1189,8 +1193,10 @@ impl Render for DocWorkspace {
                   .child(
                     h_flex()
                       .px_2()
-                      .py_1()
+                      .h(px(34.))
+                      .flex_none()
                       .gap_1()
+                      .items_center()
                       .border_b_1()
                       .border_color(cx.theme().border)
                       .child(
