@@ -876,13 +876,17 @@ impl DocWorkspace {
                     let doc_json = doc_json.clone();
                     let mut menu = menu
                       .when_some(id_label.clone(), |menu, id| {
-                        menu.item(PopupMenuItem::new("Copy _id").on_click(move |_, _, cx| {
-                          cx.write_to_clipboard(ClipboardItem::new_string(id.clone()));
-                        }))
+                        menu.item(
+                          PopupMenuItem::new("Copy _id").on_click(move |_, window, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(id.clone()));
+                            window.push_notification("_id copied", cx);
+                          }),
+                        )
                       })
                       .item(
-                        PopupMenuItem::new("Copy document").on_click(move |_, _, cx| {
+                        PopupMenuItem::new("Copy document").on_click(move |_, window, cx| {
                           cx.write_to_clipboard(ClipboardItem::new_string(pretty_json(&doc_json)));
+                          window.push_notification("Document copied", cx);
                         }),
                       );
                     if addressable {
@@ -1073,10 +1077,9 @@ impl DocWorkspace {
                 .ghost()
                 .xsmall()
                 .icon(Icon::new(IconName::Copy))
-                .on_click(cx.listener(move |this, _, _, cx| {
+                .on_click(cx.listener(move |_, _, window, cx| {
                   cx.write_to_clipboard(ClipboardItem::new_string(copy_doc.clone()));
-                  this.status = "copied document".into();
-                  cx.notify();
+                  window.push_notification("Document copied", cx);
                 })),
             ),
           )

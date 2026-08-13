@@ -6,7 +6,7 @@ use gpui::{
 use gpui_component::input::{Input, InputState};
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::table::{Column, ColumnSort, TableDelegate, TableState};
-use gpui_component::{ActiveTheme, Sizable};
+use gpui_component::{ActiveTheme, Sizable, WindowExt};
 use soquel_core::connectors::{ColumnFilter, ForeignKeyInfo, QueryColumn, SortDirection, SortSpec};
 
 use crate::cell_editing::{
@@ -391,9 +391,8 @@ pub fn build_row_menu(
     let row = data.row.clone();
     let table_name = data.table_name.clone();
     let kind = data.kind;
-    let table = table.clone();
     menu = menu.item(
-      PopupMenuItem::new(crate::export::format_label(format)).on_click(move |_, _, cx| {
+      PopupMenuItem::new(crate::export::format_label(format)).on_click(move |_, window, cx| {
         let formatted = soquel_core::export::format_statement(
           columns.clone(),
           std::slice::from_ref(&row),
@@ -401,17 +400,19 @@ pub fn build_row_menu(
           kind,
           &table_name,
         );
-        table.update(cx, |table, cx| {
-          match formatted {
-            Ok(text) => {
-              cx.write_to_clipboard(ClipboardItem::new_string(text));
-              table.delegate_mut().status =
-                format!("copied row as {}", crate::export::format_label(format)).into();
-            }
-            Err(error) => table.delegate_mut().status = crate::status::error(&error),
+        match formatted {
+          Ok(text) => {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+            window.push_notification(
+              format!("Row copied as {}", crate::export::format_label(format)),
+              cx,
+            );
           }
-          cx.notify();
-        });
+          Err(error) => window.push_notification(
+            gpui_component::notification::Notification::error(crate::status::message(&error)),
+            cx,
+          ),
+        }
       }),
     );
   }

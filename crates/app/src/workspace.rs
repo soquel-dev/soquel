@@ -1294,7 +1294,7 @@ impl Workspace {
     Some((grid, schema, name))
   }
 
-  fn export_copy(&mut self, format: ExportFormat, cx: &mut Context<Self>) {
+  fn export_copy(&mut self, format: ExportFormat, window: &mut Window, cx: &mut Context<Self>) {
     let Some((grid, _, name)) = self.export_source() else {
       return;
     };
@@ -1322,11 +1322,15 @@ impl Workspace {
     match soquel_core::export::format_statement(columns, &rows, format, kind, &name) {
       Ok(text) => {
         cx.write_to_clipboard(ClipboardItem::new_string(text));
-        self.status = format!("copied {count} rows as {}", format_label(format)).into();
+        window.push_notification(
+          format!("{count} rows copied as {}", format_label(format)),
+          cx,
+        );
       }
-      Err(error) => {
-        self.status = crate::status::error(&error);
-      }
+      Err(error) => window.push_notification(
+        gpui_component::notification::Notification::error(crate::status::message(&error)),
+        cx,
+      ),
     }
     cx.notify();
   }
@@ -1448,8 +1452,8 @@ impl Workspace {
           menu = menu.item(
             PopupMenuItem::new(format_label(format)).on_click(window.listener_for(
               &workspace,
-              move |this, _: &ClickEvent, _, cx| {
-                this.export_copy(format, cx);
+              move |this, _: &ClickEvent, window, cx| {
+                this.export_copy(format, window, cx);
               },
             )),
           );
@@ -1584,11 +1588,10 @@ impl Workspace {
                 .ghost()
                 .xsmall()
                 .label("Copy")
-                .on_click(cx.listener(move |this, _, _, cx| {
+                .on_click(cx.listener(move |_, _, window, cx| {
                   if let Some(value) = &copy_value {
                     cx.write_to_clipboard(ClipboardItem::new_string(value.clone()));
-                    this.status = "copied".into();
-                    cx.notify();
+                    window.push_notification("Cell copied", cx);
                   }
                 })),
             )
@@ -1771,8 +1774,9 @@ impl Workspace {
                   .to_string();
                 return menu
                   .item(
-                    PopupMenuItem::new("Copy schema name").on_click(move |_, _, cx| {
+                    PopupMenuItem::new("Copy schema name").on_click(move |_, window, cx| {
                       cx.write_to_clipboard(ClipboardItem::new_string(schema.clone()));
+                      window.push_notification("Schema name copied", cx);
                     }),
                   )
                   .separator()
@@ -1790,9 +1794,12 @@ impl Workspace {
               });
               menu
                 .item(PopupMenuItem::new("Open").on_click(open))
-                .item(PopupMenuItem::new("Copy name").on_click(move |_, _, cx| {
-                  cx.write_to_clipboard(ClipboardItem::new_string(qualified.clone()));
-                }))
+                .item(
+                  PopupMenuItem::new("Copy name").on_click(move |_, window, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(qualified.clone()));
+                    window.push_notification("Name copied", cx);
+                  }),
+                )
                 .separator()
                 .item(PopupMenuItem::new("Refresh schema").on_click(refresh))
             }
@@ -1907,9 +1914,10 @@ impl Workspace {
             .xsmall()
             .label("Copy")
             .disabled(ddl_text.is_none())
-            .on_click(move |_, _, cx| {
+            .on_click(move |_, window, cx| {
               if let Some(sql) = &ddl_text {
                 cx.write_to_clipboard(ClipboardItem::new_string(sql.clone()));
+                window.push_notification("DDL copied", cx);
               }
             }),
         )
@@ -2587,8 +2595,7 @@ mod tests {
           }
           delegate.include_xmin = true;
         });
-        this.export_copy(ExportFormat::Csv, cx);
-        assert_eq!(this.status.to_string(), "copied 2 rows as CSV");
+        this.export_copy(ExportFormat::Csv, window, cx);
       });
     });
     let text = cx
@@ -2938,15 +2945,16 @@ mod tests {
     workspace.read_with(cx, |this, _| assert_eq!(this.history.len(), 1));
 
     // Export what the grid holds.
-    cx.update(|_, cx| workspace.update(cx, |this, cx| this.export_copy(ExportFormat::Csv, cx)));
+    cx.update(|window, cx| {
+      workspace.update(cx, |this, cx| {
+        this.export_copy(ExportFormat::Csv, window, cx)
+      })
+    });
     let text = cx
       .read_from_clipboard()
       .and_then(|item| item.text())
       .expect("copied");
     assert!(text.contains("Ada"));
-    workspace.read_with(cx, |this, _| {
-      assert_eq!(this.status.to_string(), "copied 2 rows as CSV");
-    });
 
     // A failing statement lands in the grid status and the history.
     cx.update(|window, cx| {

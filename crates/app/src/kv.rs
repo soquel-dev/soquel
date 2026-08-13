@@ -10,7 +10,7 @@ use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::resizable::{ResizableState, h_resizable, resizable_panel};
 use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::{
-  ActiveTheme, Icon, IndexPath, Selectable, Sizable, StyledExt, h_flex, v_flex,
+  ActiveTheme, Icon, IndexPath, Selectable, Sizable, StyledExt, WindowExt, h_flex, v_flex,
 };
 use soquel_core::AppState;
 use soquel_core::connectors::{KeyDetail, KeyEntry, KeyKind, KeyValue, KvDatabases};
@@ -650,9 +650,12 @@ impl KvWorkspace {
                       }
                     });
                     menu
-                      .item(PopupMenuItem::new("Copy key").on_click(move |_, _, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(copy_key.clone()));
-                      }))
+                      .item(
+                        PopupMenuItem::new("Copy key").on_click(move |_, window, cx| {
+                          cx.write_to_clipboard(ClipboardItem::new_string(copy_key.clone()));
+                          window.push_notification("Key copied", cx);
+                        }),
+                      )
                       .separator()
                       .item(PopupMenuItem::new("Delete key…").on_click(arm))
                   })
