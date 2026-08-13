@@ -1,9 +1,0 @@
-<!-- The app-icon tile: fixed colors on purpose, an installed icon follows no theme. -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96">
-  <rect x="0" y="0" width="96" height="96" rx="22" fill="#171717"/>
-  <g transform="translate(19.6,11.7) scale(0.66)" fill="#fafafa">
-    <path fill-rule="evenodd" d="M14,42 a26,26 0 1,0 52,0 a26,26 0 1,0 -52,0 M26,42 a14,14 0 1,0 28,0 a14,14 0 1,0 -28,0"/>
-    <rect x="60" y="16" width="12" height="52"/>
-    <rect x="48" y="76" width="24" height="18" rx="3"/>
-  </g>
-</svg>
