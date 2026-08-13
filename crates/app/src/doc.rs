@@ -254,7 +254,11 @@ impl DocWorkspace {
       cx.new(|cx| InputState::new(window, cx).placeholder("filter collections"));
     let doc_filter =
       cx.new(|cx| InputState::new(window, cx).placeholder("filter { \"plan\": \"pro\" }"));
-    let doc_editor = cx.new(|cx| InputState::new(window, cx).multi_line(true));
+    let doc_editor = cx.new(|cx| {
+      InputState::new(window, cx)
+        .code_editor("json")
+        .line_number(true)
+    });
     let console_input = cx.new(|cx| {
       InputState::new(window, cx).placeholder("{ \"plan\": \"pro\" } or [{ \"$group\": … }]")
     });
