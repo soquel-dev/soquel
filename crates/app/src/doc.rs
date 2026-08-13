@@ -11,8 +11,8 @@ use gpui_component::resizable::{ResizableState, h_resizable, resizable_panel};
 use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::text::TextView;
 use gpui_component::{
-  ActiveTheme, Disableable, Icon, IndexPath, Selectable, Sizable, StyledExt, WindowExt, h_flex,
-  v_flex,
+  ActiveTheme, Disableable, Icon, IconName, IndexPath, Selectable, Sizable, StyledExt, WindowExt,
+  h_flex, v_flex,
 };
 use soquel_core::AppState;
 use soquel_core::connectors::{
@@ -1050,17 +1050,37 @@ impl DocWorkspace {
           )
           .into_any_element()
       } else {
-        v_flex()
-          .id("doc-json")
+        let copy_doc = pretty.clone();
+        div()
+          .relative()
           .flex_1()
           .min_h_0()
-          .overflow_y_scroll()
-          .p_2()
-          .text_sm()
-          .child(TextView::markdown(
-            "doc-json-view",
-            format!("```json\n{pretty}\n```"),
-          ))
+          .child(
+            v_flex()
+              .id("doc-json")
+              .size_full()
+              .overflow_y_scroll()
+              .p_2()
+              .text_sm()
+              .child(TextView::markdown(
+                "doc-json-view",
+                format!("```json\n{pretty}\n```"),
+              )),
+          )
+          .child(
+            div().absolute().top_2().right_3().child(
+              Button::new("doc-copy")
+                .ghost()
+                .xsmall()
+                .icon(Icon::new(IconName::Copy))
+                .tooltip("Copy document")
+                .on_click(cx.listener(move |this, _, _, cx| {
+                  cx.write_to_clipboard(ClipboardItem::new_string(copy_doc.clone()));
+                  this.status = "copied document".into();
+                  cx.notify();
+                })),
+            ),
+          )
           .into_any_element()
       })
       .into_any_element()

@@ -35,6 +35,7 @@ pub fn tinted_badge(text: impl Into<SharedString>, color: Hsla, cx: &App) -> Div
 pub fn list_row(id: impl Into<ElementId>, selected: bool, cx: &App) -> Stateful<Div> {
   h_flex()
     .id(id)
+    .w_full()
     .mx_1()
     .px_2()
     .py_1()

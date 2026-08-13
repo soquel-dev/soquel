@@ -1593,6 +1593,19 @@ impl Workspace {
                 })),
             )
           })
+          .child({
+            let grid = table.clone();
+            Button::new("inspector-row")
+              .ghost()
+              .xsmall()
+              .label("Row")
+              .dropdown_menu(move |menu, window, cx| {
+                let Some(data) = grid.read(cx).delegate().row_menu_data(row_ix) else {
+                  return menu;
+                };
+                crate::grid::build_row_menu(data, grid.clone(), row_ix, menu, window)
+              })
+          })
           .when(can_hop, |this| {
             this.child(
               Button::new("inspector-hop")
