@@ -587,7 +587,6 @@ impl KvWorkspace {
               .ghost()
               .xsmall()
               .label("glob")
-              .tooltip("Treat the search as a MATCH glob pattern")
               .map(|button| {
                 if self.glob {
                   button.selected(true)

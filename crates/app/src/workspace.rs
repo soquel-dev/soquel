@@ -1609,7 +1609,6 @@ impl Workspace {
               .ghost()
               .xsmall()
               .icon(Icon::new(IconName::Close))
-              .tooltip("Close inspector")
               .on_click(cx.listener(move |_, _, _, cx| {
                 grid.update(cx, |table, cx| table.clear_selection(cx));
               })),
@@ -1786,7 +1785,6 @@ impl Workspace {
               .ghost()
               .xsmall()
               .icon(Icon::new(IconName::Close))
-              .tooltip("Close tab")
               .on_click(cx.listener(move |this, _, _, cx| {
                 this.close(&close_id.clone(), cx);
               })),
@@ -1979,7 +1977,6 @@ impl Workspace {
             .ghost()
             .xsmall()
             .icon(Icon::new(IconName::Close))
-            .tooltip("Remove filter")
             .on_click(cx.listener(move |this, _, _, cx| {
               this.remove_filter(&column, cx);
             })),
