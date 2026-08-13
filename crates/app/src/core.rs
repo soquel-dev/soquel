@@ -199,12 +199,12 @@ pub fn connect_id(
   })
 }
 
-pub fn disconnect_id(state: Arc<AppState>, id: String) {
-  runtime().spawn(async move {
+pub fn disconnect_connection(state: Arc<AppState>, id: String, cx: &impl AppContext) -> Task<()> {
+  bridge(cx, async move {
     if let Err(error) = soquel_core::ops::disconnect(&state, &id).await {
       log::warn!("disconnect failed: {error}");
     }
-  });
+  })
 }
 
 pub fn test_input(

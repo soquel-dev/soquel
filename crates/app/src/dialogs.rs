@@ -23,6 +23,36 @@ pub fn defer_on_active_window(cx: &mut App, f: impl FnOnce(&mut Window, &mut App
   });
 }
 
+/// Defers, then runs on the window the entity currently lives in; no-op when
+/// the entity or its window is gone. `with_window` keeps the entity unleased,
+/// so `f` may update it.
+pub fn defer_on_entity_window<T: 'static>(
+  entity: gpui::WeakEntity<T>,
+  cx: &mut App,
+  f: impl FnOnce(&mut Window, &mut App) + 'static,
+) {
+  cx.defer(move |cx| {
+    let _ = cx.with_window(entity.entity_id(), f);
+  });
+}
+
+/// Active window if still alive, else any window: for global dialogs that must
+/// never be dropped (MCP approvals). The active handle can be stale right
+/// after a close, hence the contains filter.
+pub fn defer_on_some_window(cx: &mut App, f: impl FnOnce(&mut Window, &mut App) + 'static) {
+  cx.defer(move |cx| {
+    let windows = cx.windows();
+    let Some(window_handle) = cx
+      .active_window()
+      .filter(|handle| windows.contains(handle))
+      .or_else(|| windows.into_iter().next())
+    else {
+      return;
+    };
+    let _ = cx.update_window(window_handle, |_, window, cx| f(window, cx));
+  });
+}
+
 /// Shared dialog chrome: elevated surface in dark mode, capped to the viewport
 /// so a tall body scrolls instead of spilling off-screen.
 pub fn styled(dialog: Dialog, window: &Window, cx: &App) -> Dialog {

@@ -612,6 +612,10 @@ impl ConnectionsView {
   }
 
   pub(crate) fn connect(&mut self, id: String, cx: &mut Context<Self>) {
+    // Already open in its own window: focus it instead of connecting twice.
+    if crate::windows::focus_connection_window(&id, cx) {
+      return;
+    }
     if self.connecting.is_some() {
       return;
     }
@@ -716,7 +720,7 @@ impl ConnectionsView {
     self.prompt_remember = false;
     let this = cx.entity().downgrade();
     let input = self.prompt_password.clone();
-    dialogs::defer_on_active_window(cx, move |window, cx| {
+    dialogs::defer_on_entity_window(cx.entity().downgrade(), cx, move |window, cx| {
       input.update(cx, |input, cx| {
         input.set_value("", window, cx);
         input.focus(window, cx);
@@ -817,7 +821,7 @@ impl ConnectionsView {
     self.form_errors.clear();
     self.form_status = FormStatus::Idle;
     let this = cx.entity().downgrade();
-    dialogs::defer_on_active_window(cx, move |window, cx| {
+    dialogs::defer_on_entity_window(cx.entity().downgrade(), cx, move |window, cx| {
       this
         .update(cx, |view, cx| {
           view.prefill_form(editing.as_ref(), window, cx);
@@ -1118,15 +1122,10 @@ impl ConnectionsView {
         return;
       };
       let value = path.to_string_lossy().into_owned();
-      let Some(handle) = cx.update(|cx| cx.active_window()) else {
-        return;
-      };
-      let _ = cx.update_window(handle, move |_, window, cx| {
-        let _ = this.update(cx, |this, cx| {
-          this
-            .form_path
-            .update(cx, |i, cx| i.set_value(value, window, cx));
-        });
+      let _ = this.update_in(cx, move |this, window, cx| {
+        this
+          .form_path
+          .update(cx, |i, cx| i.set_value(value, window, cx));
       });
     });
   }
@@ -1444,7 +1443,7 @@ impl ConnectionsView {
     self.export_busy = false;
     self.export_error = None;
     let this = cx.entity().downgrade();
-    dialogs::defer_on_active_window(cx, move |window, cx| {
+    dialogs::defer_on_entity_window(cx.entity().downgrade(), cx, move |window, cx| {
       this
         .update(cx, |view, cx| {
           view
@@ -1550,10 +1549,8 @@ impl ConnectionsView {
         }
         cx.notify();
       });
-      if let Some(message) = done
-        && let Some(handle) = cx.update(|cx| cx.active_window())
-      {
-        let _ = cx.update_window(handle, |_, window, cx| {
+      if let Some(message) = done {
+        let _ = this.update_in(cx, |_, window, cx| {
           window.close_dialog(cx);
           window.push_notification(Notification::success(message), cx);
         });
@@ -1600,7 +1597,7 @@ impl ConnectionsView {
     self.import_busy = false;
     self.import_error = None;
     let this = cx.entity().downgrade();
-    dialogs::defer_on_active_window(cx, move |window, cx| {
+    dialogs::defer_on_entity_window(cx.entity().downgrade(), cx, move |window, cx| {
       this
         .update(cx, |view, cx| {
           view
@@ -1697,10 +1694,8 @@ impl ConnectionsView {
         }
         cx.notify();
       });
-      if let Some(message) = done
-        && let Some(handle) = cx.update(|cx| cx.active_window())
-      {
-        let _ = cx.update_window(handle, |_, window, cx| {
+      if let Some(message) = done {
+        let _ = this.update_in(cx, |_, window, cx| {
           window.close_dialog(cx);
           window.push_notification(Notification::success(message), cx);
         });
@@ -1715,7 +1710,7 @@ impl ConnectionsView {
     let name = profile.name.clone();
     let keychain = matches!(profile.credential, CredentialSource::Keychain);
     let this = cx.entity().downgrade();
-    dialogs::defer_on_active_window(cx, move |window, cx| {
+    dialogs::defer_on_entity_window(cx.entity().downgrade(), cx, move |window, cx| {
       let this = this.clone();
       let id = id.clone();
       dialogs::confirm_danger(

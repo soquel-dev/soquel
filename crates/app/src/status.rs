@@ -5,10 +5,11 @@ use gpui::{App, AppContext, SharedString};
 use gpui_component::WindowExt;
 use gpui_component::notification::Notification;
 
-/// Log, toast on the app window, and hand back the bare message.
+/// Log, toast on the active window, and hand back the bare message.
 ///
-/// Falls back to any window: an OS prompt (keychain, file picker) can hold
-/// focus when the error lands, and the toast must not be dropped for it.
+/// Falls back to the hub, then any window: an OS prompt (keychain, file
+/// picker) can hold focus when the error lands, and the toast must not be
+/// dropped for it.
 #[track_caller]
 pub fn toast_error(error: &impl std::fmt::Display, cx: &mut App) -> SharedString {
   let caller = std::panic::Location::caller();
@@ -18,6 +19,10 @@ pub fn toast_error(error: &impl std::fmt::Display, cx: &mut App) -> SharedString
   cx.defer(move |cx| {
     let Some(handle) = cx
       .active_window()
+      .or_else(|| {
+        cx.try_global::<crate::windows::WindowRegistry>()
+          .and_then(|registry| registry.hub_handle())
+      })
       .or_else(|| cx.windows().into_iter().next())
     else {
       return;

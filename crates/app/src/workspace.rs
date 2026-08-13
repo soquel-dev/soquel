@@ -63,7 +63,7 @@ enum TabContent {
 }
 
 pub enum WorkspaceEvent {
-  Close,
+  ShowConnections,
 }
 
 impl EventEmitter<WorkspaceEvent> for Workspace {}
@@ -473,7 +473,9 @@ impl Workspace {
     cx.notify();
   }
 
-  /// The screen is going away: free every tab's pinned session.
+  /// Test cleanup; the real close path is ops::disconnect, which drops the
+  /// connection's orphaned sessions itself.
+  #[cfg(test)]
   pub fn close_sessions(&mut self) {
     for (_, content) in self.contents.drain() {
       if let TabContent::Sql {
@@ -1668,7 +1670,7 @@ impl Workspace {
               .xsmall()
               .icon(Icon::new(IconName::ChevronLeft))
               .label("Connections")
-              .on_click(cx.listener(|_, _, _, cx| cx.emit(WorkspaceEvent::Close))),
+              .on_click(cx.listener(|_, _, _, cx| cx.emit(WorkspaceEvent::ShowConnections))),
           )
           .child(
             Button::new("refresh-schema")

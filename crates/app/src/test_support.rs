@@ -42,6 +42,56 @@ pub fn shell_window<V: Render + 'static>(
   (inner.unwrap(), cx)
 }
 
+pub fn test_state() -> (tempfile::TempDir, std::sync::Arc<soquel_core::AppState>) {
+  let dir = tempfile::tempdir().unwrap();
+  let state = std::sync::Arc::new(soquel_core::AppState::for_tests(
+    dir.path(),
+    Box::new(soquel_core::secrets::InMemoryStore::default()),
+  ));
+  (dir, state)
+}
+
+/// A connectable profile: sqlite over a file that must already exist, since
+/// the connector refuses to mint one.
+pub fn seed_sqlite(state: &soquel_core::AppState, dir: &std::path::Path, name: &str) -> String {
+  let path = dir.join(format!("{name}.sqlite"));
+  std::fs::File::create(&path).unwrap();
+  soquel_core::ops::create_connection(
+    state,
+    &soquel_core::profiles::ConnectionInput {
+      name: name.to_string(),
+      env: soquel_core::profiles::Env::Dev,
+      group: None,
+      agent_access: soquel_core::profiles::AgentAccess::None,
+      credential: Default::default(),
+      params: soquel_core::profiles::ConnectorParams::Sqlite {
+        path: path.to_string_lossy().into_owned(),
+      },
+      password: None,
+    },
+  )
+  .unwrap()
+  .id
+}
+
+/// Boots the multi-window app: coordinator + registry globals, the hub `App`
+/// in a shell window registered as the hub.
+pub fn boot_app(
+  cx: &mut TestAppContext,
+  state: std::sync::Arc<soquel_core::AppState>,
+) -> (Entity<crate::app::App>, &mut VisualTestContext) {
+  cx.update(|cx| {
+    crate::mcp::init_coordinator(state.clone(), cx);
+    crate::windows::init(state.clone(), cx);
+  });
+  let (app, cx) = shell_window(cx, move |window, cx| {
+    crate::app::App::new(state, window, cx)
+  });
+  let handle = cx.update(|window, _| window.window_handle());
+  cx.update(|_, cx| crate::windows::register_hub_for_tests(handle, cx));
+  (app, cx)
+}
+
 /// Settle-and-check. Deterministic tests satisfy the predicate on the first
 /// pass; the real-time polling only runs for integration tests, whose database
 /// wakes `run_until_parked` cannot see.

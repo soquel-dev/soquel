@@ -2,9 +2,11 @@
 mod actions;
 mod app;
 mod cell_editing;
+mod chrome;
 mod command_approval;
 mod command_palette;
 mod completion;
+mod connection_window;
 mod connections;
 mod core;
 mod diagnostics;
@@ -31,37 +33,25 @@ mod theme;
 mod transfer;
 mod tunnels;
 mod ui;
+mod windows;
 mod workspace;
-
-use gpui::*;
-use gpui_component::{Root, TitleBar};
 
 fn main() {
   // Before anything logs: the keyring probe in init_state is the first line worth
   // capturing.
   crate::core::init_logging();
   // Without the asset source, every Icon (sort chevrons, titlebar, chips) is invisible.
-  gpui_platform::application()
-    .with_assets(crate::icons::Assets)
-    .run(move |cx| {
-      gpui_component::init(cx);
-      theme::init(cx);
-      actions::init(cx);
+  let app = gpui_platform::application().with_assets(crate::icons::Assets);
+  // macOS dock reactivation with every window closed brings the hub back.
+  app.on_reopen(crate::windows::reopen_hub_if_none);
+  app.run(move |cx| {
+    gpui_component::init(cx);
+    theme::init(cx);
+    actions::init(cx);
 
-      cx.spawn(async move |cx| {
-        cx.open_window(
-          WindowOptions {
-            titlebar: Some(TitleBar::title_bar_options()),
-            ..Default::default()
-          },
-          |window, cx| {
-            let state = crate::core::init_state().expect("app state loads");
-            let view = cx.new(|cx| crate::app::App::new(state, window, cx));
-            cx.new(|cx| Root::new(view, window, cx))
-          },
-        )
-        .expect("failed to open window");
-      })
-      .detach();
-    });
+    let state = crate::core::init_state().expect("app state loads");
+    crate::mcp::init_coordinator(state.clone(), cx);
+    crate::windows::init(state, cx);
+    crate::windows::open_hub_window(cx);
+  });
 }

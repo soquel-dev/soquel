@@ -191,7 +191,7 @@ struct ConsoleEntry {
 }
 
 pub enum DocWorkspaceEvent {
-  Close,
+  ShowConnections,
 }
 
 pub struct DocWorkspace {
@@ -348,10 +348,7 @@ impl DocWorkspace {
       let Some(databases) = crate::status::ok_or_log(task.await) else {
         return;
       };
-      let Some(handle) = cx.update(|cx| cx.active_window()) else {
-        return;
-      };
-      let _ = cx.update_window(handle, move |_, window, cx| {
+      let _ = this.update_in(cx, move |this, window, cx| {
         let names: Vec<String> = databases.iter().map(|d| d.name.clone()).collect();
         let labels: Vec<String> = databases
           .iter()
@@ -360,28 +357,20 @@ impl DocWorkspace {
             None => d.name.clone(),
           })
           .collect();
-        this
-          .update(cx, |this, cx| {
-            this.db_names = names.clone();
-            // No database on the profile: default to the first one, and load
-            // what selecting it by hand would have loaded.
-            if this.doc_db.is_none() {
-              this.doc_db = names.first().cloned();
-              if this.doc_db.is_some() {
-                this.load_collections(cx);
-              }
-            }
-            cx.notify();
-          })
-          .ok();
-        let Ok(current) = this.read_with(cx, |view, _| {
-          view
-            .doc_db
-            .as_ref()
-            .and_then(|db| names.iter().position(|n| n == db))
-        }) else {
-          return;
-        };
+        this.db_names = names.clone();
+        // No database on the profile: default to the first one, and load
+        // what selecting it by hand would have loaded.
+        if this.doc_db.is_none() {
+          this.doc_db = names.first().cloned();
+          if this.doc_db.is_some() {
+            this.load_collections(cx);
+          }
+        }
+        cx.notify();
+        let current = this
+          .doc_db
+          .as_ref()
+          .and_then(|db| names.iter().position(|n| n == db));
         db_select.update(cx, |select, cx| {
           select.set_items(labels, window, cx);
           if let Some(ix) = current {
@@ -638,10 +627,7 @@ impl DocWorkspace {
     let input = self.console_input.clone();
     self._op_task = cx.spawn(async move |this, cx| {
       let result = task.await;
-      let Some(handle) = cx.update(|cx| cx.active_window()) else {
-        return;
-      };
-      let _ = cx.update_window(handle, move |_, window, cx| {
+      let _ = this.update_in(cx, move |this, window, cx| {
         let entry = match result {
           Ok(query) => {
             let mut summary = vec![format!(
@@ -670,12 +656,8 @@ impl DocWorkspace {
           },
         };
         input.update(cx, |input, cx| input.set_value("", window, cx));
-        this
-          .update(cx, |this, cx| {
-            this.console_log.push(entry);
-            cx.notify();
-          })
-          .ok();
+        this.console_log.push(entry);
+        cx.notify();
       });
     });
   }
@@ -727,7 +709,7 @@ impl DocWorkspace {
               .xsmall()
               .icon(Icon::new(IconName::ChevronLeft))
               .label("Connections")
-              .on_click(cx.listener(|_, _, _, cx| cx.emit(DocWorkspaceEvent::Close))),
+              .on_click(cx.listener(|_, _, _, cx| cx.emit(DocWorkspaceEvent::ShowConnections))),
           )
           .child(
             Button::new("doc-refresh")

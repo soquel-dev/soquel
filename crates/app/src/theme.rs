@@ -53,4 +53,10 @@ fn apply(mode: ThemeMode, window: Option<&mut Window>, cx: &mut App) {
     Theme::global_mut(cx).apply_config(&config);
   }
   Theme::change(mode, window, cx);
+  // Theme::change refreshes only the passed window; repaint the others too.
+  cx.defer(|cx| {
+    for handle in cx.windows() {
+      let _ = handle.update(cx, |_, window, _| window.refresh());
+    }
+  });
 }

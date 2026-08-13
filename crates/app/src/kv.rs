@@ -103,7 +103,7 @@ struct ConsoleEntry {
 }
 
 pub enum KvWorkspaceEvent {
-  Close,
+  ShowConnections,
 }
 
 pub struct KvWorkspace {
@@ -305,10 +305,7 @@ impl KvWorkspace {
       let Some(databases) = crate::status::ok_or_log(task.await) else {
         return;
       };
-      let Some(handle) = cx.update(|cx| cx.active_window()) else {
-        return;
-      };
-      let _ = cx.update_window(handle, move |_, window, cx| {
+      let _ = this.update_in(cx, move |this, window, cx| {
         let indices: Vec<u32> = (0..databases.total).collect();
         let labels: Vec<String> = indices
           .iter()
@@ -323,13 +320,9 @@ impl KvWorkspace {
           })
           .collect();
         let current = databases.current as usize;
-        this
-          .update(cx, |this, cx| {
-            this.db_indices = indices;
-            this.databases = Some(databases);
-            cx.notify();
-          })
-          .ok();
+        this.db_indices = indices;
+        this.databases = Some(databases);
+        cx.notify();
         db_select.update(cx, |select, cx| {
           select.set_items(labels, window, cx);
           select.set_selected_index(Some(IndexPath::new(current)), window, cx);
@@ -384,16 +377,9 @@ impl KvWorkspace {
     let _ = window;
     self._detail_task = cx.spawn(async move |this, cx| {
       let result = task.await;
-      let Some(handle) = cx.update(|cx| cx.active_window()) else {
-        return;
-      };
-      let _ = cx.update_window(handle, move |_, window, cx| {
-        this
-          .update(cx, |this, cx| {
-            this.detail_loading = false;
-            cx.notify();
-          })
-          .ok();
+      let _ = this.update_in(cx, move |this, window, cx| {
+        this.detail_loading = false;
+        cx.notify();
         match result {
           Ok(detail) => {
             let value = match &detail.value {
@@ -406,20 +392,12 @@ impl KvWorkspace {
               .unwrap_or_default();
             string_draft.update(cx, |input, cx| input.set_value(value, window, cx));
             ttl_input.update(cx, |input, cx| input.set_value(ttl_secs, window, cx));
-            this
-              .update(cx, |this, cx| {
-                this.detail = Some(detail);
-                cx.notify();
-              })
-              .ok();
+            this.detail = Some(detail);
+            cx.notify();
           }
           Err(error) => {
-            this
-              .update(cx, |this, cx| {
-                this.status = crate::status::error(&error);
-                cx.notify();
-              })
-              .ok();
+            this.status = crate::status::error(&error);
+            cx.notify();
           }
         }
       });
@@ -435,10 +413,7 @@ impl KvWorkspace {
     let input = self.console_input.clone();
     self._op_task = cx.spawn(async move |this, cx| {
       let result = task.await;
-      let Some(handle) = cx.update(|cx| cx.active_window()) else {
-        return;
-      };
-      let _ = cx.update_window(handle, move |_, window, cx| {
+      let _ = this.update_in(cx, move |this, window, cx| {
         let entry = match result {
           Ok(lines) => ConsoleEntry {
             command: command.clone(),
@@ -452,15 +427,11 @@ impl KvWorkspace {
           },
         };
         input.update(cx, |input, cx| input.set_value("", window, cx));
-        this
-          .update(cx, |this, cx| {
-            this.console_log.push(entry);
-            // A write via the console shifts the keyspace.
-            this.scan(true, cx);
-            this.load_databases(cx);
-            cx.notify();
-          })
-          .ok();
+        this.console_log.push(entry);
+        // A write via the console shifts the keyspace.
+        this.scan(true, cx);
+        this.load_databases(cx);
+        cx.notify();
       });
     });
   }
@@ -526,21 +497,16 @@ impl KvWorkspace {
   ) -> Task<()> {
     cx.spawn(async move |this, cx| {
       let result = task.await;
-      let Some(handle) = cx.update(|cx| cx.active_window()) else {
-        return;
-      };
-      let _ = cx.update_window(handle, move |_, window, cx| {
-        let _ = this.update(cx, |this, cx| match result {
-          Ok(()) => {
-            this.scan(true, cx);
-            this.load_databases(cx);
-            this.select_key(key.clone(), window, cx);
-          }
-          Err(error) => {
-            this.status = crate::status::error(&error);
-            cx.notify();
-          }
-        });
+      let _ = this.update_in(cx, move |this, window, cx| match result {
+        Ok(()) => {
+          this.scan(true, cx);
+          this.load_databases(cx);
+          this.select_key(key, window, cx);
+        }
+        Err(error) => {
+          this.status = crate::status::error(&error);
+          cx.notify();
+        }
       });
     })
   }
@@ -590,7 +556,7 @@ impl KvWorkspace {
               .xsmall()
               .icon(Icon::new(IconName::ChevronLeft))
               .label("Connections")
-              .on_click(cx.listener(|_, _, _, cx| cx.emit(KvWorkspaceEvent::Close))),
+              .on_click(cx.listener(|_, _, _, cx| cx.emit(KvWorkspaceEvent::ShowConnections))),
           )
           .child(
             Button::new("kv-refresh")

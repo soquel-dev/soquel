@@ -1,11 +1,13 @@
 //! The MCP panel (server toggle, port, setup command, trust windows), the audit
-//! log dialog, and the gpui `Approver`: a blocked write reaches the App through
-//! a channel, the human's answer fires the oneshot the server thread waits on.
+//! log dialog, and the gpui `Approver`: a blocked write reaches the coordinator
+//! through a channel, the human's answer fires the oneshot the server thread
+//! waits on.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use futures::StreamExt;
 use futures::channel::mpsc;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -117,13 +119,116 @@ pub fn approver_factory(tx: mpsc::UnboundedSender<McpApprovalRequest>) -> core::
   Arc::new(move || Arc::new(GpuiApprover { tx: tx.clone() }) as Arc<dyn Approver>)
 }
 
-/// The channel the App owns; `rx` is drained into the approval dialog, `tx`
-/// builds the approver factory the server injects.
+/// The channel the coordinator owns; `rx` is drained into the approval dialog,
+/// `tx` builds the approver factory the server injects.
 pub fn approval_channel() -> (
   mpsc::UnboundedSender<McpApprovalRequest>,
   mpsc::UnboundedReceiver<McpApprovalRequest>,
 ) {
   mpsc::unbounded()
+}
+
+// The approval coordinator ------------------------------------------------------
+
+/// Process-global owner of the approval queue, created before any window so
+/// approvals outlive the hub.
+pub struct McpCoordinator {
+  state: Arc<AppState>,
+  make_approver: core::ApproverFactory,
+  pub(crate) approval_queue: Vec<McpApprovalRequest>,
+  approval_showing: bool,
+  _drain: Task<()>,
+}
+
+struct GlobalMcpCoordinator(Entity<McpCoordinator>);
+
+impl Global for GlobalMcpCoordinator {}
+
+pub fn init_coordinator(state: Arc<AppState>, cx: &mut App) -> Entity<McpCoordinator> {
+  let coordinator = cx.new(|cx| McpCoordinator::new(state, cx));
+  cx.set_global(GlobalMcpCoordinator(coordinator.clone()));
+  coordinator
+}
+
+pub fn coordinator(cx: &App) -> Entity<McpCoordinator> {
+  cx.global::<GlobalMcpCoordinator>().0.clone()
+}
+
+pub fn make_approver(cx: &App) -> core::ApproverFactory {
+  coordinator(cx).read(cx).make_approver.clone()
+}
+
+/// Re-show the front of the queue: approvals park while no window exists.
+pub fn poke_approvals(cx: &mut App) {
+  if !cx.has_global::<GlobalMcpCoordinator>() {
+    return;
+  }
+  coordinator(cx).update(cx, |coordinator, cx| coordinator.show_next_approval(cx));
+}
+
+impl McpCoordinator {
+  fn new(state: Arc<AppState>, cx: &mut Context<Self>) -> Self {
+    let (tx, mut rx) = approval_channel();
+    let make_approver = approver_factory(tx);
+    // One drain for the process's life: server restarts reuse the same channel.
+    let _drain = cx.spawn(async move |this, cx| {
+      while let Some(request) = rx.next().await {
+        if this
+          .update(cx, |this, cx| this.enqueue_approval(request, cx))
+          .is_err()
+        {
+          break;
+        }
+      }
+    });
+    // An enabled server comes back on launch, off the UI thread.
+    core::mcp_autostart(state.clone(), make_approver.clone());
+    Self {
+      state,
+      make_approver,
+      approval_queue: Vec::new(),
+      approval_showing: false,
+      _drain,
+    }
+  }
+
+  pub(crate) fn enqueue_approval(&mut self, request: McpApprovalRequest, cx: &mut Context<Self>) {
+    self.approval_queue.push(request);
+    self.show_next_approval(cx);
+  }
+
+  /// The open dialog is always for the front of the queue; new requests wait
+  /// behind it and surface as it drains.
+  pub(crate) fn show_next_approval(&mut self, cx: &mut Context<Self>) {
+    if self.approval_showing || self.approval_queue.is_empty() {
+      return;
+    }
+    // No window to land on: park; opening the hub pokes the queue again and
+    // core's 60s timeout is the backstop.
+    if cx.windows().is_empty() {
+      return;
+    }
+    self.approval_showing = true;
+    let request = self.approval_queue[0].clone();
+    let more = self.approval_queue.len() - 1;
+    crate::mcp_approval::open_mcp_approval_dialog(
+      cx.entity(),
+      request,
+      more,
+      cx,
+      |this, answer, cx| this.resolve_front(answer, cx),
+    );
+  }
+
+  fn resolve_front(&mut self, answer: ApprovalAnswer, cx: &mut Context<Self>) {
+    if self.approval_queue.is_empty() {
+      return;
+    }
+    let request = self.approval_queue.remove(0);
+    core::mcp_resolve_approval(self.state.clone(), request.id, answer);
+    self.approval_showing = false;
+    self.show_next_approval(cx);
+  }
 }
 
 // The panel --------------------------------------------------------------------
@@ -731,6 +836,69 @@ mod tests {
   use super::*;
   use crate::mcp_approval::open_mcp_approval_dialog;
   use crate::test_support;
+
+  fn approval_request(id: &str) -> McpApprovalRequest {
+    McpApprovalRequest {
+      id: id.to_string(),
+      connection_id: "c1".to_string(),
+      connection_name: "warehouse".to_string(),
+      operation: format!("DELETE FROM t WHERE id = {id}"),
+      payload: None,
+    }
+  }
+
+  fn coordinator_state() -> (tempfile::TempDir, Arc<AppState>) {
+    let dir = tempfile::tempdir().unwrap();
+    let state = Arc::new(AppState::for_tests(
+      dir.path(),
+      Box::new(soquel_core::secrets::InMemoryStore::default()),
+    ));
+    (dir, state)
+  }
+
+  // Iterations shuffle the task order per seed: the queue must drain in
+  // request order whatever the scheduler does.
+  #[gpui::test(iterations = 10)]
+  fn approvals_show_one_dialog_at_a_time_and_surface_the_next(cx: &mut TestAppContext) {
+    let (_dir, state) = coordinator_state();
+    let coordinator = cx.update(|cx| init_coordinator(state.clone(), cx));
+    let (_app, cx) = test_support::shell_window(cx, {
+      let state = state.clone();
+      move |window, cx| crate::app::App::new(state, window, cx)
+    });
+
+    // Two writes block at the same time.
+    cx.update(|_, cx| {
+      coordinator.update(cx, |coordinator, cx| {
+        coordinator.enqueue_approval(approval_request("1"), cx);
+        coordinator.enqueue_approval(approval_request("2"), cx);
+      });
+    });
+    test_support::wait_until(cx, "the first approval dialog", |cx| {
+      cx.update(|window, cx| window.has_active_dialog(cx))
+    });
+    // Both are queued, but only one dialog is up.
+    cx.update(|_, cx| assert_eq!(coordinator.read(cx).approval_queue.len(), 2));
+
+    // Answering the front drains it and the second surfaces on its own.
+    let bounds = cx
+      .debug_bounds("approval-allow")
+      .expect("run button painted");
+    cx.simulate_click(bounds.center(), Modifiers::none());
+    test_support::wait_until(cx, "the second approval dialog", |cx| {
+      cx.update(|window, cx| window.has_active_dialog(cx))
+        && cx.update(|_, cx| coordinator.read(cx).approval_queue.len() == 1)
+    });
+
+    // Answering the second empties the queue and closes the dialog.
+    let bounds = cx
+      .debug_bounds("approval-allow")
+      .expect("run button painted");
+    cx.simulate_click(bounds.center(), Modifiers::none());
+    cx.run_until_parked();
+    cx.update(|_, cx| assert!(coordinator.read(cx).approval_queue.is_empty()));
+    assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+  }
 
   #[test]
   fn parse_port_refuses_out_of_range_values() {

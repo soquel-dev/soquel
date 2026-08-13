@@ -439,7 +439,7 @@ impl TunnelsView {
     })
     .detach();
     let this = cx.entity().downgrade();
-    dialogs::defer_on_active_window(cx, move |window, cx| {
+    dialogs::defer_on_entity_window(cx.entity().downgrade(), cx, move |window, cx| {
       let _ = this.update(cx, |view, cx| {
         let values = editing
           .as_ref()
@@ -679,7 +679,7 @@ impl TunnelsView {
       })
       .count();
     let this = cx.entity().downgrade();
-    dialogs::defer_on_active_window(cx, move |window, cx| {
+    dialogs::defer_on_entity_window(cx.entity().downgrade(), cx, move |window, cx| {
       let this = this.clone();
       let id = id.clone();
       dialogs::confirm_danger(
