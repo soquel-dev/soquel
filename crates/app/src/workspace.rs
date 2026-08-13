@@ -1671,73 +1671,118 @@ impl Workspace {
       )
       .child(
         v_flex().flex_1().min_h_0().px_1().child(
-          tree(&self.tree, move |ix, entry, selected, _, cx| {
-            let item = entry.item();
-            if entry.is_folder() {
-              return ListItem::new(ix).rounded(cx.theme().radius).child(
-                h_flex()
-                  .gap_1()
-                  .pl(px(4.))
-                  .items_center()
-                  .text_xs()
-                  .text_color(cx.theme().muted_foreground)
-                  .child(
-                    Icon::new(if entry.is_expanded() {
-                      IconName::ChevronDown
-                    } else {
-                      IconName::ChevronRight
-                    })
-                    .size_3(),
-                  )
-                  .child(item.label.clone()),
-              );
-            }
-            let mut parts = item.id.split('\t');
-            let schema = parts.next().unwrap_or_default().to_string();
-            let name = parts.next().unwrap_or_default().to_string();
-            let marker = parts.next().unwrap_or_default();
-            let estimate = parts.next().unwrap_or_default().to_string();
-            let icon = match marker {
-              "V" => Icon::new(IconName::Eye),
-              "M" => Icon::new(SoquelIcon::Layers),
-              _ => Icon::new(SoquelIcon::Table2),
-            };
+          tree(&self.tree, {
             let workspace = workspace.clone();
-            ListItem::new(ix)
-              .selected(selected)
-              .rounded(cx.theme().radius)
-              .on_click(move |_, window, app| {
-                let (schema, name) = (schema.clone(), name.clone());
-                workspace.update(app, |this, cx| {
-                  this.open_table(schema, name, Vec::new(), window, cx);
+            move |ix, entry, selected, _, cx| {
+              let item = entry.item();
+              if entry.is_folder() {
+                return ListItem::new(ix).rounded(cx.theme().radius).child(
+                  h_flex()
+                    .gap_1()
+                    .pl(px(4.))
+                    .items_center()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(
+                      Icon::new(if entry.is_expanded() {
+                        IconName::ChevronDown
+                      } else {
+                        IconName::ChevronRight
+                      })
+                      .size_3(),
+                    )
+                    .child(item.label.clone()),
+                );
+              }
+              let mut parts = item.id.split('\t');
+              let schema = parts.next().unwrap_or_default().to_string();
+              let name = parts.next().unwrap_or_default().to_string();
+              let marker = parts.next().unwrap_or_default();
+              let estimate = parts.next().unwrap_or_default().to_string();
+              let icon = match marker {
+                "V" => Icon::new(IconName::Eye),
+                "M" => Icon::new(SoquelIcon::Layers),
+                _ => Icon::new(SoquelIcon::Table2),
+              };
+              let workspace = workspace.clone();
+              ListItem::new(ix)
+                .selected(selected)
+                .rounded(cx.theme().radius)
+                .on_click(move |_, window, app| {
+                  let (schema, name) = (schema.clone(), name.clone());
+                  workspace.update(app, |this, cx| {
+                    this.open_table(schema, name, Vec::new(), window, cx);
+                  });
+                })
+                .child(
+                  h_flex()
+                    .pl(px(20.))
+                    .pr_2()
+                    .gap_2()
+                    .items_center()
+                    .text_sm()
+                    .child(
+                      div()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(icon.size_3()),
+                    )
+                    .child(
+                      div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(item.label.clone()),
+                    )
+                    .child(
+                      div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(estimate),
+                    ),
+                )
+            }
+          })
+          .context_menu({
+            let workspace = workspace.clone();
+            move |_, entry, menu, window, _| {
+              let item = entry.item();
+              let refresh = window
+                .listener_for(&workspace, |this: &mut Workspace, _: &ClickEvent, _, cx| {
+                  this.refresh_schema(cx)
                 });
-              })
-              .child(
-                h_flex()
-                  .pl(px(20.))
-                  .pr_2()
-                  .gap_2()
-                  .items_center()
-                  .text_sm()
-                  .child(
-                    div()
-                      .text_color(cx.theme().muted_foreground)
-                      .child(icon.size_3()),
+              if entry.is_folder() {
+                let schema = item
+                  .id
+                  .strip_prefix("schema:")
+                  .unwrap_or(&item.id)
+                  .to_string();
+                return menu
+                  .item(
+                    PopupMenuItem::new("Copy schema name").on_click(move |_, _, cx| {
+                      cx.write_to_clipboard(ClipboardItem::new_string(schema.clone()));
+                    }),
                   )
-                  .child(
-                    div()
-                      .flex_1()
-                      .min_w_0()
-                      .truncate()
-                      .child(item.label.clone()),
-                  )
-                  .child(
-                    div()
-                      .text_xs()
-                      .text_color(cx.theme().muted_foreground)
-                      .child(estimate),
-                  ),
-              )
+                  .separator()
+                  .item(PopupMenuItem::new("Refresh schema").on_click(refresh));
+              }
+              let mut parts = item.id.split('\t');
+              let schema = parts.next().unwrap_or_default().to_string();
+              let name = parts.next().unwrap_or_default().to_string();
+              let qualified = format!("{schema}.{name}");
+              let open = window.listener_for(&workspace, {
+                let (schema, name) = (schema.clone(), name.clone());
+                move |this: &mut Workspace, _: &ClickEvent, window, cx| {
+                  this.open_table(schema.clone(), name.clone(), Vec::new(), window, cx);
+                }
+              });
+              menu
+                .item(PopupMenuItem::new("Open").on_click(open))
+                .item(PopupMenuItem::new("Copy name").on_click(move |_, _, cx| {
+                  cx.write_to_clipboard(ClipboardItem::new_string(qualified.clone()));
+                }))
+                .separator()
+                .item(PopupMenuItem::new("Refresh schema").on_click(refresh))
+            }
           })
           .size_full(),
         ),

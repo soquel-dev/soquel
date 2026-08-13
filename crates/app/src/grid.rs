@@ -1,9 +1,10 @@
 use gpui::prelude::FluentBuilder;
 use gpui::{
-  App, Context, Entity, InteractiveElement, IntoElement, ParentElement, SharedString, Styled, Task,
-  Window, div, px,
+  App, ClickEvent, ClipboardItem, Context, Entity, InteractiveElement, IntoElement, ParentElement,
+  SharedString, Styled, Task, Window, div, px,
 };
 use gpui_component::input::{Input, InputState};
+use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::table::{Column, ColumnSort, TableDelegate, TableState};
 use gpui_component::{ActiveTheme, Sizable};
 use soquel_core::connectors::{ColumnFilter, ForeignKeyInfo, QueryColumn, SortDirection, SortSpec};
@@ -406,6 +407,90 @@ impl TableDelegate for RowsDelegate {
       .when(value.is_none(), |this| this.opacity(0.6))
       .child(text)
       .into_any_element()
+  }
+
+  fn context_menu(
+    &mut self,
+    row_ix: usize,
+    menu: PopupMenu,
+    window: &mut Window,
+    cx: &mut Context<TableState<Self>>,
+  ) -> PopupMenu {
+    let columns = self.display_columns().to_vec();
+    if columns.is_empty() {
+      return menu;
+    }
+    // Snapshot now: the click handlers run after this borrow is gone.
+    let row: Vec<Option<String>> = (0..columns.len())
+      .map(|display_col| self.display_value(row_ix, display_col))
+      .collect();
+    let (kind, table_name) = match &self.browse {
+      Some((db, _, name)) => (db.kind(), name.clone()),
+      None => (
+        soquel_core::profiles::ConnectorKind::Postgres,
+        String::new(),
+      ),
+    };
+    let table = cx.entity();
+
+    let mut menu = menu.label("Copy row as");
+    for format in crate::export::EXPORT_FORMATS {
+      // A query grid has no table to insert into.
+      if matches!(format, soquel_core::export::ExportFormat::Sql) && self.browse.is_none() {
+        continue;
+      }
+      let columns = columns.clone();
+      let row = row.clone();
+      let table_name = table_name.clone();
+      let table = table.clone();
+      menu = menu.item(
+        PopupMenuItem::new(crate::export::format_label(format)).on_click(move |_, _, cx| {
+          let formatted = soquel_core::export::format_statement(
+            columns.clone(),
+            std::slice::from_ref(&row),
+            format,
+            kind,
+            &table_name,
+          );
+          table.update(cx, |table, cx| {
+            match formatted {
+              Ok(text) => {
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                table.delegate_mut().status =
+                  format!("copied row as {}", crate::export::format_label(format)).into();
+              }
+              Err(error) => table.delegate_mut().status = crate::status::error(&error),
+            }
+            cx.notify();
+          });
+        }),
+      );
+    }
+
+    if self.editable() {
+      let deleted = matches!(self.slot(row_ix), RowSlot::Data(data_ix) if self.staged.deletes.contains(&data_ix));
+      let is_insert = matches!(self.slot(row_ix), RowSlot::Insert(_));
+      let duplicate = window.listener_for(&table, move |table, _: &ClickEvent, _, cx| {
+        table.delegate_mut().add_insert(Some(row_ix), cx);
+      });
+      let toggle = window.listener_for(&table, move |table, _: &ClickEvent, _, cx| {
+        table.delegate_mut().toggle_delete(row_ix, cx);
+      });
+      menu = menu
+        .separator()
+        .item(PopupMenuItem::new("Duplicate as new row").on_click(duplicate))
+        .item(
+          PopupMenuItem::new(if is_insert {
+            "Remove new row"
+          } else if deleted {
+            "Unmark deleted"
+          } else {
+            "Mark deleted"
+          })
+          .on_click(toggle),
+        );
+    }
+    menu
   }
 
   fn loading(&self, _: &App) -> bool {

@@ -18,6 +18,7 @@ use soquel_core::profiles::ConnectionProfile;
 
 use crate::actions::{FocusEditor, RefreshSchema};
 use crate::core::{self, Db};
+use gpui_component::menu::{ContextMenuExt, PopupMenuItem};
 
 /// Short badge label + colour per redis type.
 pub fn key_kind_badge(kind: KeyKind, cx: &App) -> (&'static str, Hsla) {
@@ -613,10 +614,13 @@ impl KvWorkspace {
           "kv-keys",
           self.keys.len(),
           cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
+            let view = cx.entity();
             range
               .map(|ix| {
                 let entry = &this.keys[ix];
                 let key = entry.key.clone();
+                let menu_key = entry.key.clone();
+                let view = view.clone();
                 let selected = this.selected_key.as_deref() == Some(entry.key.as_str());
                 crate::ui::list_row(ix, selected, cx)
                   .text_xs()
@@ -632,6 +636,25 @@ impl KvWorkspace {
                         .text_color(cx.theme().muted_foreground)
                         .child(format_ttl(ttl)),
                     )
+                  })
+                  .context_menu(move |menu, window, _| {
+                    let copy_key = menu_key.clone();
+                    // Arm, never delete outright: the "sure?" step stays in the
+                    // detail header like the button path.
+                    let arm = window.listener_for(&view, {
+                      let key = menu_key.clone();
+                      move |this: &mut KvWorkspace, _: &ClickEvent, window, cx| {
+                        this.select_key(key.clone(), window, cx);
+                        this.delete_armed = true;
+                        cx.notify();
+                      }
+                    });
+                    menu
+                      .item(PopupMenuItem::new("Copy key").on_click(move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(copy_key.clone()));
+                      }))
+                      .separator()
+                      .item(PopupMenuItem::new("Delete key…").on_click(arm))
                   })
               })
               .collect::<Vec<_>>()

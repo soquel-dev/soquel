@@ -22,6 +22,7 @@ use soquel_core::profiles::ConnectionProfile;
 
 use crate::actions::{FocusEditor, RefreshSchema};
 use crate::core::{self, Db};
+use gpui_component::menu::{ContextMenuExt, PopupMenuItem};
 
 pub fn doc_kind_badge(kind: DocCollectionKind, cx: &App) -> (&'static str, Hsla) {
   match kind {
@@ -846,10 +847,14 @@ impl DocWorkspace {
           "doc-rows",
           self.docs.len(),
           cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
+            let view = cx.entity();
             range
               .map(|ix| {
                 let entry = &this.docs[ix];
                 let selected = this.selected == Some(ix);
+                let id_label = entry.id.as_deref().map(|id| doc_id_label(Some(id)));
+                let doc_json = entry.doc.clone();
+                let view = view.clone();
                 crate::ui::list_row(ix, selected, cx)
                   .on_click(cx.listener(move |this, _, _, cx| this.select_doc(ix, cx)))
                   .child(
@@ -866,6 +871,36 @@ impl DocWorkspace {
                           .child(doc_preview(&entry.doc, 140)),
                       ),
                   )
+                  .context_menu(move |menu, window, _| {
+                    let addressable = id_label.is_some();
+                    let doc_json = doc_json.clone();
+                    let mut menu = menu
+                      .when_some(id_label.clone(), |menu, id| {
+                        menu.item(PopupMenuItem::new("Copy _id").on_click(move |_, _, cx| {
+                          cx.write_to_clipboard(ClipboardItem::new_string(id.clone()));
+                        }))
+                      })
+                      .item(
+                        PopupMenuItem::new("Copy document").on_click(move |_, _, cx| {
+                          cx.write_to_clipboard(ClipboardItem::new_string(pretty_json(&doc_json)));
+                        }),
+                      );
+                    if addressable {
+                      // Arm, never delete outright: the "sure?" step stays in
+                      // the detail header like the button path.
+                      let arm = window.listener_for(&view, {
+                        move |this: &mut DocWorkspace, _: &ClickEvent, _, cx| {
+                          this.select_doc(ix, cx);
+                          this.delete_armed = true;
+                          cx.notify();
+                        }
+                      });
+                      menu = menu
+                        .separator()
+                        .item(PopupMenuItem::new("Delete document…").on_click(arm));
+                    }
+                    menu
+                  })
               })
               .collect::<Vec<_>>()
           }),
