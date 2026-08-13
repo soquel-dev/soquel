@@ -11,7 +11,8 @@ use gpui_component::resizable::{ResizableState, h_resizable, resizable_panel};
 use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::text::TextView;
 use gpui_component::{
-  ActiveTheme, Disableable, Icon, IndexPath, Selectable, Sizable, StyledExt, h_flex, v_flex,
+  ActiveTheme, Disableable, Icon, IndexPath, Selectable, Sizable, StyledExt, WindowExt, h_flex,
+  v_flex,
 };
 use soquel_core::AppState;
 use soquel_core::connectors::{
@@ -563,7 +564,7 @@ impl DocWorkspace {
     let task = core::doc_replace(&self.db, db, collection, id.clone(), draft, cx);
     self._op_task = cx.spawn(async move |this, cx| {
       let result = task.await;
-      let _ = this.update(cx, |this, cx| {
+      let _ = this.update_in(cx, |this, window, cx| {
         match result {
           Ok(()) => {
             this.editing = false;
@@ -573,7 +574,11 @@ impl DocWorkspace {
               this.select_doc(ix, cx);
             }
           }
-          Err(error) => this.status = crate::status::error(&error),
+          // The draft stays up for fixing; the error must not hide under it.
+          Err(error) => window.push_notification(
+            gpui_component::notification::Notification::error(crate::status::message(&error)),
+            cx,
+          ),
         }
         cx.notify();
       });
