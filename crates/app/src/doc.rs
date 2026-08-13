@@ -922,71 +922,73 @@ impl DocWorkspace {
     v_flex()
       .size_full()
       .child(
-        h_flex()
-          .px_3()
-          .h(px(34.))
-          .flex_none()
-          .gap_2()
-          .items_center()
-          .border_b_1()
-          .border_color(cx.theme().border)
-          .child(
-            div()
-              .flex_1()
-              .min_w_0()
-              .truncate()
-              .font_family(crate::theme::mono(cx))
-              .text_sm()
-              .child(doc_id_label(entry.id.as_deref())),
-          )
-          .when(addressable && !self.editing, |header| {
-            header.child(
-              Button::new("edit-doc")
-                .ghost()
-                .xsmall()
-                .label("edit")
-                .disabled(self.detail.is_none())
-                .on_click(cx.listener(|this, _, window, cx| this.start_edit(window, cx))),
+        // Same box structure as the list's filter row: the border sits on a
+        // wrapper under a 34px strip, so both lines land on the same y.
+        v_flex().border_b_1().border_color(cx.theme().border).child(
+          h_flex()
+            .px_3()
+            .h(px(34.))
+            .flex_none()
+            .gap_2()
+            .items_center()
+            .child(
+              div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .font_family(crate::theme::mono(cx))
+                .text_sm()
+                .child(doc_id_label(entry.id.as_deref())),
             )
-          })
-          .when(self.editing, |header| {
-            header
-              .child(
-                Button::new("cancel-edit")
+            .when(addressable && !self.editing, |header| {
+              header.child(
+                Button::new("edit-doc")
                   .ghost()
                   .xsmall()
-                  .label("Cancel")
-                  .on_click(cx.listener(|this, _, _, cx| {
-                    this.editing = false;
-                    cx.notify();
-                  })),
+                  .label("edit")
+                  .disabled(self.detail.is_none())
+                  .on_click(cx.listener(|this, _, window, cx| this.start_edit(window, cx))),
               )
-              .child(
-                Button::new("save-doc")
-                  .primary()
-                  .xsmall()
-                  .label("Save document")
-                  .on_click(cx.listener(|this, _, _, cx| this.save_doc(cx))),
-              )
-          })
-          .when(addressable, |header| {
-            header.child(if self.delete_armed {
-              Button::new("delete-doc")
-                .danger()
-                .xsmall()
-                .label("sure?")
-                .on_click(cx.listener(|this, _, _, cx| this.delete_doc(cx)))
-            } else {
-              Button::new("delete-doc")
-                .ghost()
-                .xsmall()
-                .label("delete")
-                .on_click(cx.listener(|this, _, _, cx| {
-                  this.delete_armed = true;
-                  cx.notify();
-                }))
             })
-          }),
+            .when(self.editing, |header| {
+              header
+                .child(
+                  Button::new("cancel-edit")
+                    .ghost()
+                    .xsmall()
+                    .label("Cancel")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                      this.editing = false;
+                      cx.notify();
+                    })),
+                )
+                .child(
+                  Button::new("save-doc")
+                    .primary()
+                    .xsmall()
+                    .label("Save document")
+                    .on_click(cx.listener(|this, _, _, cx| this.save_doc(cx))),
+                )
+            })
+            .when(addressable, |header| {
+              header.child(if self.delete_armed {
+                Button::new("delete-doc")
+                  .danger()
+                  .xsmall()
+                  .label("sure?")
+                  .on_click(cx.listener(|this, _, _, cx| this.delete_doc(cx)))
+              } else {
+                Button::new("delete-doc")
+                  .ghost()
+                  .xsmall()
+                  .label("delete")
+                  .on_click(cx.listener(|this, _, _, cx| {
+                    this.delete_armed = true;
+                    cx.notify();
+                  }))
+              })
+            }),
+        ),
       )
       .when(!addressable, |body| {
         body.child(
