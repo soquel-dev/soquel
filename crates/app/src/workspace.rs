@@ -1653,19 +1653,20 @@ impl Workspace {
     v_flex()
       .size_full()
       .child(
-        h_flex().px_2().py_2().justify_end().items_center().child(
-          Button::new("refresh-schema")
-            .ghost()
-            .xsmall()
-            .icon(Icon::new(SoquelIcon::RefreshCw))
-            .on_click(cx.listener(|this, _, _, cx| this.refresh_schema(cx))),
-        ),
-      )
-      .child(
-        div()
+        h_flex()
           .px_2()
+          .pt_2()
           .pb_1()
-          .child(Input::new(&self.tree_filter).small()),
+          .gap_1()
+          .items_center()
+          .child(div().flex_1().child(Input::new(&self.tree_filter).small()))
+          .child(
+            Button::new("refresh-schema")
+              .ghost()
+              .xsmall()
+              .icon(Icon::new(SoquelIcon::RefreshCw))
+              .on_click(cx.listener(|this, _, _, cx| this.refresh_schema(cx))),
+          ),
       )
       .child(
         v_flex().flex_1().min_h_0().px_1().child(

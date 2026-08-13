@@ -691,18 +691,6 @@ impl DocWorkspace {
     v_flex()
       .size_full()
       .child(
-        h_flex().px_2().py_2().justify_end().items_center().child(
-          Button::new("doc-refresh")
-            .ghost()
-            .xsmall()
-            .icon(Icon::new(crate::icons::SoquelIcon::RefreshCw))
-            .on_click(cx.listener(|this, _, _, cx| {
-              this.load_databases(cx);
-              this.load_collections(cx);
-            })),
-        ),
-      )
-      .child(
         h_flex()
           .px_2()
           .py_1p5()
@@ -718,9 +706,24 @@ impl DocWorkspace {
               .child("collections"),
           )
           .child(
-            div()
-              .w(px(150.))
-              .child(Select::new(&self.db_select).small()),
+            h_flex()
+              .gap_1()
+              .items_center()
+              .child(
+                div()
+                  .w(px(150.))
+                  .child(Select::new(&self.db_select).small()),
+              )
+              .child(
+                Button::new("doc-refresh")
+                  .ghost()
+                  .xsmall()
+                  .icon(Icon::new(crate::icons::SoquelIcon::RefreshCw))
+                  .on_click(cx.listener(|this, _, _, cx| {
+                    this.load_databases(cx);
+                    this.load_collections(cx);
+                  })),
+              ),
           ),
       )
       .child(
