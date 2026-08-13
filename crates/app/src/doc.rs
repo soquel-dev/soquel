@@ -1068,12 +1068,11 @@ impl DocWorkspace {
               )),
           )
           .child(
-            div().absolute().top_2().right_3().child(
+            div().absolute().top_3().right_3().child(
               Button::new("doc-copy")
                 .ghost()
                 .xsmall()
                 .icon(Icon::new(IconName::Copy))
-                .tooltip("Copy document")
                 .on_click(cx.listener(move |this, _, _, cx| {
                   cx.write_to_clipboard(ClipboardItem::new_string(copy_doc.clone()));
                   this.status = "copied document".into();
