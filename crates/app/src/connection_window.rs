@@ -12,10 +12,10 @@ use soquel_core::profiles::ConnectionProfile;
 use crate::actions::ToggleCommandPalette;
 use crate::command_palette::{PaletteItem, PaletteSection};
 use crate::core;
-use crate::doc::{DocWorkspace, DocWorkspaceEvent};
-use crate::kv::{KvWorkspace, KvWorkspaceEvent};
+use crate::doc::DocWorkspace;
+use crate::kv::KvWorkspace;
 use crate::theme;
-use crate::workspace::{Workspace, WorkspaceEvent};
+use crate::workspace::Workspace;
 
 pub enum WorkspaceKind {
   Sql(Entity<Workspace>),
@@ -28,7 +28,6 @@ pub struct ConnectionWindow {
   connection_name: SharedString,
   workspace: WorkspaceKind,
   focus_handle: FocusHandle,
-  _subscription: Subscription,
 }
 
 impl ConnectionWindow {
@@ -43,30 +42,13 @@ impl ConnectionWindow {
     // The browsers branch on kind: keys -> redis, documents -> mongo,
     // everything else the SQL workspace.
     let caps = soquel_core::connectors::connector_for(db.kind()).capabilities();
-    let (workspace, subscription) = if caps.contains(&soquel_core::connectors::Capability::KvBrowse)
-    {
-      let view = cx.new(|cx| KvWorkspace::new(state.clone(), db, profile, window, cx));
-      let subscription = cx.subscribe_in(&view, window, |_, _, event: &KvWorkspaceEvent, _, cx| {
-        let KvWorkspaceEvent::ShowConnections = event;
-        crate::windows::focus_or_open_hub(cx);
-      });
-      (WorkspaceKind::Kv(view), subscription)
+    let workspace = if caps.contains(&soquel_core::connectors::Capability::KvBrowse) {
+      WorkspaceKind::Kv(cx.new(|cx| KvWorkspace::new(state.clone(), db, profile, window, cx)))
     } else if caps.contains(&soquel_core::connectors::Capability::DocBrowse) {
-      let view = cx.new(|cx| DocWorkspace::new(state.clone(), db, profile, window, cx));
-      let subscription =
-        cx.subscribe_in(&view, window, |_, _, event: &DocWorkspaceEvent, _, cx| {
-          let DocWorkspaceEvent::ShowConnections = event;
-          crate::windows::focus_or_open_hub(cx);
-        });
-      (WorkspaceKind::Doc(view), subscription)
+      WorkspaceKind::Doc(cx.new(|cx| DocWorkspace::new(state.clone(), db, profile, window, cx)))
     } else {
       let data_dir = state.data_dir.clone();
-      let view = cx.new(|cx| Workspace::new(db, profile, data_dir, window, cx));
-      let subscription = cx.subscribe_in(&view, window, |_, _, event: &WorkspaceEvent, _, cx| {
-        let WorkspaceEvent::ShowConnections = event;
-        crate::windows::focus_or_open_hub(cx);
-      });
-      (WorkspaceKind::Sql(view), subscription)
+      WorkspaceKind::Sql(cx.new(|cx| Workspace::new(db, profile, data_dir, window, cx)))
     };
     // No focus grab here: the workspaces focus themselves. The handle is only
     // the key fallback so cmd-k still lands once focus drifts.
@@ -75,7 +57,6 @@ impl ConnectionWindow {
       connection_name,
       workspace,
       focus_handle: cx.focus_handle(),
-      _subscription: subscription,
     }
   }
 

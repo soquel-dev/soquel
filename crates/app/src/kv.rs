@@ -10,7 +10,7 @@ use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::resizable::{ResizableState, h_resizable, resizable_panel};
 use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::{
-  ActiveTheme, Icon, IconName, IndexPath, Selectable, Sizable, StyledExt, h_flex, v_flex,
+  ActiveTheme, Icon, IndexPath, Selectable, Sizable, StyledExt, h_flex, v_flex,
 };
 use soquel_core::AppState;
 use soquel_core::connectors::{KeyDetail, KeyEntry, KeyKind, KeyValue, KvDatabases};
@@ -102,10 +102,6 @@ struct ConsoleEntry {
   ok: bool,
 }
 
-pub enum KvWorkspaceEvent {
-  ShowConnections,
-}
-
 pub struct KvWorkspace {
   state: Arc<AppState>,
   focus_handle: FocusHandle,
@@ -140,8 +136,6 @@ pub struct KvWorkspace {
   _detail_task: Task<()>,
   _op_task: Task<()>,
 }
-
-impl EventEmitter<KvWorkspaceEvent> for KvWorkspace {}
 
 impl Focusable for KvWorkspace {
   fn focus_handle(&self, _: &App) -> FocusHandle {
@@ -545,29 +539,16 @@ impl KvWorkspace {
     v_flex()
       .size_full()
       .child(
-        h_flex()
-          .px_2()
-          .py_2()
-          .justify_between()
-          .items_center()
-          .child(
-            Button::new("kv-back")
-              .ghost()
-              .xsmall()
-              .icon(Icon::new(IconName::ChevronLeft))
-              .label("Connections")
-              .on_click(cx.listener(|_, _, _, cx| cx.emit(KvWorkspaceEvent::ShowConnections))),
-          )
-          .child(
-            Button::new("kv-refresh")
-              .ghost()
-              .xsmall()
-              .icon(Icon::new(crate::icons::SoquelIcon::RefreshCw))
-              .on_click(cx.listener(|this, _, _, cx| {
-                this.scan(true, cx);
-                this.load_databases(cx);
-              })),
-          ),
+        h_flex().px_2().py_2().justify_end().items_center().child(
+          Button::new("kv-refresh")
+            .ghost()
+            .xsmall()
+            .icon(Icon::new(crate::icons::SoquelIcon::RefreshCw))
+            .on_click(cx.listener(|this, _, _, cx| {
+              this.scan(true, cx);
+              this.load_databases(cx);
+            })),
+        ),
       )
       .child(
         h_flex()

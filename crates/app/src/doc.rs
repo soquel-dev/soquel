@@ -11,8 +11,7 @@ use gpui_component::resizable::{ResizableState, h_resizable, resizable_panel};
 use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::text::TextView;
 use gpui_component::{
-  ActiveTheme, Disableable, Icon, IconName, IndexPath, Selectable, Sizable, StyledExt, h_flex,
-  v_flex,
+  ActiveTheme, Disableable, Icon, IndexPath, Selectable, Sizable, StyledExt, h_flex, v_flex,
 };
 use soquel_core::AppState;
 use soquel_core::connectors::{
@@ -190,10 +189,6 @@ struct ConsoleEntry {
   ok: bool,
 }
 
-pub enum DocWorkspaceEvent {
-  ShowConnections,
-}
-
 pub struct DocWorkspace {
   focus_handle: FocusHandle,
   db: Db,
@@ -233,8 +228,6 @@ pub struct DocWorkspace {
   _detail_task: Task<()>,
   _op_task: Task<()>,
 }
-
-impl EventEmitter<DocWorkspaceEvent> for DocWorkspace {}
 
 impl Focusable for DocWorkspace {
   fn focus_handle(&self, _: &App) -> FocusHandle {
@@ -698,29 +691,16 @@ impl DocWorkspace {
     v_flex()
       .size_full()
       .child(
-        h_flex()
-          .px_2()
-          .py_2()
-          .justify_between()
-          .items_center()
-          .child(
-            Button::new("doc-back")
-              .ghost()
-              .xsmall()
-              .icon(Icon::new(IconName::ChevronLeft))
-              .label("Connections")
-              .on_click(cx.listener(|_, _, _, cx| cx.emit(DocWorkspaceEvent::ShowConnections))),
-          )
-          .child(
-            Button::new("doc-refresh")
-              .ghost()
-              .xsmall()
-              .icon(Icon::new(crate::icons::SoquelIcon::RefreshCw))
-              .on_click(cx.listener(|this, _, _, cx| {
-                this.load_databases(cx);
-                this.load_collections(cx);
-              })),
-          ),
+        h_flex().px_2().py_2().justify_end().items_center().child(
+          Button::new("doc-refresh")
+            .ghost()
+            .xsmall()
+            .icon(Icon::new(crate::icons::SoquelIcon::RefreshCw))
+            .on_click(cx.listener(|this, _, _, cx| {
+              this.load_databases(cx);
+              this.load_collections(cx);
+            })),
+        ),
       )
       .child(
         h_flex()

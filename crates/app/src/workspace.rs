@@ -62,12 +62,6 @@ enum TabContent {
   },
 }
 
-pub enum WorkspaceEvent {
-  ShowConnections,
-}
-
-impl EventEmitter<WorkspaceEvent> for Workspace {}
-
 pub struct Workspace {
   focus_handle: FocusHandle,
   profile: ConnectionProfile,
@@ -1659,26 +1653,13 @@ impl Workspace {
     v_flex()
       .size_full()
       .child(
-        h_flex()
-          .px_2()
-          .py_2()
-          .justify_between()
-          .items_center()
-          .child(
-            Button::new("back-to-connections")
-              .ghost()
-              .xsmall()
-              .icon(Icon::new(IconName::ChevronLeft))
-              .label("Connections")
-              .on_click(cx.listener(|_, _, _, cx| cx.emit(WorkspaceEvent::ShowConnections))),
-          )
-          .child(
-            Button::new("refresh-schema")
-              .ghost()
-              .xsmall()
-              .icon(Icon::new(SoquelIcon::RefreshCw))
-              .on_click(cx.listener(|this, _, _, cx| this.refresh_schema(cx))),
-          ),
+        h_flex().px_2().py_2().justify_end().items_center().child(
+          Button::new("refresh-schema")
+            .ghost()
+            .xsmall()
+            .icon(Icon::new(SoquelIcon::RefreshCw))
+            .on_click(cx.listener(|this, _, _, cx| this.refresh_schema(cx))),
+        ),
       )
       .child(
         div()
