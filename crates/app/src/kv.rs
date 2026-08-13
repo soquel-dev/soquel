@@ -568,6 +568,7 @@ impl KvWorkspace {
                   .ghost()
                   .xsmall()
                   .icon(Icon::new(crate::icons::SoquelIcon::RefreshCw))
+                  .tooltip("Rescan keys")
                   .on_click(cx.listener(|this, _, _, cx| {
                     this.scan(true, cx);
                     this.load_databases(cx);
@@ -586,6 +587,7 @@ impl KvWorkspace {
               .ghost()
               .xsmall()
               .label("glob")
+              .tooltip("Treat the search as a MATCH glob pattern")
               .map(|button| {
                 if self.glob {
                   button.selected(true)

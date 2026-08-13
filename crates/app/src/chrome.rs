@@ -202,6 +202,7 @@ pub fn footer(
           Button::new("footer-mcp")
             .ghost()
             .xsmall()
+            .tooltip("MCP server")
             .on_click(move |_, window, cx| open_mcp_panel(mcp_state.clone(), window, cx))
             .child(
               h_flex()
@@ -230,6 +231,11 @@ pub fn footer(
             } else {
               IconName::Moon
             }))
+            .tooltip(if cx.theme().mode.is_dark() {
+              "Switch to light theme"
+            } else {
+              "Switch to dark theme"
+            })
             .on_click(|_, window, cx| theme::toggle(window, cx)),
         )
         .when_some(palette_key, |buttons, label| {
@@ -238,6 +244,7 @@ pub fn footer(
               .ghost()
               .xsmall()
               .label(label)
+              .tooltip("Command palette")
               .on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleCommandPalette), cx)),
           )
         }),

@@ -729,6 +729,7 @@ impl DocWorkspace {
                   .ghost()
                   .xsmall()
                   .icon(Icon::new(crate::icons::SoquelIcon::RefreshCw))
+                  .tooltip("Reload collections")
                   .on_click(cx.listener(|this, _, _, cx| {
                     this.load_databases(cx);
                     this.load_collections(cx);
