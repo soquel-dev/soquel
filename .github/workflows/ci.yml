@@ -28,26 +28,26 @@ env:
   GPUI_DEPS: libxkbcommon-x11-dev libwayland-dev libxcb1-dev libx11-xcb-dev libfontconfig1-dev libfreetype6-dev libgbm-dev libssl-dev
 
 jobs:
-  landing:
+  website:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
       run:
-        working-directory: landing
+        working-directory: website
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # `uses:` ignores working-directory, so point pnpm at landing's package.json.
+      # `uses:` ignores working-directory, so point pnpm at website's package.json.
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
         with:
-          package_json_file: landing/package.json
+          package_json_file: website/package.json
 
       # Its own workspace and its own lockfile: the cache key cannot be the root one.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version-file: landing/package.json
+          node-version-file: website/package.json
           cache: pnpm
-          cache-dependency-path: landing/pnpm-lock.yaml
+          cache-dependency-path: website/pnpm-lock.yaml
 
       - run: pnpm install --frozen-lockfile
 

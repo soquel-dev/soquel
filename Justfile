@@ -1,5 +1,5 @@
 # Task shortcuts over cargo + docker. `just` (cargo install just / brew install just).
-# Rust lint/format/test are plain cargo; landing/ has its own pnpm scripts.
+# Rust lint/format/test are plain cargo; website/ has its own pnpm scripts.
 
 # List the recipes.
 default:

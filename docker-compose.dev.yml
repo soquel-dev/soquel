@@ -1,6 +1,6 @@
 # Dev database: persistent, heavily seeded (pnpm db:dev:seed) to exercise the
 # app with real volume. docker-compose.market.yml overrides the ports for
-# landing screenshots (pnpm db:market).
+# website screenshots (pnpm db:market).
 name: soquel-dev
 
 services:

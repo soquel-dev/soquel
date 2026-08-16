@@ -1,6 +1,6 @@
 shellEmulator: true
 
-# Own workspace root: the landing keeps its own lockfile and its own CI job.
+# Own workspace root: the website keeps its own lockfile and its own CI job.
 allowBuilds:
   esbuild: true
   # Astro's image pipeline; the page ships no raster images.

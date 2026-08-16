@@ -1,4 +1,4 @@
-# Override for landing screenshots: publishes the dev databases on their
+# Override for website screenshots: publishes the dev databases on their
 # standard ports as well, so the market profiles show an endpoint nobody reads
 # as a local sandbox. Compose concatenates `ports`, hence only the extra
 # mapping here. Use with docker-compose.dev.yml (pnpm db:market).

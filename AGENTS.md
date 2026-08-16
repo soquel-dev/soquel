@@ -16,9 +16,9 @@ Root **cargo workspace** (`Cargo.toml`, `resolver = "2"`), one committed `Cargo.
 
 - `crates/core` - the Rust core, UI-agnostic: connectors, SSH tunnels, credentials, secrets, licence, activation, MCP server + tools, diagnostics block, import/export. `src/error.rs` holds the normalized `Error` enum, `src/lib.rs` the `AppState`, `src/ops.rs` the connection lifecycle. `build.rs` stamps `SOQUEL_BUILD_DATE`.
 - `crates/app` - the gpui binary (`soquel-app`). `src/core.rs` bridges the core's private tokio runtime to gpui (each operation returns a gpui `Task`) and holds `init_state`/`init_logging`; the app is **multi-window**: `src/windows.rs` owns the `WindowRegistry` global (hub + one window per open connection; closing a connection window disconnects it), `src/app.rs` is the hub window root (the persistent connections list), `src/connection_window.rs` the per-connection window root (picks the workspace by connector capability), `src/chrome.rs` the shared footer/palette/dialog chrome; one view module per surface (`connections`, `workspace`, `tunnels`, `kv`, `doc`, `mcp`, `licence`, `diagnostics`, `grid`, ...). gpui + gpui-component are git-pinned via the committed root `Cargo.lock` (gpui follows gpui-component's pin; never rev-pinned in a manifest).
-- `landing` - Astro + Tailwind v4 for soquel.dev. **Its own workspace**: own `pnpm-workspace.yaml`, own lockfile, own eslint, own CI job. Run its commands from `landing/`. Its palette is the app's tokens verbatim, and the only colour on the page is the one the app gives data (syntax tokens plus the destructive action): soquel has no brand hue.
+- `website` - Astro + Tailwind v4 for soquel.dev. **Its own workspace**: own `pnpm-workspace.yaml`, own lockfile, own eslint, own CI job. Run its commands from `website/`. Its palette is the app's tokens verbatim, and the only colour on the page is the one the app gives data (syntax tokens plus the destructive action): soquel has no brand hue.
 
-The root has no node stack: a `Justfile` holds the cargo + docker shortcuts, and `landing/` is the only node project. Clippy owns the Rust, `landing/` lints itself.
+The root has no node stack: a `Justfile` holds the cargo + docker shortcuts, and `website/` is the only node project. Clippy owns the Rust, `website/` lints itself.
 
 ### The core surface and the gpui bridges
 
@@ -114,5 +114,5 @@ An updater and a packaging pipeline are **not built yet** (nothing has shipped, 
 ## UI
 
 - Components come from **gpui-component** (the Zed component library); check it before hand-rolling a widget.
-- Use the `frontend-design` skill for UI work. The app identity (theme tokens, typography) lives in `crates/app/src/theme.rs`; the palette is shared verbatim with `landing/`.
+- Use the `frontend-design` skill for UI work. The app identity (theme tokens, typography) lives in `crates/app/src/theme.rs`; the palette is shared verbatim with `website/`.
 - gpui gotchas worth knowing: `DataTable` sizes itself, its parent needs `flex_1` + `min_h_0`; `.overflow_y_scroll()` is on `StatefulInteractiveElement` so the element needs an `.id()` first; `.when`/`.when_some` need `use gpui::prelude::FluentBuilder`; setting an `InputState`/`SelectState` value from an async task goes through `this.update_in(cx, ...)` so it lands on the view's own window, never `cx.active_window()`; dialogs stack; a view-owned dialog opened without a window in hand routes through `dialogs::defer_on_entity_window`, and the global dialogs are free `fn`s on the active window (host-key, command-approval) or any window (mcp-approval, which must never drop).

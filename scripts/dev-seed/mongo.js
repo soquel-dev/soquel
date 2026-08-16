@@ -13,7 +13,7 @@ dev.dropDatabase()
 
 const DAY = 86_400_000
 // Every date hangs off this instead of the wall clock, so re-seeding with the
-// same base date reproduces the same documents (landing screenshots).
+// same base date reproduces the same documents (website screenshots).
 const baseEpoch = Number(env.SEED_BASE_EPOCH)
 const base = baseEpoch > 0 ? baseEpoch * 1000 : Date.now()
 const start = base - 560 * DAY

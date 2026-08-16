@@ -7,7 +7,7 @@
 --   events      1 000 000
 
 -- Every timestamp hangs off this instead of the wall clock, so re-seeding with
--- the same base date reproduces the same rows (landing screenshots). Set it
+-- the same base date reproduces the same rows (website screenshots). Set it
 -- before this file to pin it; seed.sh does.
 SET @base_date = CAST(IFNULL(NULLIF(@base_date, ''), NOW()) AS DATETIME);
 

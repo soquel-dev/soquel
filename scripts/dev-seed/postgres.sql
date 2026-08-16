@@ -12,7 +12,7 @@
 \timing on
 
 -- Every timestamp hangs off this instead of the wall clock, so re-seeding with
--- the same base date reproduces the same rows (landing screenshots).
+-- the same base date reproduces the same rows (website screenshots).
 \if :{?base_date}
 \else
   \set base_date now

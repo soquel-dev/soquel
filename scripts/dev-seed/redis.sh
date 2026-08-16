@@ -13,7 +13,7 @@ set -e
 auth="-a soquel --no-auth-warning"
 
 # Everything dated hangs off this instead of the wall clock, so re-seeding with
-# the same base date reproduces the same keys (landing screenshots).
+# the same base date reproduces the same keys (website screenshots).
 base_epoch="${SEED_BASE_EPOCH:-$(date -u +%s)}"
 base_month="${SEED_BASE_MONTH:-$(date -u +%Y-%m)}"
 

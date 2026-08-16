@@ -3,7 +3,7 @@
 #   scripts/dev-seed/seed.sh [pg|mysql|redis|mongo]...   (no argument = all)
 #
 # SOQUEL_SEED_BASE_DATE pins the "now" every seed is built around, so a re-seed
-# reproduces the same rows and a landing screenshot can be retaken later.
+# reproduces the same rows and a website screenshot can be retaken later.
 # Unset means the wall clock.
 # SOQUEL_SEED_DATABASE names the target database (default soquel_dev); it is
 # created if missing. Redis has none.
